@@ -144,7 +144,7 @@ uint64_t checksum() {
 }
 
 int main() {
-  world::run([]() {
+  world::run_and_die([]() {
     pdes::init(actor_per_rank);
     
     int actor_lb = rank_me()*actor_per_rank;
@@ -160,12 +160,4 @@ int main() {
     pdes::drain();
     checksum();
   });
-
-  for(int loop=0; loop < world::rank_n; loop++) {
-    world::run([=]() {
-      if(loop == world::rank_me())
-        std::cout << "hi from "<<world::rank_me()<<'\n';
-    });
-  }
-  return 0;
 }

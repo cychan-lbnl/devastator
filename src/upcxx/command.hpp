@@ -39,7 +39,7 @@ namespace upcxx {
       packing<Fn>::pack(w, x);
     }
     
-    static auto execute(parcel_reader &r) {
+    static void execute(parcel_reader &r) {
       packing<Fn>::unpack(r)();
     }
   };

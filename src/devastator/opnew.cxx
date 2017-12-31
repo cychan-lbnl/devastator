@@ -45,6 +45,8 @@ namespace {
   
   int arena_pool_init(arena *a, void *b, int bin, frobj **out_head, frobj **out_tail);
   
+  thread_local arena *my_arenas = nullptr;
+
   constexpr int arena_heap_n = log2up((huge_size-1 + page_size-1)/page_size);
   thread_local intru_heap<arena> arena_heaps[arena_heap_n];
 
@@ -59,9 +61,6 @@ namespace {
   
   thread_local uintptr_t remote_thread_mask[(tmsg::thread_n + 8*sizeof(uintptr_t)-1)/sizeof(uintptr_t)] = {/*0...*/};
   thread_local remote_thread_bins remote_bins[tmsg::thread_n] {};
-
-  std::mutex orphanage_lock;
-  arena *orphans_head = nullptr;
 
   constexpr size_t pool_waste(int bin, int pn) {
     #define bin_sz (size_of_bin(bin))
@@ -170,7 +169,7 @@ void opnew::operator_delete_slow(void *obj) {
   if(a != nullptr) {
     OPNEW_ASSERT(a->pmap_is_blob(((char*)obj - (char*)(a+1))/page_size));
     
-    if(a->owner == tmsg::thread_me())
+    if(a->owner_id == tmsg::thread_me())
       arena_dealloc_blob(a, obj);
     else
       arena_dealloc_remote(a, (frobj*)obj);
@@ -261,6 +260,11 @@ void opnew::flush_remote() {
   }
 }
 
+void opnew::thread_me_initialized() {
+  for(arena *a = my_arenas; a != nullptr; a = a->owner_next)
+    a->owner_id = tmsg::thread_me();
+}
+
 namespace {
   arena* arena_create() {
     void *m = mmap(nullptr, 2*arena_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -274,7 +278,9 @@ namespace {
       munmap(reinterpret_cast<void*>(u1 + arena_size), u0 + arena_size - u1);
 
     arena *a = reinterpret_cast<arena*>(u1);
-    a->owner = tmsg::thread_me();
+    a->owner_id = tmsg::thread_me();
+    a->owner_next = my_arenas;
+    my_arenas = a;
     
     a->pmap[0] = page_per_arena;
     ASAN_POISON(a->pmap, 1, page_per_arena-1);
@@ -508,7 +514,7 @@ namespace {
   }
 
   void arena_dealloc_remote(arena *a, frobj *o) {
-    int t = a->owner;
+    int t = a->owner_id;
     auto rbin = &remote_bins[t];
     
     int bin = bin_of(a, o);
@@ -728,7 +734,7 @@ void opnew::intru_heap<T>::remove(intru_heap_link<T> T::*link_of, T *a) {
 
 template<typename T>
 void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
-  #if 1 || OPNEW_DEBUG
+  #if OPNEW_DEBUG
     auto key_of = [](void *o) {
       return reinterpret_cast<uintptr_t>(o);
     };

@@ -1,3 +1,12 @@
+SHELL = bash
+
+########################################################################
+
+.PHONY: the-default
+the-default: executable
+
+########################################################################
+
 devastator ?= .
 devastator/src ?= $(devastator)/src/devastator
 upcxx ?= $(devastator)/src/upcxx
@@ -29,9 +38,11 @@ workers ?= 2
 
 # if a better c++ compiler can't be found
 CXX ?= g++
-
-# look for CC, else use cxx_default
-cxx = $(shell (which CC > /dev/null && echo CC) || echo $(CXX))
+ifneq ($(NERSC_HOST),)
+  cxx = CC
+else
+  cxx = $(CXX)
+endif
 
 devastator/tmessage.hxxs = \
   $(devastator/src)/diagnostic.hxx \
@@ -86,11 +97,14 @@ devastator/pdes.cxxs = \
 ########################################################################
 
 ifeq ($(world),gasnet)
+	include $(devastator)/ext/gasnet/makefile
+
 	ppflags += -DWORLD_GASNET
 	ppflags += -DPROCESS_N=$(procs)
 	ppflags += -DWORKER_N=$(workers)
+	ppflags += $(GASNET_CXXCPPFLAGS)
 	
-	libflags = -pthread
+	libflags = $(GASNET_LIBS) -pthread
 else
 	ppflags += -DWORLD_THREADS
 	ppflags += -DRANK_N=$(threads)
@@ -117,7 +131,6 @@ endif
 exe_name.2 = O$(optlev)$(if $(syms),g,)
 
 exe_name = $(exe_name.0).$(exe_name.1).$(exe_name.2)
-
 
 ########################################################################
 

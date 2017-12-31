@@ -293,9 +293,10 @@ namespace tmsg {
   }
   
   void progress();
-
+  bool progress_noyield();
+  
   void barrier();
   
-  void run(const std::function<void()> &fn);
+  void run_and_die(const std::function<void()> &fn);
 }
 #endif

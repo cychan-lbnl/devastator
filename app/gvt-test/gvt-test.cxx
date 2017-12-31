@@ -52,6 +52,5 @@ void tmain() {
 }
 
 int main() {
-  world::run(tmain);
-  return 0;
+  world::run_and_die(tmain);
 }

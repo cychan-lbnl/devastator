@@ -1,7 +1,7 @@
 #include "world_gasnet.hxx"
 
 #include <gasnetex.h>
-#include <gasnet.h>
+//#include <gasnet.h>
 
 #include <atomic>
 #include <thread>
@@ -9,8 +9,8 @@
 #include <sched.h>
 
 using world::worker_n;
+using world::remote_out_message;
 
-thread_local int world::thread_me_ = 0xdeadbeef;
 thread_local int world::rank_me_ = 0xdeadbeef;
 
 alignas(64)
@@ -26,9 +26,6 @@ namespace {
 }
 
 alignas(64)
-tmsg::active_channels_r<1+worker_n> world::lchans_r[1+worker_n];
-tmsg::active_channels_w<1+worker_n> world::lchans_w[1+worker_n];
-
 tmsg::channels_r<worker_n> world::outgoing_rchans_r;
 tmsg::channels_w<1> world::outgoing_rchans_w[worker_n];
 tmsg::channels_r<1> world::incoming_rchans_r[worker_n];
@@ -52,16 +49,14 @@ namespace {
 }
 
 void world::progress() {
-  bool did_something;
+  bool did_something = tmsg::progress_noyield();
 
-  did_something =  lchans_w[thread_me_].cleanup();
-  did_something |= lchans_r[thread_me_].receive();
-
-  did_something |= outgoing_rchans_w[thread_me_-1].cleanup();
-  did_something |= incoming_rchans_r[thread_me_-1].receive(
-    [](message *m) {
+  int wme = tmsg::thread_me() - 1;
+  did_something |= outgoing_rchans_w[wme].cleanup();
+  did_something |= incoming_rchans_r[wme].receive(
+    [](tmsg::message *m) {
       upcxx::parcel_reader r{m};
-      remote_in_messages *rm = r.pop_trivial_aligned<remote_in_messages>();
+      remote_in_messages const *rm = &r.pop_trivial_aligned<remote_in_messages>();
       int n = rm->count;
       while(n--)
         upcxx::command_execute(r);
@@ -82,9 +77,9 @@ namespace {
   std::atomic<unsigned> barrier_done{0};
   
   void barrier_defer_try(unsigned done_value) {
-    world::lchans_w.send(0, [=]() {
+    tmsg::send(0, [=]() {
       if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS))
-        done.store(done_value, std::memory_order_release);
+        barrier_done.store(done_value, std::memory_order_release);
       else
         barrier_defer_try(done_value);
     });
@@ -103,8 +98,8 @@ void world::barrier() {
       progress();
   }
 
-  if(thread_me_ == 1) {
-    lchans_w.send(0, [=]() {
+  if(tmsg::thread_me() == 1) {
+    tmsg::send(0, [=]() {
       gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
       barrier_defer_try(epoch+1);
     });
@@ -116,57 +111,42 @@ void world::barrier() {
   epoch += 1;
 }
 
-void world::run(const std::function<void()> &fn) {
-  std::thread *workers[worker_n];
-  
-  auto tmain = [=](int me) {
-    thread_me_ = me;
-    
-    for(int t=0; t < worker_n; t++)
-      lchans_w[me].connect(t, lchans_r[t]);
-    
-    if(me == 0) {
-      for(int t=0; t < worker_n; t++)
-        incoming_rchans_w.connect(t, incoming_rchans_r[t]);
+void world::run_and_die(const std::function<void()> &fn) {
+  tmsg::run_and_die([&]() {
+    int tme = tmsg::thread_me();
+
+    if(tme == 0) {
+      for(int w=0; w < worker_n; w++)
+        incoming_rchans_w.connect(w, incoming_rchans_r[w]);
       
       init_gasnet();
       process_rank_lo_ = process_me*worker_n;
       process_rank_hi_ = (process_me+1)*worker_n;
     }
     else {
-      for(int t=0; t < worker_n; t++)
-        outgoing_rchans_w[me].connect(0, outgoing_rchans_r);
+      outgoing_rchans_w[tme-1].connect(0, outgoing_rchans_r);
     }
 
-    barrier();
-    
-    if(me == 0) {
+    tmsg::barrier();
+
+    if(tme == 0) {
       rank_me_ = 0xdeadbeef;
       master_pump();
     }
     else {
-      rank_me_ = process_rank_lo_ + me-1;
+      rank_me_ = process_rank_lo_ + tme-1;
       fn();
 
       static std::atomic<int> bar{0};
       
-      if(worker_n != (bar += 1)) {
+      if(worker_n != ++bar) {
         while(bar.load(std::memory_order_acquire) != worker_n)
-          sched_yield();
+          tmsg::progress();
       }
       else
         terminating.store(true, std::memory_order_release);
     }
-  };
-  
-  for(int t=0; t < worker_n; t++)
-    workers[t] = new std::thread(tmain, t);
-  tmain(0);
-  
-  for(int t=0; t < worker_n; t++) {
-    threads[t]->join();
-    delete threads[t];
-  }
+  });
 }
 
 namespace {
@@ -178,7 +158,7 @@ namespace {
   void am_worker(gex_Token_t, void *buf, size_t buf_size, gex_AM_Arg_t rank_n) {
     upcxx::parcel_reader r{buf};
 
-    for(int r=0; r < rank_n; r++) {
+    while(rank_n--) {
       std::uint16_t worker = r.pop_trivial_aligned<std::uint16_t>();
       std::uint16_t msg_n = r.pop_trivial_aligned<std::uint16_t>();
       std::uint32_t size8 = r.pop_trivial_aligned<std::uint32_t>();
@@ -187,7 +167,7 @@ namespace {
       std::size_t size = 8*size8;
       
       upcxx::parcel_layout ub;
-      ub.add_trivial_aligned<remote_in_messages>({});
+      ub.add_trivial_aligned<remote_in_messages>();
       ub.add_bytes(size, 8);
       
       void *buf = operator new(ub.size());
@@ -203,7 +183,7 @@ namespace {
 
   void master_pump() {
     struct bundle {
-      int next = -2;
+      int next = -2; // -2=not in list, -1=none, 0 <= table index
       std::size_t size8 = 0;
       int workers_present = 0;
       remote_out_message *head[world::worker_n] = {/*nullptr...*/};
@@ -213,15 +193,12 @@ namespace {
     int bun_head = -1;
     
     while(!terminating.load(std::memory_order_relaxed)) {
-      bool did_something;
-
-      did_something =  lchans_w[/*thread_me*/0].cleanup();
-      did_something |= lchans_r[/*thread_me*/0].receive();
+      bool did_something = tmsg::progress_noyield();
       
-      did_something |= incoming_rchans_w.cleanup();
-
-      did_something |= outgoing_rchans_r.receive_batch(
-        [&](message *m) {
+      did_something |= world::incoming_rchans_w.cleanup();
+      
+      did_something |= world::outgoing_rchans_r.receive_batch(
+        [&](tmsg::message *m) {
           auto *rm = static_cast<remote_out_message*>(m);
           int p = rm->rank / world::worker_n;
           int w = rm->rank % world::worker_n;
@@ -234,7 +211,7 @@ namespace {
           rm->bundle_next = bun_table[p].head[w];
           bun_table[p].head[w] = rm;
           
-          if(bun_table[p].next == -2) {
+          if(bun_table[p].next == -2) { // not in list
             bun_table[p].next = bun_head;
             bun_head = p;
           }
@@ -242,9 +219,11 @@ namespace {
         [&]() {
           while(bun_head != -1) {
             int proc = bun_head;
-            int bun_head1 = -1;
+            bun_head = -1;
             
             do {
+              bundle *bun = &bun_table[proc];
+              
               gex_AM_SrcDesc_t sd = gex_AM_PrepareRequestMedium(
                 the_team, /*rank*/proc,
                 /*client_buf*/nullptr,
@@ -264,7 +243,7 @@ namespace {
                 int potential_workers = 0;
                 
                 for(int worker=0; worker < world::worker_n; worker++) {
-                  remote_out_message *rm = bun_table[proc].head[worker];
+                  remote_out_message *rm = bun->head[worker];
                   if(rm != nullptr) {
                     potential_workers += 1;
                     
@@ -290,37 +269,38 @@ namespace {
                         goto am_full;
                       }
                       
-                      committed_size = lay.size();
+                      committed_size = laytmp.size();
                       committed_workers = potential_workers;
                       *msg_n += 1;
                       *size8 += rm->size8;
-                      bun_table[proc].size8 -= rm->size8;
+                      bun->size8 -= rm->size8;
                       
                       std::memcpy(w.put(8*rm->size8, 8), rm + 1, 8*rm->size8);
                       
                       rm = rm->bundle_next;
-                      bun_table[proc].head[worker] = rm;
+                      bun->head[worker] = rm;
                     } while(rm != nullptr);
 
                     // depleted all messages to worker
-                    bun_table[proc].workers_present -= 1;
+                    bun->workers_present -= 1;
                   }
                 }
 
                 if(true) { // depleted all messages to proc
-                  bun_table[proc].next = -2;
+                  bun->next = -2; // not in list
                 }
                 else { // messages still remain to proc
                 am_full:
-                  bun_table[proc].next = bun_head1;
-                  bun_head1 = proc;
+                  bun->next = bun_head;
+                  bun_head = proc;
                 }
                 
                 gex_AM_CommitRequestMedium1(sd, id_am_worker, committed_size, committed_workers);
-              }
-            } while(bun_head != -1);
 
-            bun_head = bun_head1;
+                // next process
+                proc = bun->next;
+              }
+            } while(proc != -1);
           }
         }
       );

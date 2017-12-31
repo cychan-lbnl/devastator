@@ -206,7 +206,8 @@ namespace opnew {
     using arena = arena_form<page_per_arena>;
     
     alignas(64)
-    int owner;
+    int owner_id; // points to tmsg::thread_me_
+    arena *owner_next;
     
     alignas(64)
     intru_heap_link<arena> heap_link;
@@ -310,6 +311,7 @@ namespace opnew {
 
   //////////////////////////////////////////////////////////////////////
 
+  void thread_me_initialized();
   void* operator_new_slow(std::size_t size);
   void operator_delete_slow(void *obj);
   void gc_bins();
@@ -356,9 +358,9 @@ namespace opnew {
     if((known_size != 0 && known_size < huge_size) || a != nullptr) {
       int bin = opnew::template bin_of<known_size>(a, obj);
 
-      OPNEW_ASSERT(!known_local || a->owner == tmsg::thread_me());
+      OPNEW_ASSERT(!known_local || a->owner_id == tmsg::thread_me());
       
-      if((known_local || a->owner == tmsg::thread_me()) && bin != -1) {
+      if((known_local || a->owner_id == tmsg::thread_me()) && bin != -1) {
         bin_state *b = &bins[bin];
         frobj *o = (frobj*)obj;
         o->set_links(nullptr, b->head);
