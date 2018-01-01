@@ -20,18 +20,24 @@ $(gasnet_fragment): $(devastator)/ext/gasnet/makefile
 	wget -O $(gasnet_tgz) $(gasnet_url); \
 	tar xzf $(gasnet_tgz); \
 	mkdir -p build; \
-	if [[ $$NERSC_HOST = "''" ]]; then \
+	case "$$NERSC_HOST" in \
+	edison|cori) \
 		cd $(gasnet_src); \
 		ln -sf other/contrib/cross-configure-cray-aries-slurm .; \
 		cd ../build; \
 		../$(gasnet_src)/cross-configure-cray-aries-slurm $(gasnet_config_args); \
 		make install; \
-	else \
+		echo "Built GASNet for NERSC=$$NERSC_HOST"; \
+		;; \
+	*) \
 		cd build; \
 		CXX=$(cxx) ../$(gasnet_src)/configure $(gasnet_config_args); \
 		make install; \
-	fi; \
+		echo "Built GASNet."; \
+		;; \
+	esac; \
 	cd ..; \
-	rm -rf $(gasnet_tgz)
+	rm -rf $(gasnet_tgz) \
+	echo;
 
 include $(gasnet_fragment)
