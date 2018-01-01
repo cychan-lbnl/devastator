@@ -40,12 +40,14 @@ void tmain() {
   while(true) {
     world::progress();
     gvt::advance();
-
+    
     if(~gvt::epoch_gvt() == 0)
       break;
     
-    if(gvt::epoch_ended())
+    if(gvt::epoch_ended()) {
+      //say()<<"gvt="<<gvt::epoch_gvt();
       gvt::epoch_begin(lvt, {});
+    }
   }
 
   world::barrier();

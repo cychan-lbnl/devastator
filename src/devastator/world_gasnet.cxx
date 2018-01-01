@@ -90,24 +90,24 @@ void world::barrier() {
   static std::atomic<int> c[2]{{0}, {0}};
   static thread_local unsigned epoch = 0;
   
-  int end = epoch & 2 ? 0 : rank_n;
   int bump = epoch & 2 ? -1 : 1;
+  int end = epoch & 2 ? 0 : worker_n;
   
-  if((c[epoch & 1] += bump) != end) {
+  if(c[epoch & 1].fetch_add(bump) + bump != end) {
     while(c[epoch & 1].load(std::memory_order_acquire) != end)
-      progress();
+      world::progress();
   }
-
-  if(tmsg::thread_me() == 1) {
+  else {
+    unsigned epoch1 = epoch + 1;
     tmsg::send(0, [=]() {
       gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
-      barrier_defer_try(epoch+1);
+      barrier_defer_try(epoch1);
     });
   }
 
   while(barrier_done.load(std::memory_order_acquire) != epoch+1)
-    progress();
-  
+    world::progress();
+
   epoch += 1;
 }
 
@@ -128,23 +128,25 @@ void world::run_and_die(const std::function<void()> &fn) {
     }
 
     tmsg::barrier();
-
+    
     if(tme == 0) {
-      rank_me_ = 0xdeadbeef;
+      rank_me_ = -666;
       master_pump();
     }
     else {
       rank_me_ = process_rank_lo_ + tme-1;
       fn();
-
-      static std::atomic<int> bar{0};
       
-      if(worker_n != ++bar) {
+      static std::atomic<int> bar{0};
+      int bar_got = ++bar;
+      
+      if(worker_n != bar_got) {
         while(bar.load(std::memory_order_acquire) != worker_n)
           tmsg::progress();
       }
-      else
+      else {
         terminating.store(true, std::memory_order_release);
+      }
     }
   });
 }
@@ -323,7 +325,7 @@ namespace {
     gex_Segment_t segment;
     
     ok = gex_Client_Init(
-      &client, &endpoint, &the_team, "pdes", nullptr, nullptr, 0
+      &client, &endpoint, &the_team, "devastator", nullptr, nullptr, 0
     );
     ASSERT_ALWAYS(ok == GASNET_OK);
     

@@ -31,6 +31,7 @@ $(gasnet_fragment): $(devastator)/ext/gasnet/makefile
 		CXX=$(cxx) ../$(gasnet_src)/configure $(gasnet_config_args); \
 		make install; \
 	fi; \
+	cd ..; \
 	rm -rf $(gasnet_tgz)
 
 include $(gasnet_fragment)

@@ -67,7 +67,7 @@ devastator/world_gasnet.hxxs = \
 	$(upcxx)/packing.hpp \
 	$(upcxx)/reflection.hpp \
 	$(upcxx)/utility.hpp \
-	$(devastator/src)/world_gasenet.hxx
+	$(devastator/src)/world_gasnet.hxx
 
 devastator/world_gasnet.cxxs = \
   $(devastator/tmessage.cxxs) \
@@ -135,7 +135,7 @@ exe_name = $(exe_name.0).$(exe_name.1).$(exe_name.2)
 ########################################################################
 
 .SECONDARY:
-.PHONY: executable
+#.PHONY: executable
 executable: $(exe_name)
 
 exe:
