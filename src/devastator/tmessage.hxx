@@ -16,37 +16,25 @@
 
 namespace tmsg {
   struct hot_slot {
-    std::uint32_t ix, delta, bump;
+    std::uint32_t ix, delta, old;
   };
   
-  // TODO: specialize for n=1
   template<int n>
-  class slot_list {
-    static constexpr int block_n = (n + 15)/16;
-    
-    struct block {
-      union alignas(64) {
-        std::atomic<std::uint32_t> live[16];
-      };
-      union alignas(64) {
-        std::uint32_t shadow[16];
-      };
-      
-      block() {
-        for(int i=0; i < 16; i++) {
-          live[i].store(0, std::memory_order_relaxed);
-          shadow[i] = 0;
-        }
-      }
+  struct slot_list {
+    union alignas(n > 1 ? 64 : 1) {
+      std::atomic<std::uint32_t> live[n];
+    };
+    union alignas(n > 1 ? 64 : 1) {
+      std::uint32_t shadow[n];
     };
 
-    block block_[block_n];
-
-  public:
-    std::atomic<uint32_t>& operator[](int i) {
-      return block_[i/16].live[i%16];
+    slot_list() {
+      for(int i=0; i < n; i++) {
+        live[i].store(0, std::memory_order_relaxed);
+        shadow[i] = 0;
+      }
     }
-
+    
     int reap(hot_slot hot[n]);
   };
 
@@ -115,11 +103,11 @@ namespace tmsg {
     int r_id = rs.slot_next_.fetch_add(1);
     
     rs.r_[r_id].recv_last = dummy;
-    rs.r_[r_id].ack_slot = &slots_[w_id];
+    rs.r_[r_id].ack_slot = &slots_.live[w_id];
     
     w_[w_id].sent_last = dummy;
     w_[w_id].ack_head = dummy;
-    w_[w_id].recv_slot = &rs.slots_[r_id];
+    w_[w_id].recv_slot = &rs.slots_.live[r_id];
   }
 
   template<int n>
@@ -132,21 +120,25 @@ namespace tmsg {
   template<int n>
   int slot_list<n>::reap(hot_slot hot[n]) {
     int hot_n = 0;
+    std::uint32_t fresh[n];
+
+    for(int i=0; i < n; i++)
+      fresh[i] = live[i].load(std::memory_order_relaxed);
+
+    // software fence: prevents load/stores from moving before or after.
+    // this is for performance, we want to scan the live counters with
+    // dense loads into a temporary "fresh" buffer, and do comparison
+    // processing afterwards.
+    asm volatile("": : :"memory");
     
-    for(int b=0; b < block_n; b++) {
-      int m = std::min(n, 16*(b+1)) - 16*b;
-      for(int s=0; s < m; s++) {
-        std::uint32_t w1 = block_[b].live[s].load(std::memory_order_relaxed);
-        std::uint32_t w0 = block_[b].shadow[s];
+    for(int i=0; i < n; i++) {
+      if(fresh[i] != shadow[i]) {
+        hot[hot_n].ix = i;
+        hot[hot_n].delta = fresh[i] - shadow[i];
+        hot[hot_n].old = shadow[i];
+        hot_n += 1;
         
-        if(w1 != w0) {
-          hot[hot_n].ix = 16*b + s;
-          hot[hot_n].delta = w1 - w0;
-          hot[hot_n].bump = w0;
-          hot_n += 1;
-          
-          block_[b].shadow[s] = w1;
-        }
+        shadow[i] = fresh[i];
       }
     }
     
@@ -172,7 +164,7 @@ namespace tmsg {
         rcv(m);
       } while(--msg_n != 0);
       
-      ch->ack_slot->store(hot[i].bump + hot[i].delta, std::memory_order_release);
+      ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
       ch->recv_last = m;
     }
     
@@ -202,7 +194,7 @@ namespace tmsg {
     
     for(int i=0; i < hot_n; i++) {
       channels_r::each *ch = &this->r_[hot[i].ix];
-      ch->ack_slot->store(hot[i].bump + hot[i].delta, std::memory_order_release);
+      ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
     }
     
     return hot_n != 0; // did something
