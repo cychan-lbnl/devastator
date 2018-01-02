@@ -6,7 +6,10 @@
 #endif
 
 #define THREAD_N RANK_N
-#include "tmessage.hxx"
+#include "tmsg.hxx"
+
+#include <functional>
+#include <tuple>
 
 namespace world {
   inline constexpr int log2up(int x) {
@@ -27,6 +30,20 @@ namespace world {
   void send(int rank, Fn fn) {
     tmsg::send(rank, std::move(fn));
   }
+
+  constexpr bool rank_is_local(int rank) {
+    return true;
+  }
+  
+  template<typename Fn>
+  void send_local(int rank, Fn fn) {
+    tmsg::send(rank, std::move(fn));
+  }
+  
+  template<typename Fn>
+  void send_remote(int rank, Fn fn) {
+    ASSERT(0);
+  }
   
   inline void progress() {
     tmsg::progress();
@@ -39,6 +56,39 @@ namespace world {
   inline void run_and_die(const std::function<void()> &fn) {
     tmsg::run_and_die(fn);
   }
+
+  #if 0
+    using std::bind;
+  #else
+    template<typename Fn, typename ...B>
+    struct bound {
+      Fn fn_;
+      mutable std::tuple<B...> b_;
+
+      template<typename Me, std::size_t ...bi, typename ...Arg>
+      static auto apply(Me &&me, std::index_sequence<bi...>, Arg &&...a)
+        -> decltype(me.fn_(std::get<bi>(me.b_)..., std::forward<Arg>(a)...)) {
+        return me.fn_(std::get<bi>(me.b_)..., std::forward<Arg>(a)...);
+      }
+      
+      template<typename ...Arg>
+      auto operator()(Arg &&...a)
+        -> decltype(apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...)) {
+        return apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...);
+      }
+      template<typename ...Arg>
+      auto operator()(Arg &&...a) const
+        -> decltype(apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...)) {
+        return apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...);
+      }
+    };
+    
+    template<typename Fn, typename ...B>
+    auto bind(Fn fn, B ...b)
+      -> decltype(bound<Fn,B...>{std::move(fn), std::tuple<B...>{std::move(b)...}}) {
+      return bound<Fn,B...>{std::move(fn), std::tuple<B...>{std::move(b)...}};
+    }
+  #endif
 }
 
 #endif

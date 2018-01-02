@@ -33,13 +33,15 @@ void orbit(uint64_t t) {
 void tmain() {
   gvt::init({});
   gvt::epoch_begin(0, {});
-  
+
   if(world::rank_me() == 0)
     orbit(0);
   
   while(true) {
     world::progress();
     gvt::advance();
+
+    //say()<<"gvt "<<gvt::epoch_gvt();
     
     if(~gvt::epoch_gvt() == 0)
       break;

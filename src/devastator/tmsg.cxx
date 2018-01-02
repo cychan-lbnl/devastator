@@ -1,5 +1,5 @@
 #include "world.hxx"
-#include "tmessage.hxx"
+#include "tmsg.hxx"
 #include "opnew.hxx"
 
 #include <atomic>

@@ -1,28 +1,24 @@
 #ifndef _1fa94734_0f88_4819_abb4_43776c659c8a
 #define _1fa94734_0f88_4819_abb4_43776c659c8a
 
-#define OPNEW_ENABLED 1
-#define OPNEW_DEBUG 0
+#include "opnew_fwd.hxx"
 
-#if OPNEW_DEBUG
-  #define OPNEW_ASSERT(ok) ASSERT(ok)
-#else
-  #define OPNEW_ASSERT(ok) ((void)0)
-#endif
-
-#if !OPNEW_ENABLED
-namespace opnew {
-  inline void progress() {}
-}
-#else
+#if OPNEW_ENABLED
 
 #include "diagnostic.hxx"
+#include "world.hxx"
 
 #include <cstdint>
 #include <new>
 #include <type_traits>
 
 #include <sanitizer/asan_interface.h>
+
+#if OPNEW_DEBUG
+  #define OPNEW_ASSERT(ok) ASSERT(ok)
+#else
+  #define OPNEW_ASSERT(ok) ((void)0)
+#endif
 
 #if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
  #define ASAN_ENABLED 1

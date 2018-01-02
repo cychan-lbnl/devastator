@@ -1,10 +1,10 @@
 devastator := ../..
 
-app := phold
+app = phold
 
-phold.hxxs = $(devastator/pdes.hxxs)
+phold.deps = $(devastator/pdes.deps)
 
-phold.cxxs = phold.cxx \
-             $(devastator/pdes.cxxs)
+phold.srcs = phold.cxx \
+             $(devastator/pdes.srcs)
 
 include $(devastator)/makefile

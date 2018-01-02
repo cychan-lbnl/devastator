@@ -20,10 +20,10 @@ void assert_failed(const char *file, int line) {
 
 say::say() {
   lock_.lock();
-  std::cout << '['<<world::rank_me()<<"] ";
+  std::cerr << '['<<world::rank_me()<<"] ";
 }
 
 say::~say() {
-  std::cout << std::endl;
+  std::cerr << std::endl;
   lock_.unlock();
 }

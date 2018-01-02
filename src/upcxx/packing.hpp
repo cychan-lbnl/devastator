@@ -217,9 +217,10 @@ namespace upcxx {
     }
     
     template<typename T>
-    T const& pop_trivial_aligned() {
+    typename std::conditional<std::is_copy_constructible<T>::value, T const&, T>::type
+    pop_trivial_aligned() {
       std::size_t p = lay_.add_bytes(sizeof(T), alignof(T));
-      return *(const T*)(buf_ + p);
+      return static_cast<T&&>(*const_cast<T*>((const T*)(buf_ + p)));
     }
     template<typename T>
     T const* pop_trivial_aligned(std::size_t n) {
@@ -406,11 +407,13 @@ namespace upcxx {
     
     template<typename T>
     void operator()(T &mbr) {
-      mbr = packing<T>::unpack(r);
+      mbr.~T();
+      ::new(&mbr) T(packing<T>::unpack(r));
     }
     template<typename T>
     void opaque(T &mbr) {
-      mbr = packing_opaque<T>::unpack(r);
+      mbr.~T();
+      ::new(&mbr) T(packing_opaque<T>::unpack(r));
     }
   };
   template<>

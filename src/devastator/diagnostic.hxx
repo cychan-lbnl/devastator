@@ -13,11 +13,12 @@ void dbgbrk();
 
 struct say {
   say();
+  say(say const&) = delete;
   ~say();
 
   template<typename T>
   say& operator<<(T &&x) {
-    std::cout << x;
+    std::cerr << x;
     return *this;
   }
 };

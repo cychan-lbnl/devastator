@@ -2,6 +2,7 @@
 #define _185047ccc3634e778407efc12d5bea5d
 
 #include "diagnostic.hxx"
+#include "opnew_fwd.hxx"
 
 #include <algorithm>
 #include <atomic>
@@ -115,6 +116,7 @@ namespace tmsg {
     w_[id].sent_last->next = m;
     w_[id].sent_last = m;
     w_[id].recv_slot->store(++w_[id].recv_bump, std::memory_order_release);
+    //say()<<"wchan "<<id<<" of "<<n<<" bumped "<<w_[id].recv_bump-1<<" -> "<<w_[id].recv_bump;
   }
   
   template<int n>
@@ -159,11 +161,13 @@ namespace tmsg {
       std::uint32_t msg_n = hot[i].delta;
       message *m = ch->recv_last;
       
+      //say()<<"rchan "<<hot[i].ix<<" of "<<chan_n<<" bumped "<<hot[i].old<<" -> "<<hot[i].old+hot[i].delta;
+      
       do {
         m = m->next;
         rcv(m);
       } while(--msg_n != 0);
-      
+
       ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
       ch->recv_last = m;
     }
@@ -212,7 +216,11 @@ namespace tmsg {
       
       do {
         message *m1 = m->next;
-        ::operator delete(m);
+        #if 0
+          opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(m);
+        #else
+          ::operator delete(m);
+        #endif
         m = m1;
       } while(--msg_n != 0);
       

@@ -21,6 +21,10 @@ namespace gvt {
   
   template<typename Fn>
   void send(int rank, std::uint64_t t, Fn fn);
+  template<typename Fn>
+  void send_local(int rank, std::uint64_t t, Fn fn);
+  template<typename Fn>
+  void send_remote(int rank, std::uint64_t t, Fn fn);
 
   void advance();
 
@@ -59,12 +63,54 @@ void gvt::send(int rank, std::uint64_t t, Fn fn) {
   gvt::round_lsend_ += 1;
   gvt::round_lvt_ = std::min(gvt::round_lvt_, t);
   
-  world::send(rank, [=]() {
-    int i = (unsigned(r) - gvt::round_) & 0xff;
-    gvt::round_lrecv_[i] += 1;
-    
-    fn();
-  });
+  world::send(rank,
+    world::bind(
+      [=](Fn const &fn) {
+        int i = (unsigned(r) - gvt::round_) & 0xff;
+        gvt::round_lrecv_[i] += 1;
+        
+        fn();
+      },
+      std::move(fn)
+    )
+  );
 }
 
+template<typename Fn>
+void gvt::send_local(int rank, std::uint64_t t, Fn fn) {
+  std::uint8_t r = gvt::round_ + 1;
+  gvt::round_lsend_ += 1;
+  gvt::round_lvt_ = std::min(gvt::round_lvt_, t);
+  
+  world::send_local(rank,
+    world::bind(
+      [=](Fn const &fn) {
+        int i = (unsigned(r) - gvt::round_) & 0xff;
+        gvt::round_lrecv_[i] += 1;
+        
+        fn();
+      },
+      std::move(fn)
+    )
+  );
+}
+
+template<typename Fn>
+void gvt::send_remote(int rank, std::uint64_t t, Fn fn) {
+  std::uint8_t r = gvt::round_ + 1;
+  gvt::round_lsend_ += 1;
+  gvt::round_lvt_ = std::min(gvt::round_lvt_, t);
+  
+  world::send_remote(rank,
+    world::bind(
+      [=](Fn const &fn) {
+        int i = (unsigned(r) - gvt::round_) & 0xff;
+        gvt::round_lrecv_[i] += 1;
+        
+        fn();
+      },
+      std::move(fn)
+    )
+  );
+}
 #endif

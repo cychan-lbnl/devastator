@@ -3,3 +3,5 @@
 #elif WORLD_GASNET
   #include "world_gasnet.hxx"
 #endif
+
+#include "reduce.hxx"

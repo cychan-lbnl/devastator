@@ -1,12 +1,12 @@
 devastator := ../..
 
-app := gvt-test
+app = gvt-test
 
-gvt-test.hxxs = $(devastator/src)/gvt.hxx \
-                $(devastator/world.hxxs)
+gvt-test.deps = $(devastator/src)/gvt.hxx \
+                $(devastator/world.deps)
 
-gvt-test.cxxs = gvt-test.cxx \
+gvt-test.srcs = gvt-test.cxx \
                 $(devastator/src)/gvt.cxx \
-                $(devastator/world.cxxs)
+                $(devastator/world.srcs)
 
 include $(devastator)/makefile

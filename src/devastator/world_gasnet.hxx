@@ -9,8 +9,9 @@
 #endif
 
 #define THREAD_N (WORKER_N)+1
-#include "tmessage.hxx"
+#include "tmsg.hxx"
 
+#include <upcxx/bind.hpp>
 #include <upcxx/command.hpp>
 #include <upcxx/packing.hpp>
 
@@ -31,16 +32,20 @@ namespace world {
   constexpr int rank_n = process_n * worker_n;
   constexpr int log2up_rank_n = log2up(rank_n);
   
-  extern tmsg::channels_r<worker_n> outgoing_rchans_r;
-  extern tmsg::channels_w<1> outgoing_rchans_w[worker_n];
-  extern tmsg::channels_r<1> incoming_rchans_r[worker_n];
-  extern tmsg::channels_w<worker_n> incoming_rchans_w;
+  extern tmsg::channels_r<worker_n> remote_send_chan_r;
+  extern tmsg::channels_w<1> remote_send_chan_w[worker_n];
+  extern tmsg::channels_r<1> remote_recv_chan_r[worker_n];
+  extern tmsg::channels_w<worker_n> remote_recv_chan_w;
 
   extern thread_local int rank_me_;
   extern int process_rank_lo_, process_rank_hi_;
   
   inline int rank_me() { return rank_me_; }
 
+  inline bool rank_is_local(int rank) {
+    return process_rank_lo_ <= rank && rank < process_rank_hi_;
+  }
+  
   template<typename Fn>
   void send_local(int rank, Fn fn) {
     tmsg::send(1 + rank-process_rank_lo_, std::move(fn));
@@ -74,21 +79,24 @@ namespace world {
   template<typename Fn>
   void send_remote(int rank, Fn fn) {
     auto *m = remote_out_message::create(rank, std::move(fn));
-    outgoing_rchans_w[rank_me_ - process_rank_lo_].send(0, m);
+    //say()<<"send_remote to "<<rank<<" size "<<m->size8;
+    remote_send_chan_w[rank_me_ - process_rank_lo_].send(0, m);
   }
 
   template<typename Fn>
   void send(int rank, Fn fn) {
-    if(process_rank_lo_ <= rank && rank < process_rank_hi_)
+    if(rank_is_local(rank))
       send_local(rank, std::move(fn));
     else
       send_remote(rank, std::move(fn));
   }
-  
+
   void progress();
 
   void barrier();
   
   void run_and_die(const std::function<void()> &fn);
+
+  using upcxx::bind;
 }
 #endif

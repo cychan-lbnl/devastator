@@ -1,4 +1,3 @@
-#include "world.hxx"
 #include "opnew.hxx"
 #include "diagnostic.hxx"
 
@@ -84,11 +83,11 @@ namespace {
   }
 
   template<int ...bin>
-  constexpr array<int8_t, bin_n> make_pool_best_pages(index_sequence<bin...>) {
+  constexpr array<int8_t, bin_n> make_pool_best_pages(opnew::index_sequence<bin...>) {
     return {{calc_pool_best_pages(bin)...}};
   }
   
-  constexpr array<int8_t, bin_n> pool_best_pages = make_pool_best_pages(make_index_sequence<bin_n>());
+  constexpr array<int8_t, bin_n> pool_best_pages = make_pool_best_pages(opnew::make_index_sequence<bin_n>());
 }
 
 thread_local uint64_t opnew::bins_occupied_mask = 0;

@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 
 using namespace pdes;
 using namespace std;
@@ -31,6 +32,12 @@ namespace {
   };
 
   constexpr event_tid end_of_time = {uint64_t(-1), uint64_t(-1)};
+
+  struct event_tid_hasher {
+    size_t operator()(event_tid x) const {
+      return 0xdeadbeef*x.first + x.second;
+    }
+  };
   
   struct local_event {
     event *e;
@@ -96,138 +103,16 @@ namespace {
         cd_by<&cd_state::by_dawn_ix>::ix_of,
         cd_by<&cd_state::by_dawn_ix>::key_of>
       cds_by_dawn;
+
+    std::unordered_map<event_tid, event*, event_tid_hasher> from_far_map;
   };
   
   thread_local sim_state sim_me;
 
   thread_local bool specialed = false;
-  
-  void arrive(int cd_ix, event *e, event_tid e_tid, int existence_delta);
+
+  void arrive(int cd_ix, event *e, event_tid tid, int existence_delta);
   void rollback(cd_state *cd, event_tid new_now);
-  
-  void arrive(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
-    sim_state &sim_me = ::sim_me;
-    cd_state *cd = &sim_me.cds[cd_ix];
-
-    int8_t existence0 = e->existence;
-    int8_t existence1 = e->existence + existence_delta;
-    
-    if(e_tid <= cd->was()) {
-      if(existence0 >= 0 && existence1 >= 0)
-        rollback(cd, e_tid);
-    }
-
-    e->existence = existence1;
-    
-    if(existence0 > 0 || existence1 > 0) {
-      if(existence1 > 0) {
-        cd->future_events.insert({e, e_tid});
-        sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
-      }
-      else {
-        cd->future_events.erase({e, e_tid});
-        sim_me.cds_by_now.increased({cd, cd->now()});
-      }
-    }
-  }
-  
-  // makes `since` the new `now`
-  void rollback(cd_state *cd, event_tid new_now) {
-    //say()<<"ROLLBACK";
-    sim_state &sim_me = ::sim_me;
-    
-    // accumulates list of cd's needing rollback
-    cd_state *cds_anti_head = nullptr;
-    
-    rollback_cd: {
-      int rolled_n;
-      
-      { // walk backwards to unexecute
-        int i = 0;
-        int past_n = cd->past_events.size();
-        while(i < past_n) {
-          local_event le = cd->past_events.at_backwards(i);
-          if(le.tid < new_now)
-            break;
-          le.e->vtbl2->unexecute(le.e);
-          i += 1;
-        }
-        rolled_n = i;
-      }
-      
-      { // walk forwards to remove
-        int i = rolled_n;
-        while(i-- > 0) {
-          local_event le = cd->past_events.at_backwards(i);
-          //say()<<"le.t="<<le.tid.first;
-          // walk "sent" list of this event
-          event *sent = le.e->sent_head;
-          
-          while(sent != nullptr) {
-            event *sent_next = sent->sent_next;
-            event_tid sent_tid = sent->tid();
-            
-            if(sent->target_rank != world::rank_me()) { // event sent to remote
-              // send anti-message
-              int target_cd = sent->target_cd;
-              gvt::send(sent->target_rank, sent->time, [=]() {
-                arrive(target_cd, sent, sent_tid, -1);
-              });
-            }
-            else { // event self-sent to this rank
-              cd_state *cd1 = &sim_me.cds[sent->target_cd];
-              
-              if(sent_tid <= cd1->was()) {
-                if(cd != cd1) {
-                  // since target cd is different we remember to rollback later
-                  if(cd1->anti_least == nullptr) {
-                    cd1->anti_least = sent;
-                    // register cd1 as needing rollback
-                    cd1->anti_next = cds_anti_head;
-                    cds_anti_head = cd1;
-                  }
-                  else if(sent_tid < cd1->anti_least->tid())
-                    cd1->anti_least = sent;
-                }
-                
-                sent->existence = -1; // mark event for removal
-              }
-              else { // can remove now, hasn't executed
-                cd1->future_events.erase({sent, sent_tid});
-                sim_me.cds_by_now.increased({cd1, cd1->now()});
-                sent->vtbl1->destruct_and_delete(sent);
-              }
-            }
-            
-            sent = sent_next;
-          }
-          
-          if(le.e->existence == -1) {
-            ASSERT(le.e->target_rank == world::rank_me() &&
-                   &sim_me.cds[le.e->target_cd] == cd);
-            le.e->vtbl1->destruct_and_delete(le.e);
-          }
-          else {
-            cd->future_events.insert(le);
-            sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
-          }
-        }
-      }
-      
-      cd->past_events.chop_back(rolled_n);
-      if(cd->past_events.size() == 0)
-        sim_me.cds_by_dawn.increased({cd, end_of_time.first});
-    }
-    
-    // look for another `cd` that needs rollback
-    if(cds_anti_head != nullptr) {
-      cd = cds_anti_head;
-      cds_anti_head = cd->anti_next;
-      new_now = cd->anti_least->tid();
-      cd->anti_least = nullptr;
-      goto rollback_cd;
-    }
-  }
   
   void lookahead_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
     unsigned r = round++;
@@ -303,6 +188,157 @@ void pdes::root_event(int cd_ix, event *e) {
   sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
 }
 
+void pdes::arrive_far(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
+  sim_state &sim_me = ::sim_me;
+
+  event *&spot = sim_me.from_far_map[e_tid];
+
+  if(existence_delta == 1)
+    spot = e;
+  else
+    e = spot;
+  
+  arrive(cd_ix, e, e_tid, existence_delta);
+
+  if(e->existence == 0) {
+    sim_me.from_far_map.erase(e_tid);
+    delete e;
+  }
+}
+
+namespace {
+  void arrive(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
+    sim_state &sim_me = ::sim_me;
+    cd_state *cd = &sim_me.cds[cd_ix];
+
+    int8_t existence0 = e->existence;
+    int8_t existence1 = e->existence + existence_delta;
+    
+    if(e_tid <= cd->was()) {
+      if(existence0 >= 0 && existence1 >= 0)
+        rollback(cd, e_tid);
+    }
+
+    e->existence = existence1;
+    
+    if(existence0 > 0 || existence1 > 0) {
+      if(existence1 > 0) {
+        cd->future_events.insert({e, e_tid});
+        sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+      }
+      else {
+        cd->future_events.erase({e, e_tid});
+        sim_me.cds_by_now.increased({cd, cd->now()});
+      }
+    }
+  }
+
+  // makes `since` the new `now`
+  void rollback(cd_state *cd, event_tid new_now) {
+    //say()<<"ROLLBACK";
+    sim_state &sim_me = ::sim_me;
+    
+    // accumulates list of cd's needing rollback
+    cd_state *cds_anti_head = nullptr;
+    
+    rollback_cd: {
+      int rolled_n;
+      
+      { // walk backwards to unexecute
+        int i = 0;
+        int past_n = cd->past_events.size();
+        while(i < past_n) {
+          local_event le = cd->past_events.at_backwards(i);
+          if(le.tid < new_now)
+            break;
+          le.e->vtbl2->unexecute(le.e);
+          i += 1;
+        }
+        rolled_n = i;
+      }
+      
+      { // walk forwards to remove
+        int i = rolled_n;
+        while(i-- > 0) {
+          local_event le = cd->past_events.at_backwards(i);
+          //say()<<"le.t="<<le.tid.first;
+
+          // walk far-sent events
+          for(far_event_tid far: le.e->sent_far) {
+            gvt::send_remote(far.rank, /*time*/far.tid.second, [=]() {
+              arrive_far(far.cd, nullptr, far.tid, -1);
+            });
+          }
+          
+          // walk near-sent events
+          event *sent = le.e->sent_near_head;
+          while(sent != nullptr) {
+            event *sent_next = sent->sent_near_next;
+            event_tid sent_tid = sent->tid();
+            
+            if(sent->target_rank != world::rank_me()) { // event sent to near-remote
+              // send anti-message
+              int target_cd = sent->target_cd;
+              gvt::send_local(sent->target_rank, sent->time, [=]() {
+                arrive(target_cd, sent, sent_tid, -1);
+              });
+            }
+            else { // event self-sent to this rank
+              cd_state *cd1 = &sim_me.cds[sent->target_cd];
+              
+              if(sent_tid <= cd1->was()) {
+                if(cd != cd1) {
+                  // since target cd is different we remember to rollback later
+                  if(cd1->anti_least == nullptr) {
+                    cd1->anti_least = sent;
+                    // register cd1 as needing rollback
+                    cd1->anti_next = cds_anti_head;
+                    cds_anti_head = cd1;
+                  }
+                  else if(sent_tid < cd1->anti_least->tid())
+                    cd1->anti_least = sent;
+                }
+                
+                sent->existence = -1; // mark event for removal
+              }
+              else { // can remove now, hasn't executed
+                cd1->future_events.erase({sent, sent_tid});
+                sim_me.cds_by_now.increased({cd1, cd1->now()});
+                sent->vtbl1->destruct_and_delete(sent);
+              }
+            }
+            
+            sent = sent_next;
+          }
+
+          if(le.e->existence == -1) {
+            ASSERT(le.e->target_rank == world::rank_me() &&
+                   &sim_me.cds[le.e->target_cd] == cd);
+            le.e->vtbl1->destruct_and_delete(le.e);
+          }
+          else {
+            cd->future_events.insert(le);
+            sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+          }
+        }
+      }
+      
+      cd->past_events.chop_back(rolled_n);
+      if(cd->past_events.size() == 0)
+        sim_me.cds_by_dawn.increased({cd, end_of_time.first});
+    }
+    
+    // look for another `cd` that needs rollback
+    if(cds_anti_head != nullptr) {
+      cd = cds_anti_head;
+      cds_anti_head = cd->anti_next;
+      new_now = cd->anti_least->tid();
+      cd->anti_least = nullptr;
+      goto rollback_cd;
+    }
+  }
+}
+
 void pdes::drain() {
   sim_state &sim_me = ::sim_me;
   
@@ -312,8 +348,8 @@ void pdes::drain() {
   // time-sorted list of all locally created events which were sent away
   intrusive_min_heap<
       event*, std::uint64_t,
-      event::remoted_ix_of, event::time_of>
-    remoted_events;
+      event::remote_near_ix_of, event::time_of>
+    remote_near_events;
 
   gvt::reducibles rxs_acc = {0,0};
   lookahead_state lookahead;
@@ -332,9 +368,9 @@ void pdes::drain() {
         
         rxs_acc.reduce_with(gvt::epoch_reducibles());
         
-        { // delete remotely committed events from previous epoch
-          while(remoted_events.least_key_or(uint64_t(-1)) < gvt_old) {
-            event *e = remoted_events.pop_least();
+        { // delete near-committed events from previous epoch
+          while(remote_near_events.least_key_or(uint64_t(-1)) < gvt_old) {
+            event *e = remote_near_events.pop_least();
             e->vtbl1->destruct_and_delete(e);
           }
         }
@@ -353,8 +389,12 @@ void pdes::drain() {
               
               commit_n += 1;
               le.e->vtbl2->commit(le.e);
-              if(le.e->creator_rank == world::rank_me())
+              
+              if(le.e->creator_rank == world::rank_me()) {
                 le.e->vtbl2->destruct_and_delete(le.e);
+
+                sim_me.from_far_map.erase(le.tid);
+              }
             }
             
             if(commit_n == 0)
@@ -370,7 +410,7 @@ void pdes::drain() {
           rxs_acc = {0,0};
         }
         else if(gvt_old == ~uint64_t(0)) {
-          ASSERT(remoted_events.size() == 0);
+          ASSERT(remote_near_events.size() == 0);
           return;
         }
         
@@ -393,40 +433,45 @@ void pdes::drain() {
         if(cd->past_events.size() == 1)
           sim_me.cds_by_dawn.decreased({cd, cd->dawn()});
 
-        event *sent; {
+        event *sent_near; {
           execute_context_impl cxt;
           cxt.time = le.tid.first;
           cxt.id = le.tid.second;
+          cxt.sent_far = &le.e->sent_far;
+          
           le.e->vtbl2->execute(le.e, cxt);
-          le.e->sent_head = cxt.sent_head;
-          sent = cxt.sent_head;
+          
+          le.e->sent_near_head = cxt.sent_near_head;
+          sent_near = cxt.sent_near_head;
           
           executed_n += 1;
         }
         
-        // walk the `sent` list of the event's execution
-        while(sent != nullptr) {
-          event_tid sent_tid = sent->tid();
-          int sent_cd_ix = sent->target_cd;
-          
-          if(sent->target_rank != world::rank_me()) {
-            gvt::send(sent->target_rank, sent->time, [=]() {
-              arrive(sent_cd_ix, sent, sent_tid, +1);
-            });
+        { // walk the `sent_near` list of the event's execution
+          event *sent = sent_near;
+          while(sent != nullptr) {
+            event_tid sent_tid = sent->tid();
+            int sent_cd_ix = sent->target_cd;
             
-            remoted_events.insert(sent);
-          }
-          else {
-            cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
-            
-            if(cd != sent_cd && sent_tid < sent_cd->was())
-              rollback(sent_cd, sent_tid);
+            if(sent->target_rank != world::rank_me()) {
+              gvt::send_local(sent->target_rank, sent->time, [=]() {
+                arrive(sent_cd_ix, sent, sent_tid, +1);
+              });
+              
+              remote_near_events.insert(sent);
+            }
+            else {
+              cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
+              
+              if(cd != sent_cd && sent_tid < sent_cd->was())
+                rollback(sent_cd, sent_tid);
 
-            sent_cd->future_events.insert({sent, sent_tid});
-            sim_me.cds_by_now.decreased({sent_cd, sent_cd->now_after_future_insert()});
+              sent_cd->future_events.insert({sent, sent_tid});
+              sim_me.cds_by_now.decreased({sent_cd, sent_cd->now_after_future_insert()});
+            }
+            
+            sent = sent->sent_near_next;
           }
-          
-          sent = sent->sent_next;
         }
       }
     }

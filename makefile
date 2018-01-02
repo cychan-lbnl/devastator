@@ -28,13 +28,9 @@ ifeq ($(debug),)
 else
 	override syms := 1
 	override optlev := 0
-	override cgflags += -fsanitize=address
+	ppflags += -DOPNEW_ENABLED=0
+	cgflags += -fsanitize=address
 endif
-
-world ?= threads
-threads ?= 2
-procs ?= 1
-workers ?= 2
 
 # if a better c++ compiler can't be found
 CXX ?= g++
@@ -44,54 +40,64 @@ else
   cxx = $(CXX)
 endif
 
-devastator/tmessage.hxxs = \
+world ?= threads
+threads ?= 2
+procs ?= 1
+workers ?= 2
+
+devastator/tmsg.deps = \
   $(devastator/src)/diagnostic.hxx \
   $(devastator/src)/opnew.hxx \
-  $(devastator/src)/tmessage.hxx
+  $(devastator/src)/opnew_fwd.hxx \
+  $(devastator/src)/tmsg.hxx
 
-devastator/tmessage.cxxs = \
+devastator/tmsg.srcs = \
   $(devastator/src)/diagnostic.cxx \
   $(devastator/src)/opnew.cxx \
-  $(devastator/src)/tmessage.cxx
+  $(devastator/src)/tmsg.cxx
 
-devastator/world_threads.hxxs = \
-  $(devastator/tmessage.hxxs)
+devastator/world_threads.deps = \
+  $(devastator/tmsg.deps)
 
-devastator/world_threads.cxxs = \
-  $(devastator/tmessage.cxxs)
+devastator/world_threads.srcs = \
+  $(devastator/tmsg.srcs)
 
-devastator/world_gasnet.hxxs = \
-  $(devastator/tmessage.hxxs) \
+devastator/world_gasnet.deps = \
+  $(devastator/tmsg.deps) \
+	$(upcxx)/bind.hpp \
 	$(upcxx)/command.hpp \
 	$(upcxx)/diagnostic.hpp \
 	$(upcxx)/packing.hpp \
 	$(upcxx)/reflection.hpp \
 	$(upcxx)/utility.hpp \
-	$(devastator/src)/world_gasnet.hxx
+	$(devastator/src)/world_gasnet.hxx \
+	$(gasnet_fragment)
 
-devastator/world_gasnet.cxxs = \
-  $(devastator/tmessage.cxxs) \
+devastator/world_gasnet.srcs = \
+  $(devastator/tmsg.srcs) \
   $(upcxx)/diagnostic.cpp \
   $(upcxx)/packing.cpp \
   $(devastator/src)/world_gasnet.cxx
 
-devastator/world.hxxs = \
-  $(devastator/world_$(world).hxxs)
+devastator/world.deps = \
+  $(devastator/world_$(world).deps) \
+  $(devastator/src)/reduce.hxx
 
-devastator/world.cxxs = \
-  $(devastator/world_$(world).cxxs)
+devastator/world.srcs = \
+  $(devastator/world_$(world).srcs) \
+  $(devastator/src)/reduce.cxx
 
-devastator/pdes.hxxs = \
+devastator/pdes.deps = \
   $(devastator/src)/intrusive_min_heap.hxx \
 	$(devastator/src)/gvt.hxx \
 	$(devastator/src)/pdes.hxx \
 	$(devastator/src)/queue.hxx \
-	$(devastator/world.hxxs)
+	$(devastator/world.deps)
 
-devastator/pdes.cxxs = \
+devastator/pdes.srcs = \
   $(devastator/src)/pdes.cxx \
   $(devastator/src)/gvt.cxx \
-  $(devastator/world.cxxs)
+  $(devastator/world.srcs)
 
 
 ########################################################################
@@ -114,17 +120,17 @@ endif
 
 ppflags += -I$(devastator)/src
 
-override cgflags += -O$(optlev) $(if $(syms),-g,)
+cgflags += -O$(optlev) $(if $(syms),-g,)
 
 
 ########################################################################
 
-exe.hxxs = $($(app).hxxs)
-exe.cxxs = $(shell python -c "import sys; sys.stdout.write(' '.join(sorted(set('$($(app).cxxs)'.split()))))")
+exe.deps = $($(app).deps)
+exe.srcs = $(shell python -c "import sys; sys.stdout.write(' '.join(sorted(set('$($(app).srcs)'.split()))))")
 
 exe_name.0 = exe/$(app).$(world)
 ifeq ($(world),gasnet)
-	exe_name.1 = $(procs)-$(workers)
+	exe_name.1 = $(procs)x$(workers)
 else
 	exe_name.1 = $(threads)
 endif
@@ -135,14 +141,14 @@ exe_name = $(exe_name.0).$(exe_name.1).$(exe_name.2)
 ########################################################################
 
 .SECONDARY:
-#.PHONY: executable
+.PHONY: executable
 executable: $(exe_name)
 
 exe:
 	mkdir -p exe
 
-$(exe_name): makefile exe $(exe.cxxs) $(exe.hxxs)
-	$(cxx) -std=c++11 $(ppflags) $(cgflags) $(exe.cxxs) -o $(exe_name) $(libflags)
+$(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile
+	$(cxx) -std=c++14 $(ppflags) $(cgflags) $(exe.srcs) -o $(exe_name) $(libflags)
 
 .PHONY: run
 run: $(exe_name)
@@ -151,3 +157,4 @@ run: $(exe_name)
 .POHNY: clean
 clean:
 	rm -rf exe
+	rm -rf $(devastator)/ext/gasnet/{install.*,build.*,GASNet*}

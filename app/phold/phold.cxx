@@ -36,7 +36,7 @@ struct rng_state {
   }
 };
 
-constexpr int actor_n = 4;
+constexpr int actor_n = 1000;
 constexpr int actor_per_rank = (actor_n + rank_n-1)/rank_n;
 constexpr double percent_remote = .5;
 constexpr double lambda = 100;
@@ -48,50 +48,24 @@ thread_local uint64_t check[actor_per_rank];
 struct event {
   int ray;
   int actor;
-  rng_state state_prev;
-  uint64_t check_prev, check_next;
-
-  std::unique_ptr<void**[]> poo;
   
   event(int ray, int actor):
     ray{ray}, actor(actor) {
-
-    poo.reset(new void**[1<<12]);
-    for(int i=0; i < 1<<12; i++) {
-      poo[i] = new void*;
-      *poo[i] = poo[i];
-    }
   }
 
-  void kill_poo() {
-    if(poo) {
-      for(int i=0; i < 1<<12; i++) {
-        ASSERT(poo[i] == *poo[i]);
-        delete poo[i];
-      }
-      poo.reset();
-    }
-  }
-  
-  event(event&&) = default;
-  ~event() {
-    kill_poo();
-  }
-  
-  void execute(pdes::execute_context &cxt) {
+  // only member is execute, unexecute is now a lambda returned by execute
+  auto execute(pdes::execute_context &cxt) {
     //say() << "execute "<<actor;
-    kill_poo();
     
     int a = this->actor % actor_per_rank;
     
     rng_state &rng = state_cur[a];
-    this->state_prev = rng;
-    
-    this->check_prev = check[a];
+    rng_state state_prev = rng;
+
+    auto check_prev = check[a];
     check[a] ^= check[a]>>31;
     check[a] *= 0xdeadbeef;
     check[a] += ray;
-    this->check_next = check[a];
     
     uint64_t dt = (uint64_t)(-lambda * std::log(1.0 - double(rng())/double(-1ull)));
     
@@ -107,21 +81,17 @@ struct event {
         /*cd=*/actor_to%actor_per_rank,
         /*time=*/cxt.time + 1 + dt,
         /*id=*/cxt.id,
-        std::move(event{ray, actor_to})
+        event{ray, actor_to}
       );
     }
-  }
-
-  void unexecute() {
-    //say() << "unexecute "<<actor;
-    int a = actor % actor_per_rank;
-    ASSERT(check_next == check[a]);
-    state_cur[a] = this->state_prev;
-    check[a] = this->check_prev;
-  }
-
-  void commit() {
-    //say() << "commit "<<actor;
+    
+    // return the unexecute lambda
+    return [=](event *me) {
+      //say() << "unexecute "<<me->actor;
+      int a = me->actor % actor_per_rank;
+      state_cur[a] = state_prev;
+      check[a] = check_prev;  
+    };
   }
 };
 
@@ -133,14 +103,11 @@ uint64_t checksum() {
   for(int a=a_lb; a < a_ub; a++) {
     lacc ^= check[a - a_lb];
   }
-  
-  static atomic<uint64_t> gacc{0};
-  
-  gacc.fetch_xor(lacc);
-  world::barrier();
+
+  uint64_t gacc = world::reduce_xor(lacc);
   
   if(rank_me() == 0)
-    say() << "checksum = "<< gacc.load();
+    say() << "checksum = "<< gacc;
 }
 
 int main() {
