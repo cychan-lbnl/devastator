@@ -1,4 +1,5 @@
 SHELL = bash
+export
 
 ########################################################################
 
@@ -104,16 +105,16 @@ devastator/pdes.srcs = \
 
 ifeq ($(world),gasnet)
 	include $(devastator)/ext/gasnet/makefile
-
-	ppflags += -DWORLD_GASNET
-	ppflags += -DPROCESS_N=$(procs)
-	ppflags += -DWORKER_N=$(workers)
-	ppflags += $(GASNET_CXXCPPFLAGS)
+	
+	ppflags = -DWORLD_GASNET \
+	          -DPROCESS_N=$(procs) \
+	          -DWORKER_N=$(workers) \
+	          $(GASNET_CXXCPPFLAGS)
 	
 	libflags = $(GASNET_LIBS) -pthread
 else
-	ppflags += -DWORLD_THREADS
-	ppflags += -DRANK_N=$(threads)
+	ppflags = -DWORLD_THREADS \
+	          -DRANK_N=$(threads)
 	
 	libflags = -pthread
 endif
@@ -142,14 +143,23 @@ exe_name = $(exe_name.0).$(exe_name.1).$(exe_name.2)
 
 .SECONDARY:
 .PHONY: executable
-executable: $(exe_name)
+executable:
+	@$(MAKE) $(foreach x,$(ext_makeparts) makefile,-f $(x)) $(exe_name)
 
 exe:
-	mkdir -p exe
+	@mkdir -p exe
 
-$(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile
+$(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile $(ext_makeparts)
 	$(cxx) -std=c++14 $(ppflags) $(cgflags) $(exe.srcs) -o $(exe_name) $(libflags)
 
 .PHONY: run
 run: $(exe_name)
 	./$(exe_name)
+
+.PHONY: clean
+clean:
+	rm -rf exe
+
+.PHONY: deepclean
+deepclean: clean
+	rm -rf $(devastator)/ext/gasnet/{install.*,build.*,source}

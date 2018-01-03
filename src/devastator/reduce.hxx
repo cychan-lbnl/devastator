@@ -83,5 +83,15 @@ namespace world {
   T reduce_xor(T val) {
     return reduce(val, [](T &acc, T x) { acc ^= x; });
   }
+
+  template<typename T>
+  T reduce_min(T val) {
+    return reduce(val, [](T &acc, T x) { acc = std::min(acc, x); });
+  }
+
+  template<typename T>
+  T reduce_max(T val) {
+    return reduce(val, [](T &acc, T x) { acc = std::max(acc, x); });
+  }
 }
 #endif

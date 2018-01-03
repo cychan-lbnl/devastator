@@ -14,32 +14,33 @@ gasnet_config_args += --disable-parsync --disable-par
 gasnet_config_args += --disable-mpi --disable-udp
 
 ifeq ($(NERSC_HOST),)
-  gasnet_fragment = $(gasnet_install)/include/smp-conduit/smp-seq.mak
+  gasnet_makepart = $(gasnet_install)/include/smp-conduit/smp-seq.mak
 else
-  gasnet_fragment = $(gasnet_install)/include/aries-conduit/aries-seq.mak
+  gasnet_makepart = $(gasnet_install)/include/aries-conduit/aries-seq.mak
 endif
 
 #gasnet_config_env += CXXFLAGS="$(cgflags)"
 
-$(gasnet_fragment): $(devastator)/ext/gasnet/makefile
+$(gasnet_makepart): $(devastator)/ext/gasnet/makefile
 	@cd $(devastator)/ext/gasnet; \
 	wget -O $(gasnet_tgz) $(gasnet_url); \
 	rm -rf $(gasnet_src); \
 	tar xzf $(gasnet_tgz); \
+	mv $(gasnet_src) source; \
 	rm -rf $(gasnet_tgz) build; \
 	mkdir build.$(gasnet_suffix); \
 	case "$$NERSC_HOST" in \
 	edison|cori) \
-		cd $(gasnet_src); \
+		cd source; \
 		ln -sf other/contrib/cross-configure-cray-aries-slurm .; \
 		cd ../build.$(gasnet_suffix); \
-		$(gasnet_config_env) ../$(gasnet_src)/cross-configure-cray-aries-slurm $(gasnet_config_args); \
+		$(gasnet_config_env) ../source/cross-configure-cray-aries-slurm $(gasnet_config_args); \
 		make install; \
 		echo "Built GASNet for NERSC=$$NERSC_HOST"; \
 		;; \
 	*) \
 		cd build.$(gasnet_suffix); \
-		CXX=$(cxx) $(gasnet_config_env) ../$(gasnet_src)/configure $(gasnet_config_args); \
+		CXX=$(cxx) $(gasnet_config_env) ../source/configure $(gasnet_config_args); \
 		make install; \
 		echo "Built GASNet."; \
 		;; \
@@ -47,4 +48,4 @@ $(gasnet_fragment): $(devastator)/ext/gasnet/makefile
 	cd ..; \
 	echo;
 
-include $(gasnet_fragment)
+ext_makeparts += $(gasnet_makepart)
