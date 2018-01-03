@@ -2,7 +2,7 @@ gasnet_src = GASNet-EX-collaborator-snapshot
 gasnet_tgz = $(gasnet_src).tar.gz
 gasnet_url = http://mantis.lbl.gov/nightly/unlisted/$(gasnet_tgz)
 
-gasnet_suffix = $(if $(debug),debug,fast)
+gasnet_suffix = $(if $(NERSC_HOST),$(NERSC_HOST).,)$(if $(debug),debug,fast)
 
 gasnet_install := ext/gasnet/install.$(gasnet_suffix)
 gasnet_install_abs := $(shell cd $(devastator); pwd)/$(gasnet_install)

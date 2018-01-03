@@ -40,7 +40,7 @@ constexpr int actor_n = 1000;
 constexpr int actor_per_rank = (actor_n + rank_n-1)/rank_n;
 constexpr double percent_remote = .5;
 constexpr double lambda = 100;
-constexpr uint64_t end_time = uint64_t(20*lambda);
+constexpr uint64_t end_time = uint64_t(2000*lambda);
 
 thread_local rng_state state_cur[actor_per_rank];
 thread_local uint64_t check[actor_per_rank];

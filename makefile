@@ -23,7 +23,7 @@ optlev ?= 3
 
 ifeq ($(debug),)
 	ifeq ($(optlev),3)
-		override cgflags += -flto
+		cgflags += -flto
 	endif
 else
 	override syms := 1
@@ -40,9 +40,9 @@ else
   cxx = $(CXX)
 endif
 
-world ?= threads
+world ?= $(if $(NERSC_HOST),gasnet,threads)
 threads ?= 2
-procs ?= 1
+procs ?= 2
 workers ?= 2
 
 devastator/tmsg.deps = \
@@ -153,8 +153,3 @@ $(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile
 .PHONY: run
 run: $(exe_name)
 	./$(exe_name)
-
-.POHNY: clean
-clean:
-	rm -rf exe
-	rm -rf $(devastator)/ext/gasnet/{install.*,build.*,GASNet*}

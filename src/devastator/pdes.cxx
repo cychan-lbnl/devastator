@@ -264,7 +264,10 @@ namespace {
           //say()<<"le.t="<<le.tid.first;
 
           // walk far-sent events
-          for(far_event_tid far: le.e->sent_far) {
+          while(!le.e->sent_far.empty()) {
+            far_event_tid far = le.e->sent_far.front();
+            le.e->sent_far.pop_front();
+            
             gvt::send_remote(far.rank, /*time*/far.tid.second, [=]() {
               arrive_far(far.cd, nullptr, far.tid, -1);
             });

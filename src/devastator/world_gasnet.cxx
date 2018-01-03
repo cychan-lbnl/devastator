@@ -87,6 +87,8 @@ namespace {
   void init_gasnet() {
     #if GASNET_CONDUIT_SMP
       setenv("GASNET_PSHM_NODES", std::to_string(world::process_n).c_str(), 1);
+    #elif GASNET_CONDUIT_ARIES
+      setenv("GASNET_NETWORKDEPTH", "64", 1);
     #endif
     
     int ok;
@@ -317,6 +319,7 @@ namespace {
                   std::size_t committed_size = 0;
                   int committed_workers = 0;
                   int potential_workers = 0;
+                  int committed_msgs = 0;
                   
                   for(int worker=0; worker < world::worker_n; worker++) {
                     remote_out_message *rm_tail = bun->tail[worker];
@@ -344,12 +347,13 @@ namespace {
                         laytmp = w.layout();
                         laytmp.add_bytes(8*rm->size8, 8);
                         if(uint16_t(*msg_n + 1) == 0 || laytmp.size() > amlen) {
-                          ASSERT(*msg_n > 0); // message size exceeds AM-Medium!
+                          ASSERT(committed_msgs > 0); // message size exceeds AM-Medium!
                           goto am_full;
                         }
                         
                         committed_size = laytmp.size();
                         committed_workers = potential_workers;
+                        committed_msgs += 1;
                         *msg_n += 1;
                         *size8 += rm->size8;
                         bun->size8 -= rm->size8;
@@ -376,7 +380,7 @@ namespace {
                     bun_head = proc;
                   }
 
-                  //say()<<"sending AM to "<<proc<<" sz="<<committed_size/8<<" wn="<<committed_workers;
+                  //say()<<"sending AM to "<<proc<<" sz="<<committed_size/8<<" msgs="<<committed_msgs;
                   gex_AM_CommitRequestMedium1(sd, id_am_worker, committed_size, committed_workers);
 
                   proc = proc_next;
