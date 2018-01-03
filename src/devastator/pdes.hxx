@@ -99,11 +99,12 @@ namespace pdes {
     }
     static void unexecute(event *me1) {
       auto *me = static_cast<event_impl<E>*>(me1);
-      me->unex(&me->exec);
+      me->unex(me->exec);
     }
     static void commit(event *me1) {
       auto *me = static_cast<event_impl<E>*>(me1);
       me->unex.~Unex();
+      me->exec.commit();
     }
     
     static constexpr event_vtable the_vtable = {

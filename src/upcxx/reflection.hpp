@@ -18,9 +18,8 @@
  *   int foo;
  *   float bar;
  *   
- *   // `Me` will either be `my_type` or `const my_type`.
- *   template<typename Re, typename Me>
- *   static void reflect(Re &re, Me &me) {
+ *   template<typename Re>
+ *   friend void reflect(Re &re, my_type &me) {
  *     re(me.foo);
  *     re(me.bar);
  *   }
@@ -30,8 +29,8 @@
 // The default ADL method for reflection just considers its subject
 // entirely opaque.
 template<typename Reflector, typename Subject>
-inline void reflect(Reflector &re, Subject &&x) {
-  re.opaque(std::forward<Subject>(x));
+inline void reflect(Reflector &re, Subject &x) {
+  re.opaque(x);
 }
 
 namespace upcxx {
@@ -42,7 +41,7 @@ namespace upcxx {
   struct reflection {
     template<typename Reflector, typename Subject1>
     void operator()(Reflector &re, Subject1 &&subj) {
-      reflect(re, subj);
+      reflect(re, const_cast<typename std::decay<Subject1>::type&>(subj));
     }
   };
   

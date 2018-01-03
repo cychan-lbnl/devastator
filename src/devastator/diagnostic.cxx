@@ -8,7 +8,20 @@ namespace {
   std::mutex lock_;
 }
 
-void dbgbrk() {}
+#if WORLD_GASNET
+  #include <gasnetex.h>
+  #include <gasnet_tools.h>
+
+  extern "C" {
+    volatile int dbgflag;
+  }
+
+  void dbgbrk() {
+    gasnett_freezeForDebuggerNow(&dbgflag, "dbgflag");
+  }
+#else
+  void dbgbrk() {}
+#endif
 
 void assert_failed(const char *file, int line) {
   lock_.lock();

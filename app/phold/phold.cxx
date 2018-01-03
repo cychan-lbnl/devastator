@@ -48,14 +48,34 @@ thread_local uint64_t check[actor_per_rank];
 struct event {
   int ray;
   int actor;
+  std::vector<int> devil;
   
   event(int ray, int actor):
     ray{ray}, actor(actor) {
+    devil.resize(3);
+    devil[0]= 6;
+    devil[1]= 6;
+    devil[2]= 6;
   }
 
+  template<typename Re>
+  friend void reflect(Re &re, event &me) {
+    re(me.ray);
+    re(me.actor);
+    re(me.devil);
+  }
+
+  void sane(const char *file, int line) {
+    bool ok = true;
+    ok &= (devil.size()==3);
+    ok &= (devil[0]==6 && devil[1]==6 && devil[2]==6);
+    if(!ok) assert_failed(file, line);
+  }
+  
   // only member is execute, unexecute is now a lambda returned by execute
   auto execute(pdes::execute_context &cxt) {
     //say() << "execute "<<actor;
+    sane(__FILE__,__LINE__);
     
     int a = this->actor % actor_per_rank;
     
@@ -86,13 +106,15 @@ struct event {
     }
     
     // return the unexecute lambda
-    return [=](event *me) {
-      //say() << "unexecute "<<me->actor;
-      int a = me->actor % actor_per_rank;
+    return [=](event &me) {
+      //say() << "unexecute "<<me.actor;
+      int a = me.actor % actor_per_rank;
       state_cur[a] = state_prev;
       check[a] = check_prev;  
     };
   }
+
+  void commit() {}
 };
 
 uint64_t checksum() {

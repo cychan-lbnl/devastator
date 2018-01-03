@@ -21,6 +21,8 @@ ifeq ($(syms),0)
 endif
 
 optlev ?= 3
+ppflags =
+cgflags =
 
 ifeq ($(debug),)
 	ifeq ($(optlev),3)
@@ -30,7 +32,7 @@ else
 	override syms := 1
 	override optlev := 0
 	ppflags += -DOPNEW_ENABLED=0
-	cgflags += -fsanitize=address
+	#cgflags += -fsanitize=address
 endif
 
 # if a better c++ compiler can't be found
