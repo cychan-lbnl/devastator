@@ -1,7 +1,6 @@
 #include "world_gasnet.hxx"
 
-#include <gasnetex.h>
-//#include <gasnet.h>
+#include <gasnet.h>
 
 #include <atomic>
 #include <cstdlib>
