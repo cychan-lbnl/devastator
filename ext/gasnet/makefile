@@ -24,10 +24,10 @@ endif
 $(gasnet_makepart): $(devastator)/ext/gasnet/makefile
 	@cd $(devastator)/ext/gasnet; \
 	wget -O $(gasnet_tgz) $(gasnet_url); \
-	rm -rf $(gasnet_src); \
+	rm -rf source; \
 	tar xzf $(gasnet_tgz); \
 	mv $(gasnet_src) source; \
-	rm -rf $(gasnet_tgz) build; \
+	rm -rf $(gasnet_tgz) build.$(gasnet_suffix); \
 	mkdir build.$(gasnet_suffix); \
 	case "$$NERSC_HOST" in \
 	edison|cori) \
@@ -48,4 +48,4 @@ $(gasnet_makepart): $(devastator)/ext/gasnet/makefile
 	cd ..; \
 	echo;
 
-ext_makeparts += $(gasnet_makepart)
+build_makefiles += $(gasnet_makepart)

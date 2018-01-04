@@ -102,7 +102,6 @@ devastator/pdes.srcs = \
   $(devastator/src)/gvt.cxx \
   $(devastator/world.srcs)
 
-
 ########################################################################
 
 ifeq ($(world),gasnet)
@@ -122,9 +121,11 @@ else
 endif
 
 ppflags += -I$(devastator)/src
-
 cgflags += -O$(optlev) $(if $(syms),-g,)
 
+ppflags := $($(app).ppflags) $(ppflags)
+cgflags := $($(app).cgflags) $(cgflags)
+libflags := $($(app).libflags) $(libflags)
 
 ########################################################################
 
@@ -145,18 +146,25 @@ exe_name = $(exe_name.0).$(exe_name.1).$(exe_name.2)
 
 .SECONDARY:
 .PHONY: executable
-executable:
-	@$(MAKE) $(foreach x,$(ext_makeparts) makefile,-f $(x)) $(exe_name)
+executable: $(build_makefiles)
+	@build_makefiles= $(MAKE) $(foreach x,$(build_makefiles) makefile,-f $(x)) $(exe_name)
 
 exe:
-	@mkdir -p exe
+	@mkdir exe
+	@ln -sf $(devastator)/run run
 
-$(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile $(ext_makeparts)
-	$(cxx) -std=c++14 $(ppflags) $(cgflags) $(exe.srcs) -o $(exe_name) $(libflags)
+$(exe_name): exe $(exe.srcs) $(exe.deps) $(devastator)/makefile
+	$(cxx) -std=c++14 $(ppflags) $(cgflags) -o $(exe_name) $(exe.srcs) $(libflags)
 
-.PHONY: run
-run: $(exe_name)
-	./$(exe_name)
+.PHONY: cmd-to-%
+cmd-to-%: executable
+	@if [[ $$NERSC_HOST != '' && $(world) == gasnet ]]; then \
+		echo srun -n $(procs) -c $$((1+$(workers))) $(srun_args) ./$(exe_name) 1>&$*; \
+	elif [[ $$NERSC_HOST != '' && $(world) == threads ]]; then \
+		echo srun -n 1 -c $(threads) $(srun_args) ./$(exe_name) 1>&$*; \
+	else \
+		echo ./$(exe_name) 1>&$*; \
+	fi
 
 .PHONY: clean
 clean:
