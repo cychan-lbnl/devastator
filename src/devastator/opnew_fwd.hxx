@@ -4,7 +4,7 @@
 #include <new>
 
 #ifndef OPNEW_ENABLED
-  #define OPNEW_ENABLED 1
+  #define OPNEW_ENABLED !DEBUG
 #endif
 #define OPNEW_DEBUG 0
 

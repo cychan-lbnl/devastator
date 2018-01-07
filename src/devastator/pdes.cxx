@@ -1,12 +1,12 @@
 #include "diagnostic.hxx"
 #include "gvt.hxx"
 #include "pdes.hxx"
+#include "intrusive_map.hxx"
 #include "intrusive_min_heap.hxx"
 #include "queue.hxx"
 
 #include <atomic>
 #include <memory>
-#include <unordered_map>
 
 using namespace pdes;
 using namespace std;
@@ -33,9 +33,18 @@ namespace {
 
   constexpr event_tid end_of_time = {uint64_t(-1), uint64_t(-1)};
 
-  struct event_tid_hasher {
-    size_t operator()(event_tid x) const {
-      return 0xdeadbeef*x.first + x.second;
+  struct event_tid_cd {
+    uint64_t time, id;
+    int cd;
+
+    friend bool operator==(event_tid_cd a, event_tid_cd b) {
+      return a.time == b.time && a.id == b.id && a.cd == b.cd;
+    }
+    static event_tid_cd of(event_on_creator *e) {
+      return {e->time, e->id, e->target_cd};
+    }
+    static size_t hash_of(event_tid_cd const &x) {
+      return 0x9e3779b97f4a7c15u*(0x9e3779b97f4a7c15u*x.time + x.id) + x.cd;
     }
   };
   
@@ -104,14 +113,19 @@ namespace {
         cd_by<&cd_state::by_dawn_ix>::key_of>
       cds_by_dawn;
 
-    std::unordered_map<event_tid, event*, event_tid_hasher> from_far_map;
+    intrusive_map<
+        event_on_creator, event_tid_cd,
+        &event_on_creator::far_next,
+        event_tid_cd::of,
+        event_tid_cd::hash_of>
+      from_far;
   };
   
   thread_local sim_state sim_me;
 
   thread_local bool specialed = false;
 
-  void arrive(int cd_ix, event *e, event_tid tid, int existence_delta);
+  void arrive_near(int cd_ix, event *e, event_tid tid, int existence_delta);
   void rollback(cd_state *cd, event_tid new_now);
   
   void lookahead_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
@@ -183,37 +197,91 @@ void pdes::init(int cds_this_rank) {
 }
 
 void pdes::root_event(int cd_ix, event *e) {
+  e->existence = 1;
   cd_state *cd = &sim_me.cds[cd_ix];
   cd->future_events.insert({e, e->tid()});
   sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
 }
 
+namespace {
+  constexpr event_vtable anti_vtable = {
+    /*destruct_and_delete*/nullptr,
+    /*execute*/nullptr,
+    /*unexecute*/nullptr,
+    /*commit*/nullptr
+  };
+}
+
 void pdes::arrive_far(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
-  sim_state &sim_me = ::sim_me;
-
-  event *&spot = sim_me.from_far_map[e_tid];
-
-  if(existence_delta == 1)
-    spot = e;
-  else
-    e = spot;
+  event_on_creator *e_add = nullptr;
   
-  arrive(cd_ix, e, e_tid, existence_delta);
+  sim_me.from_far.visit(
+    event_tid_cd{e_tid.first, e_tid.second, cd_ix},
+    [&](event_on_creator *o)->event_on_creator* {
+      if(o == nullptr) {
+        if(existence_delta == 1) {
+          // insert event
+          arrive_near(cd_ix, e, e_tid, existence_delta);
+          return e;
+        }
+        else { // insert anti-event
+          o = new event_on_creator;
+          o->vtbl1 = &anti_vtable;
+          o->time = e_tid.first;
+          o->id = e_tid.second;
+          o->target_rank = 0xdeadbeef;
+          o->target_cd = cd_ix;
+          return o;
+        }
+      }
+      else {
+        if(o->vtbl1 == &anti_vtable && existence_delta == 1) {
+          // early annihilation (NOT present with bug)
+          delete o;
+          e->vtbl1->destruct_and_delete(e);
+          return nullptr;
+        }
+        else if(o->vtbl1 != &anti_vtable && existence_delta == -1) {
+          // late anninilation
+          arrive_near(cd_ix, static_cast<event*>(o), e_tid, existence_delta);
+          o->vtbl1->destruct_and_delete(static_cast<event*>(o));
+          return nullptr;
+        }
+        else { // multiplicity (NOT present with bug)
+          if(existence_delta == 1) {
+            // event multiplicity
+            arrive_near(cd_ix, e, e_tid, existence_delta);
+            e_add = e;
+            return o;
+          }
+          else {
+            // anti-event multiplicity
+            e_add = new event_on_creator;
+            e_add->vtbl1 = &anti_vtable;
+            e_add->time = e_tid.first;
+            e_add->id = e_tid.second;
+            e_add->target_rank = 0xdeadbeef;
+            e_add->target_cd = cd_ix;
+            return o;
+          }
+        }
+      }
+    }
+  );
 
-  if(e->existence == 0) {
-    sim_me.from_far_map.erase(e_tid);
-    delete e;
+  if(e_add) {
+    sim_me.from_far.insert(e_add);
   }
 }
 
 namespace {
-  void arrive(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
+  void arrive_near(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
     sim_state &sim_me = ::sim_me;
     cd_state *cd = &sim_me.cds[cd_ix];
 
     int8_t existence0 = e->existence;
     int8_t existence1 = e->existence + existence_delta;
-    
+
     if(e_tid <= cd->was()) {
       if(existence0 >= 0 && existence1 >= 0)
         rollback(cd, e_tid);
@@ -221,7 +289,7 @@ namespace {
 
     e->existence = existence1;
     
-    if(existence0 > 0 || existence1 > 0) {
+    if(existence0 >= 0 && existence1 >= 0) {
       if(existence1 > 0) {
         cd->future_events.insert({e, e_tid});
         sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
@@ -232,8 +300,7 @@ namespace {
       }
     }
   }
-
-  // makes `since` the new `now`
+  
   void rollback(cd_state *cd, event_tid new_now) {
     //say()<<"ROLLBACK";
     sim_state &sim_me = ::sim_me;
@@ -283,7 +350,7 @@ namespace {
               // send anti-message
               int target_cd = sent->target_cd;
               gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive(target_cd, sent, sent_tid, -1);
+                arrive_near(target_cd, sent, sent_tid, -1);
               });
             }
             else { // event self-sent to this rank
@@ -394,9 +461,11 @@ void pdes::drain() {
               le.e->vtbl2->commit(le.e);
               
               if(le.e->creator_rank == world::rank_me()) {
+                // We report as the creator of events which were sent from a
+                // far since we actually allocated and constructed them.
+                sim_me.from_far.remove(le.e);
+                
                 le.e->vtbl2->destruct_and_delete(le.e);
-
-                sim_me.from_far_map.erase(le.tid);
               }
             }
             
@@ -458,12 +527,14 @@ void pdes::drain() {
             
             if(sent->target_rank != world::rank_me()) {
               gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive(sent_cd_ix, sent, sent_tid, +1);
+                arrive_near(sent_cd_ix, sent, sent_tid, +1);
               });
               
               remote_near_events.insert(sent);
             }
             else {
+              sent->existence = 1;
+              
               cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
               
               if(cd != sent_cd && sent_tid < sent_cd->was())

@@ -4,7 +4,12 @@
 #include <iostream>
 #include <mutex>
 
-#define ASSERT(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
+#if 1 || DEBUG
+  #define ASSERT(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
+#else
+  #define ASSERT(ok) ((void)0)
+#endif
+
 #define ASSERT_ALWAYS(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
 
 void assert_failed(const char *file, int line);

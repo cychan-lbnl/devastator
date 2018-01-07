@@ -28,11 +28,14 @@ ifeq ($(debug),)
 	ifeq ($(optlev),3)
 		cgflags += -flto
 	endif
+	ppflags += -DOPNEW_ENABLED=0
+	ppflags += -DDEBUG=1
+	#cgflags += -fsanitize=address
 else
 	override syms := 1
 	override optlev := 0
-	ppflags += -DOPNEW_ENABLED=0
-	#cgflags += -fsanitize=address
+	ppflags += -DDEBUG=1
+	cgflags += -fsanitize=address
 endif
 
 # if a better c++ compiler can't be found
@@ -107,15 +110,15 @@ devastator/pdes.srcs = \
 ifeq ($(world),gasnet)
 	include $(devastator)/ext/gasnet/makefile
 	
-	ppflags = -DWORLD_GASNET \
-	          -DPROCESS_N=$(procs) \
-	          -DWORKER_N=$(workers) \
-	          $(GASNET_CXXCPPFLAGS)
+	ppflags += -DWORLD_GASNET \
+	           -DPROCESS_N=$(procs) \
+	           -DWORKER_N=$(workers) \
+	           $(GASNET_CXXCPPFLAGS)
 	
 	libflags = $(GASNET_LIBS) -pthread
 else
-	ppflags = -DWORLD_THREADS \
-	          -DRANK_N=$(threads)
+	ppflags += -DWORLD_THREADS \
+	           -DRANK_N=$(threads)
 	
 	libflags = -pthread
 endif

@@ -10,8 +10,7 @@
 
 namespace pdes {
   struct execute_context {
-    std::uint64_t time;
-    std::uint64_t id;
+    std::uint64_t time, id;
     
     template<typename E>
     void send(int rank, int cd, std::uint64_t time, std::uint64_t id, E ev);
@@ -21,7 +20,7 @@ namespace pdes {
   void drain();
 
   template<typename E>
-  void root_event(int cd_ix, uint64_t time, uint64_t id, E ev);
+  void root_event(int cd_ix, std::uint64_t time, std::uint64_t id, E ev);
 
   //////////////////////////////////////////////////////////////////////
   // internal
@@ -33,7 +32,9 @@ namespace pdes {
     int cd;
     event_tid tid;
   };
-  
+
+  struct event_on_creator;
+  struct event_on_target;
   struct event;
   
   struct event_vtable {
@@ -43,33 +44,40 @@ namespace pdes {
     void(*commit)(event *me);
   };
 
-  struct event {
+  struct alignas(64) event_on_creator {
     event_vtable const *vtbl1;
     std::uint64_t time;
     std::uint64_t id;
     int target_rank, target_cd;
-    int remote_near_ix;
+    int remote_near_ix = -1;
     event *sent_near_next = nullptr;
+    event_on_creator *far_next;
     
-    alignas(64) // -----------------------------------------------------
+    event_tid tid() const {
+      return {time, id};
+    }
 
+    static event_tid tid_of(event_on_creator *e) {
+      return {e->time, e->id};
+    }
+  };
+  
+  struct alignas(64) event_on_target {
     event_vtable const *vtbl2;
     event *sent_near_head = nullptr;
     std::forward_list<far_event_tid> sent_far;
     int creator_rank;
     std::int8_t existence = 0; // -1,0,+1
-    int future_ix;
-    
+    int future_ix = -1;
+  };
+
+  struct event: event_on_creator, event_on_target {
     event(event_vtable const *vtbl) {
       this->vtbl1 = vtbl;
       this->vtbl2 = vtbl;
       this->creator_rank = world::rank_me();
     }
 
-    event_tid tid() const {
-      return {time, id};
-    }
-    
     static std::uint64_t time_of(event *e) {
       return e->time;
     }
@@ -128,7 +136,8 @@ namespace pdes {
   template<typename E>
   void execute_context::send(
       int rank, int cd,
-      std::uint64_t time, std::uint64_t id,
+      std::uint64_t time,
+      std::uint64_t id,
       E ev
     ) {
     auto *me = static_cast<execute_context_impl*>(this);
@@ -159,7 +168,7 @@ namespace pdes {
         )
       );
 
-      me->sent_far->push_front({rank, cd, {time, id}});
+      me->sent_far->push_front({rank, cd, {time,id}});
     }
   }
 

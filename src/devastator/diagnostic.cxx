@@ -28,6 +28,11 @@ void assert_failed(const char *file, int line) {
   std::cout.flush();
   std::cerr<<"ASSERT FAILED "<<file<<"@"<<line<<"\n";
   lock_.unlock();
+
+  #if DEBUG
+    dbgbrk();
+  #endif
+  
   std::abort();
 }
 

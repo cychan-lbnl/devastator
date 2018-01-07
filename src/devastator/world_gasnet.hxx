@@ -62,7 +62,7 @@ namespace world {
       ub.add_bytes(0, 8);
       upcxx::command_size_ubound(ub, fn);
       
-      void *buf = operator new(ub.size());
+      void *buf = operator new(ub.size_aligned());
       upcxx::parcel_writer w{buf};
       remote_out_message *rm = w.put_trivial_aligned<remote_out_message>({});
       rm->rank = rank;

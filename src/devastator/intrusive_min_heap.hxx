@@ -68,6 +68,7 @@ public:
   
   T pop_least() {
     T ans = this->buf_[0];
+    ix_of(ans) = -1;
     T tmp = this->pop_back();
     this->buf_[0] = tmp;
     ix_of(tmp) = 0;
@@ -89,6 +90,8 @@ public:
       else
         this->increased(ix, tmp1, key_of(tmp1));
     }
+
+    ix_of(x) = -1;
   }
 
   void increased(T x) {

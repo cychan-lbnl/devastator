@@ -86,20 +86,23 @@ struct event {
     check[a] ^= check[a]>>31;
     check[a] *= 0xdeadbeef;
     check[a] += ray;
-    
-    uint64_t dt = (uint64_t)(-lambda * std::log(1.0 - double(rng())/double(-1ull)));
-    
+
+    #if 0
+      uint64_t dt = lambda;
+    #else
+      uint64_t dt = 1 + (uint64_t)(-lambda * std::log(1.0 - double(rng())/double(-1ull)));
+    #endif
     int actor_to;
     if(rng() < uint64_t(percent_remote*double(-1ull)))
       actor_to = int(rng() % actor_n);
     else
       actor_to = actor;
     
-    if(cxt.time + 1 + dt < end_time) {
+    if(cxt.time + dt < end_time) {
       cxt.send(
         /*rank=*/actor_to/actor_per_rank,
         /*cd=*/actor_to%actor_per_rank,
-        /*time=*/cxt.time + 1 + dt,
+        /*time=*/cxt.time + dt,
         /*id=*/cxt.id,
         event{ray, actor_to}
       );
@@ -143,7 +146,7 @@ int main() {
       int cd = actor - actor_lb;
       state_cur[cd] = rng_state{/*seed=*/actor};
       check[cd] = actor;
-      pdes::root_event(cd, 1, actor, event{actor, actor});
+      pdes::root_event(cd, actor, actor, event{actor, actor});
     }
     
     pdes::drain();
