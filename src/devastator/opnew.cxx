@@ -46,7 +46,7 @@ namespace {
   
   thread_local arena *my_arenas = nullptr;
 
-  constexpr int arena_heap_n = log2up((huge_size-1 + page_size-1)/page_size);
+  constexpr int arena_heap_n = 1 + log2up((huge_size-1 + page_size-1)/page_size);
   thread_local intru_heap<arena> arena_heaps[arena_heap_n];
 
   struct remote_thread_bins {
@@ -342,8 +342,8 @@ namespace {
     }
     
     int hp = 2*(t - ((1<<(arena::hole_lev_n-1))-1));
-    OPNEW_ASSERT(hp < page_per_arena);
     hp += a->pmap_is_hole(hp) ? 0 : 1;
+    OPNEW_ASSERT(hp < page_per_arena);
     int hpn = a->pmap_hole_length(hp);
     
     int big_old = a->holes[0];

@@ -23,13 +23,12 @@ endif
 optlev ?= 3
 ppflags =
 cgflags =
+libflags =
 
 ifeq ($(debug),)
 	ifeq ($(optlev),3)
 		cgflags += -flto
 	endif
-	ppflags += -DOPNEW_ENABLED=0
-	ppflags += -DDEBUG=1
 	#cgflags += -fsanitize=address
 else
 	override syms := 1
@@ -115,12 +114,13 @@ ifeq ($(world),gasnet)
 	           -DWORKER_N=$(workers) \
 	           $(GASNET_CXXCPPFLAGS)
 	
-	libflags = $(GASNET_LIBS) -pthread
+	cgflags += -pthread
+	libflags += $(GASNET_LIBS)
 else
 	ppflags += -DWORLD_THREADS \
 	           -DRANK_N=$(threads)
 	
-	libflags = -pthread
+	cgflags += -pthread
 endif
 
 ppflags += -I$(devastator)/src
