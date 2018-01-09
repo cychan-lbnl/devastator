@@ -103,7 +103,7 @@ struct event {
         /*rank=*/actor_to/actor_per_rank,
         /*cd=*/actor_to%actor_per_rank,
         /*time=*/cxt.time + dt,
-        /*id=*/cxt.id,
+        /*digest=*/cxt.digest,
         event{ray, actor_to}
       );
     }

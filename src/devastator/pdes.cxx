@@ -7,9 +7,12 @@
 
 #include <atomic>
 #include <memory>
+#include <utility>
 
 using namespace pdes;
 using namespace std;
+
+thread_local unsigned pdes::event::far_id_bump = 0;
 
 namespace {
   thread_local int cds_on_rank = -1;
@@ -31,32 +34,24 @@ namespace {
     void update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n);
   };
 
-  constexpr event_tid end_of_time = {uint64_t(-1), uint64_t(-1)};
+  constexpr event_tdig end_of_time = {uint64_t(-1), uint64_t(-1)};
 
-  struct event_tid_cd {
-    uint64_t time, id;
-    int cd;
-
-    friend bool operator==(event_tid_cd a, event_tid_cd b) {
-      return a.time == b.time && a.id == b.id && a.cd == b.cd;
-    }
-    static event_tid_cd of(event_on_creator *e) {
-      return {e->time, e->id, e->target_cd};
-    }
-    static size_t hash_of(event_tid_cd const &x) {
-      return 0x9e3779b97f4a7c15u*(0x9e3779b97f4a7c15u*x.time + x.id) + x.cd;
-    }
-  };
+  inline pair<int,unsigned> far_origin_id_of(event_on_creator *e) {
+    return {e->far_origin, e->far_id};
+  }
+  inline size_t far_origin_id_hash(const pair<int,unsigned> &xy) {
+    return size_t(xy.first)*0x9e3779b97f4a7c15u + xy.second;
+  }
   
   struct local_event {
     event *e;
-    event_tid tid;
+    event_tdig tdig;
     
     static int& future_ix_of(local_event le) {
       return le.e->future_ix;
     }
-    static event_tid tid_of(local_event le) {
-      return le.tid;
+    static event_tdig tdig_of(local_event le) {
+      return le.tdig;
     }
   };
 
@@ -65,8 +60,8 @@ namespace {
     queue<local_event> past_events;
     
     intrusive_min_heap<
-        local_event, event_tid,
-        local_event::future_ix_of, local_event::tid_of>
+        local_event, event_tdig,
+        local_event::future_ix_of, local_event::tdig_of>
       future_events;
     
     cd_state *anti_next; // next cd with events to annihilate
@@ -74,8 +69,8 @@ namespace {
 
     int by_now_ix, by_dawn_ix;
     
-    event_tid was() const {
-      return past_events.back_or({nullptr,{0,0}}).tid;
+    event_tdig was() const {
+      return past_events.back_or({nullptr,{0,0}}).tdig;
     }
     uint64_t now() const {
       return future_events.least_key_or(end_of_time).first;
@@ -84,7 +79,7 @@ namespace {
       return future_events.least_key().first;
     }
     uint64_t dawn() const {
-      return past_events.front_or({nullptr, end_of_time}).tid.first;
+      return past_events.front_or({nullptr, end_of_time}).tdig.first;
     }
   };
   
@@ -114,10 +109,10 @@ namespace {
       cds_by_dawn;
 
     intrusive_map<
-        event_on_creator, event_tid_cd,
+        event_on_creator, std::pair<int,unsigned>,
         &event_on_creator::far_next,
-        event_tid_cd::of,
-        event_tid_cd::hash_of>
+        far_origin_id_of,
+        far_origin_id_hash>
       from_far;
   };
   
@@ -125,8 +120,9 @@ namespace {
 
   thread_local bool specialed = false;
 
-  void arrive_near(int cd_ix, event *e, event_tid tid, int existence_delta);
-  void rollback(cd_state *cd, event_tid new_now);
+  void arrive_far_anti(int origin, unsigned far_id);
+  void arrive_near(int cd_ix, event *e, event_tdig tdig, int existence_delta);
+  void rollback(cd_state *cd, event_tdig new_now);
   
   void lookahead_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
     unsigned r = round++;
@@ -199,7 +195,7 @@ void pdes::init(int cds_this_rank) {
 void pdes::root_event(int cd_ix, event *e) {
   e->existence = 1;
   cd_state *cd = &sim_me.cds[cd_ix];
-  cd->future_events.insert({e, e->tid()});
+  cd->future_events.insert({e, e->tdig()});
   sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
 }
 
@@ -212,96 +208,78 @@ namespace {
   };
 }
 
-void pdes::arrive_far(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
-  event_on_creator *e_add = nullptr;
-  
+void pdes::arrive_far(int origin, unsigned far_id, event *e) {
   sim_me.from_far.visit(
-    event_tid_cd{e_tid.first, e_tid.second, cd_ix},
+    {origin, far_id},
     [&](event_on_creator *o)->event_on_creator* {
       if(o == nullptr) {
-        if(existence_delta == 1) {
-          // insert event
-          arrive_near(cd_ix, e, e_tid, existence_delta);
-          return e;
-        }
-        else { // insert anti-event
-          o = new event_on_creator;
-          o->vtbl1 = &anti_vtable;
-          o->time = e_tid.first;
-          o->id = e_tid.second;
-          o->target_rank = 0xdeadbeef;
-          o->target_cd = cd_ix;
-          return o;
-        }
+        // insert event
+        arrive_near(e->target_cd, e, e->tdig(), /*existence_delta=*/1);
+        return e;
       }
       else {
-        if(o->vtbl1 == &anti_vtable && existence_delta == 1) {
-          // early annihilation (NOT present with bug)
-          delete o;
-          e->vtbl1->destruct_and_delete(e);
-          return nullptr;
-        }
-        else if(o->vtbl1 != &anti_vtable && existence_delta == -1) {
-          // late anninilation
-          arrive_near(cd_ix, static_cast<event*>(o), e_tid, existence_delta);
-          o->vtbl1->destruct_and_delete(static_cast<event*>(o));
-          return nullptr;
-        }
-        else { // multiplicity (NOT present with bug)
-          if(existence_delta == 1) {
-            // event multiplicity
-            arrive_near(cd_ix, e, e_tid, existence_delta);
-            e_add = e;
-            return o;
-          }
-          else {
-            // anti-event multiplicity
-            e_add = new event_on_creator;
-            e_add->vtbl1 = &anti_vtable;
-            e_add->time = e_tid.first;
-            e_add->id = e_tid.second;
-            e_add->target_rank = 0xdeadbeef;
-            e_add->target_cd = cd_ix;
-            return o;
-          }
-        }
+        ASSERT(o->vtbl1 == &anti_vtable);
+        // early annihilation (NOT present with bug)
+        delete o;
+        e->vtbl1->destruct_and_delete(e);
+        return nullptr;
       }
     }
   );
-
-  if(e_add) {
-    sim_me.from_far.insert(e_add);
-  }
 }
 
 namespace {
-  void arrive_near(int cd_ix, event *e, event_tid e_tid, int existence_delta) {
+  void arrive_far_anti(int origin, unsigned far_id) {
+    sim_me.from_far.visit(
+      {origin, far_id},
+      [&](event_on_creator *o)->event_on_creator* {
+        if(o != nullptr) {
+          ASSERT(o->vtbl1 != &anti_vtable);
+          // late anninilation
+          auto *o1 = static_cast<event*>(o);
+          arrive_near(o1->target_cd, o1, o1->tdig(), /*existence_delta=*/-1);
+          o1->vtbl1->destruct_and_delete(o1);
+          return nullptr;
+        }
+        else {
+          // insert anti-event
+          o = new event_on_creator;
+          o->vtbl1 = &anti_vtable;
+          o->far_origin = origin;
+          o->far_id = far_id;
+          return o;
+        }
+      }
+    );
+  }
+
+  void arrive_near(int cd_ix, event *e, event_tdig e_tdig, int existence_delta) {
     sim_state &sim_me = ::sim_me;
     cd_state *cd = &sim_me.cds[cd_ix];
 
     int8_t existence0 = e->existence;
     int8_t existence1 = e->existence + existence_delta;
 
-    if(e_tid <= cd->was()) {
+    if(e_tdig <= cd->was()) {
       if(existence0 >= 0 && existence1 >= 0)
-        rollback(cd, e_tid);
+        rollback(cd, e_tdig);
     }
 
     e->existence = existence1;
     
     if(existence0 >= 0 && existence1 >= 0) {
       if(existence1 > 0) {
-        cd->future_events.insert({e, e_tid});
+        cd->future_events.insert({e, e_tdig});
         sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
       }
       else {
-        cd->future_events.erase({e, e_tid});
+        cd->future_events.erase({e, e_tdig});
         sim_me.cds_by_now.increased({cd, cd->now()});
       }
     }
   }
   
-  void rollback(cd_state *cd, event_tid new_now) {
+  void rollback(cd_state *cd, event_tdig new_now) {
     //say()<<"ROLLBACK";
     sim_state &sim_me = ::sim_me;
     
@@ -316,7 +294,7 @@ namespace {
         int past_n = cd->past_events.size();
         while(i < past_n) {
           local_event le = cd->past_events.at_backwards(i);
-          if(le.tid < new_now)
+          if(le.tdig < new_now)
             break;
           le.e->vtbl2->unexecute(le.e);
           i += 1;
@@ -328,15 +306,17 @@ namespace {
         int i = rolled_n;
         while(i-- > 0) {
           local_event le = cd->past_events.at_backwards(i);
-          //say()<<"le.t="<<le.tid.first;
+          //say()<<"le.t="<<le.tdig.first;
 
           // walk far-sent events
           while(!le.e->sent_far.empty()) {
-            far_event_tid far = le.e->sent_far.front();
+            far_event_id far = le.e->sent_far.front();
             le.e->sent_far.pop_front();
-            
-            gvt::send_remote(far.rank, /*time*/far.tid.second, [=]() {
-              arrive_far(far.cd, nullptr, far.tid, -1);
+
+            int origin = world::rank_me();
+            unsigned far_id = far.id;
+            gvt::send_remote(far.rank, far.time, [=]() {
+              arrive_far_anti(origin, far_id);
             });
           }
           
@@ -344,19 +324,19 @@ namespace {
           event *sent = le.e->sent_near_head;
           while(sent != nullptr) {
             event *sent_next = sent->sent_near_next;
-            event_tid sent_tid = sent->tid();
+            event_tdig sent_tdig = sent->tdig();
             
             if(sent->target_rank != world::rank_me()) { // event sent to near-remote
               // send anti-message
               int target_cd = sent->target_cd;
               gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive_near(target_cd, sent, sent_tid, -1);
+                arrive_near(target_cd, sent, sent_tdig, -1);
               });
             }
             else { // event self-sent to this rank
               cd_state *cd1 = &sim_me.cds[sent->target_cd];
               
-              if(sent_tid <= cd1->was()) {
+              if(sent_tdig <= cd1->was()) {
                 if(cd != cd1) {
                   // since target cd is different we remember to rollback later
                   if(cd1->anti_least == nullptr) {
@@ -365,14 +345,14 @@ namespace {
                     cd1->anti_next = cds_anti_head;
                     cds_anti_head = cd1;
                   }
-                  else if(sent_tid < cd1->anti_least->tid())
+                  else if(sent_tdig < cd1->anti_least->tdig())
                     cd1->anti_least = sent;
                 }
                 
                 sent->existence = -1; // mark event for removal
               }
               else { // can remove now, hasn't executed
-                cd1->future_events.erase({sent, sent_tid});
+                cd1->future_events.erase({sent, sent_tdig});
                 sim_me.cds_by_now.increased({cd1, cd1->now()});
                 sent->vtbl1->destruct_and_delete(sent);
               }
@@ -382,7 +362,8 @@ namespace {
           }
 
           if(le.e->existence == -1) {
-            ASSERT(le.e->target_rank == world::rank_me() &&
+            ASSERT(le.e->far_next == reinterpret_cast<event_on_creator*>(0x1) &&
+                   le.e->target_rank == world::rank_me() &&
                    &sim_me.cds[le.e->target_cd] == cd);
             le.e->vtbl1->destruct_and_delete(le.e);
           }
@@ -402,7 +383,7 @@ namespace {
     if(cds_anti_head != nullptr) {
       cd = cds_anti_head;
       cds_anti_head = cd->anti_next;
-      new_now = cd->anti_least->tid();
+      new_now = cd->anti_least->tdig();
       cd->anti_least = nullptr;
       goto rollback_cd;
     }
@@ -454,7 +435,7 @@ void pdes::drain() {
             
             while(commit_n < past_n) {
               local_event le = cd->past_events.at_forwards(commit_n);
-              if(le.tid.first >= gvt_new)
+              if(le.tdig.first >= gvt_new)
                 break;
               
               commit_n += 1;
@@ -463,7 +444,8 @@ void pdes::drain() {
               if(le.e->creator_rank == world::rank_me()) {
                 // We report as the creator of events which were sent from a
                 // far since we actually allocated and constructed them.
-                sim_me.from_far.remove(le.e);
+                if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
+                  sim_me.from_far.remove(le.e);
                 
                 le.e->vtbl2->destruct_and_delete(le.e);
               }
@@ -497,7 +479,7 @@ void pdes::drain() {
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
       local_event le = cd->future_events.peek_least_or({nullptr, end_of_time});
       
-      if(le.tid.first < lookahead.t_ub) {
+      if(le.tdig.first < lookahead.t_ub) {
         cd->future_events.pop_least();
         sim_me.cds_by_now.increased({cd, cd->now()});
         
@@ -507,8 +489,8 @@ void pdes::drain() {
 
         event *sent_near; {
           execute_context_impl cxt;
-          cxt.time = le.tid.first;
-          cxt.id = le.tid.second;
+          cxt.time = le.tdig.first;
+          cxt.digest = le.tdig.second;
           cxt.sent_far = &le.e->sent_far;
           
           le.e->vtbl2->execute(le.e, cxt);
@@ -522,12 +504,12 @@ void pdes::drain() {
         { // walk the `sent_near` list of the event's execution
           event *sent = sent_near;
           while(sent != nullptr) {
-            event_tid sent_tid = sent->tid();
+            event_tdig sent_tdig = sent->tdig();
             int sent_cd_ix = sent->target_cd;
             
             if(sent->target_rank != world::rank_me()) {
               gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive_near(sent_cd_ix, sent, sent_tid, +1);
+                arrive_near(sent_cd_ix, sent, sent_tdig, +1);
               });
               
               remote_near_events.insert(sent);
@@ -537,10 +519,10 @@ void pdes::drain() {
               
               cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
               
-              if(cd != sent_cd && sent_tid < sent_cd->was())
-                rollback(sent_cd, sent_tid);
+              if(cd != sent_cd && sent_tdig < sent_cd->was())
+                rollback(sent_cd, sent_tdig);
 
-              sent_cd->future_events.insert({sent, sent_tid});
+              sent_cd->future_events.insert({sent, sent_tdig});
               sim_me.cds_by_now.decreased({sent_cd, sent_cd->now_after_future_insert()});
             }
             

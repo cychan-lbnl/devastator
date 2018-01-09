@@ -10,27 +10,27 @@
 
 namespace pdes {
   struct execute_context {
-    std::uint64_t time, id;
+    std::uint64_t time, digest;
     
     template<typename E>
-    void send(int rank, int cd, std::uint64_t time, std::uint64_t id, E ev);
+    void send(int rank, int cd, std::uint64_t time, std::uint64_t digest, E ev);
   };
 
   void init(int cds_this_rank);
   void drain();
 
   template<typename E>
-  void root_event(int cd_ix, std::uint64_t time, std::uint64_t id, E ev);
+  void root_event(int cd_ix, std::uint64_t time, std::uint64_t digest, E ev);
 
   //////////////////////////////////////////////////////////////////////
   // internal
 
-  using event_tid = std::pair<std::uint64_t, std::uint64_t>;
+  using event_tdig = std::pair<std::uint64_t, std::uint64_t>;
 
-  struct far_event_tid {
+  struct far_event_id {
     int rank;
-    int cd;
-    event_tid tid;
+    unsigned id;
+    uint64_t time;
   };
 
   struct event_on_creator;
@@ -47,31 +47,38 @@ namespace pdes {
   struct alignas(64) event_on_creator {
     event_vtable const *vtbl1;
     std::uint64_t time;
-    std::uint64_t id;
-    int target_rank, target_cd;
+    std::uint64_t digest;
+    union {
+      int target_rank;
+      int far_origin;
+    };
+    int target_cd;
+    unsigned far_id;
     int remote_near_ix = -1;
     event *sent_near_next = nullptr;
-    event_on_creator *far_next;
+    event_on_creator *far_next = reinterpret_cast<event_on_creator*>(0x1); // 0x1 == not from far
     
-    event_tid tid() const {
-      return {time, id};
+    event_tdig tdig() const {
+      return {time, digest};
     }
 
-    static event_tid tid_of(event_on_creator *e) {
-      return {e->time, e->id};
+    static event_tdig tdig_of(event_on_creator *e) {
+      return {e->time, e->digest};
     }
   };
   
   struct alignas(64) event_on_target {
     event_vtable const *vtbl2;
     event *sent_near_head = nullptr;
-    std::forward_list<far_event_tid> sent_far;
+    std::forward_list<far_event_id> sent_far;
     int creator_rank;
     std::int8_t existence = 0; // -1,0,+1
     int future_ix = -1;
   };
 
   struct event: event_on_creator, event_on_target {
+    static thread_local unsigned far_id_bump;
+    
     event(event_vtable const *vtbl) {
       this->vtbl1 = vtbl;
       this->vtbl2 = vtbl;
@@ -89,7 +96,7 @@ namespace pdes {
 
   struct execute_context_impl: execute_context {
     event *sent_near_head = nullptr;
-    std::forward_list<far_event_tid> *sent_far;
+    std::forward_list<far_event_id> *sent_far;
   };
 
   template<typename E>
@@ -131,13 +138,13 @@ namespace pdes {
   template<typename E>
   constexpr event_vtable event_impl<E>::the_vtable;
 
-  void arrive_far(int cd_ix, event *e, event_tid e_tid, int existence_delta);
+  void arrive_far(int far_origin, unsigned far_id, event *e);
   
   template<typename E>
   void execute_context::send(
       int rank, int cd,
       std::uint64_t time,
-      std::uint64_t id,
+      std::uint64_t digest,
       E ev
     ) {
     auto *me = static_cast<execute_context_impl*>(this);
@@ -147,40 +154,44 @@ namespace pdes {
       e->target_rank = rank;
       e->target_cd = cd;
       e->time = time;
-      e->id = id;
+      e->digest = digest;
       
       e->sent_near_next = me->sent_near_head;
       me->sent_near_head = e;
     }
     else {
+      int origin = world::rank_me();
+      unsigned far_id = event::far_id_bump++;
+      
       gvt::send_remote(rank, time,
         world::bind(
           [=](E &ev) {
             auto *e = new event_impl<E>{std::move(ev)};
-            e->target_rank = rank;
+            e->far_origin = origin;
+            e->far_id = far_id;
             e->target_cd = cd;
             e->time = time;
-            e->id = id;
+            e->digest = digest;
             
-            pdes::arrive_far(cd, e, {time,id}, 1);
+            pdes::arrive_far(origin, far_id, e);
           },
           std::move(ev)
         )
       );
 
-      me->sent_far->push_front({rank, cd, {time,id}});
+      me->sent_far->push_front({rank, far_id, time});
     }
   }
 
   void root_event(int cd_ix, event *e);
   
   template<typename E>
-  void root_event(int cd_ix, std::uint64_t time, std::uint64_t id, E ev) {
+  void root_event(int cd_ix, std::uint64_t time, std::uint64_t digest, E ev) {
     auto *e = new event_impl<E>{std::move(ev)};
     e->target_rank = world::rank_me();
     e->target_cd = cd_ix;
     e->time = time;
-    e->id = id;
+    e->digest = digest;
     root_event(cd_ix, e);
   }
 }
