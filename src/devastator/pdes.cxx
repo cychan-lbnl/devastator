@@ -4,6 +4,7 @@
 #include "intrusive_map.hxx"
 #include "intrusive_min_heap.hxx"
 #include "queue.hxx"
+#include "reduce.hxx"
 
 #include <atomic>
 #include <memory>
@@ -16,6 +17,17 @@ thread_local unsigned pdes::event::far_id_bump = 0;
 
 namespace {
   thread_local int cds_on_rank = -1;
+  
+  struct Counters {
+    size_t exec_n = 0;
+    size_t commit_n = 0;
+    Counters &operator+=(const Counters &that) {
+      this->exec_n += that.exec_n;
+      this->commit_n += that.commit_n;
+      return *this;
+    }
+  };
+  thread_local Counters total_local;
   
   class lookahead_state {
     static constexpr int hist_len = 16; // must be pow2
@@ -455,6 +467,7 @@ void pdes::drain() {
               break;
             
             committed_n += commit_n;
+            total_local.commit_n += commit_n;
             cd->past_events.chop_front(commit_n);
             sim_me.cds_by_dawn.increased({cd, cd->dawn()});
           }
@@ -499,6 +512,7 @@ void pdes::drain() {
           sent_near = cxt.sent_near_head;
           
           executed_n += 1;
+          total_local.exec_n += 1;
         }
         
         { // walk the `sent_near` list of the event's execution
@@ -532,4 +546,9 @@ void pdes::drain() {
       }
     }
   }
+}
+
+pair<size_t, size_t> pdes::get_total_event_counts() {
+  auto total_global = world::reduce_sum(total_local);
+  return make_pair(total_global.exec_n, total_global.commit_n);
 }

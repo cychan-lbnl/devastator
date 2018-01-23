@@ -20,10 +20,15 @@ namespace world {
   }
   
   constexpr int rank_n = tmsg::thread_n;
+  constexpr int process_n = 1;
+  constexpr int worker_n = rank_n;
   constexpr int log2up_rank_n = log2up(rank_n);
 
   inline int rank_me() {
     return tmsg::thread_me();
+  }
+  inline int rank_me_local() {
+    return rank_me();
   }
   
   template<typename Fn>

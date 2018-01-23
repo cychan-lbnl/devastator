@@ -194,6 +194,8 @@ namespace pdes {
     e->digest = digest;
     root_event(cd_ix, e);
   }
+
+  std::pair<size_t, size_t> get_total_event_counts();
 }
 
 #endif

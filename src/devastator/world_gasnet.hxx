@@ -41,6 +41,7 @@ namespace world {
   extern int process_rank_lo_, process_rank_hi_;
   
   inline int rank_me() { return rank_me_; }
+  inline int rank_me_local() { return rank_me() - process_rank_lo_; }
 
   inline bool rank_is_local(int rank) {
     return process_rank_lo_ <= rank && rank < process_rank_hi_;
