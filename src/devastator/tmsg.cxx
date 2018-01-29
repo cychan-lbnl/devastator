@@ -7,7 +7,7 @@
 
 #include <sched.h>
 
-thread_local int tmsg::thread_me_ = 0;
+__thread int tmsg::thread_me_ = 0;
 
 tmsg::active_channels_r<tmsg::thread_n> tmsg::ams_r[thread_n];
 tmsg::active_channels_w<tmsg::thread_n> tmsg::ams_w[thread_n];

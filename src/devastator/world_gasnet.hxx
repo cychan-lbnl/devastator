@@ -37,7 +37,7 @@ namespace world {
   extern tmsg::channels_r<1> remote_recv_chan_r[worker_n];
   extern tmsg::channels_w<worker_n> remote_recv_chan_w;
 
-  extern thread_local int rank_me_;
+  extern __thread int rank_me_;
   extern int process_rank_lo_, process_rank_hi_;
   
   inline int rank_me() { return rank_me_; }

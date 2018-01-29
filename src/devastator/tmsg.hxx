@@ -283,7 +283,7 @@ namespace tmsg {
   extern active_channels_r<thread_n> ams_r[thread_n];
   extern tmsg::active_channels_w<thread_n> ams_w[thread_n];
   
-  extern thread_local int thread_me_;
+  extern __thread int thread_me_;
 
   inline int thread_me() { return thread_me_; }
 

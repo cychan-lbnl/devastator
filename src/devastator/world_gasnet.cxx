@@ -13,7 +13,7 @@
 using world::worker_n;
 using world::remote_out_message;
 
-thread_local int world::rank_me_ = 0xdeadbeef;
+__thread int world::rank_me_ = 0xdeadbeef;
 
 alignas(64)
 int world::process_rank_lo_ = 0xdeadbeef;
