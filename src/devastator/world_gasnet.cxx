@@ -87,7 +87,8 @@ namespace {
     #if GASNET_CONDUIT_SMP
       setenv("GASNET_PSHM_NODES", std::to_string(world::process_n).c_str(), 1);
     #elif GASNET_CONDUIT_ARIES
-      setenv("GASNET_NETWORKDEPTH", "64", 1);
+      // Everyone carves out 1GB and shares it evenly across peers
+      setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string((1<<30)/world::process_n).c_str(), 1);
     #endif
     
     int ok;

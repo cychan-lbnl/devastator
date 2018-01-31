@@ -177,8 +177,8 @@ namespace opnew {
   };
   template<typename T>
   struct intru_heap {
-    T *top = nullptr;
-    std::intptr_t n = 0;
+    T *top; // = nullptr
+    std::intptr_t n; // = 0
     
     void insert(intru_heap_link<T> T::*link_of, T *x);
     T* pop_top(intru_heap_link<T> T::*link_of);
@@ -281,15 +281,24 @@ namespace opnew {
   //////////////////////////////////////////////////////////////////////
 
   struct bin_state {
-    frobj tail{0x0};
-    frobj *head = &tail;
-    std::uintptr_t popn = 0, popn_least = 0;
-    intru_heap<pool> held_pools;
+    frobj tail; // = {0}
+    std::uintptr_t head_xor_tail; // = 0
+    std::uintptr_t popn, popn_least; // = 0,0
+    intru_heap<pool> held_pools; // = {}
 
+    // get head
+    frobj* head() {
+      return reinterpret_cast<frobj*>(head_xor_tail ^ reinterpret_cast<std::uintptr_t>(&tail));
+    }
+    // set head
+    void head(frobj *o) {
+      head_xor_tail = reinterpret_cast<std::uintptr_t>(&tail) ^ reinterpret_cast<std::uintptr_t>(o);
+    }
+    
     void sane() {
       #if OPNEW_DEBUG
         frobj *x, *y;
-        x = head;
+        x = head();
         y = nullptr;
         for(int i=0; i < popn; i++) {
           frobj *z = x->next(y);
@@ -301,9 +310,9 @@ namespace opnew {
     }
   };
 
-  extern thread_local std::uint64_t opcalls;
-  extern thread_local std::uint64_t bins_occupied_mask;
-  extern thread_local bin_state bins[bin_n];
+  extern __thread std::uint64_t opcalls;
+  extern __thread std::uint64_t bins_occupied_mask;
+  extern __thread bin_state bins[bin_n];
 
   //////////////////////////////////////////////////////////////////////
 
@@ -333,9 +342,9 @@ namespace opnew {
     
     if(bin != -1 && bins[bin].popn != 0) {
       bin_state *b = &bins[bin];
-      frobj *o = b->head;
-      b->head = o->next(nullptr);
-      b->head->change_link(o, nullptr);
+      frobj *o = b->head();
+      b->head(o->next(nullptr));
+      b->head()->change_link(o, nullptr);
       b->popn -= 1;
       b->popn_least = std::min(b->popn_least, b->popn);
       
@@ -359,9 +368,9 @@ namespace opnew {
       if((known_local || a->owner_id == tmsg::thread_me()) && bin != -1) {
         bin_state *b = &bins[bin];
         frobj *o = (frobj*)obj;
-        o->set_links(nullptr, b->head);
-        b->head->change_link(nullptr, o);
-        b->head = o;
+        o->set_links(nullptr, b->head());
+        b->head()->change_link(nullptr, o);
+        b->head(o);
         b->popn += 1;
         bins_occupied_mask |= std::uint64_t(1)<<bin;
         

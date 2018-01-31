@@ -47,19 +47,19 @@ namespace {
   thread_local arena *my_arenas = nullptr;
 
   constexpr int arena_heap_n = 1 + log2up((huge_size-1 + page_size-1)/page_size);
-  thread_local intru_heap<arena> arena_heaps[arena_heap_n];
+  __thread intru_heap<arena> arena_heaps[arena_heap_n] {/*{}...*/};
 
   struct remote_thread_bins {
     static constexpr int max_bin_n = 5;
-    int8_t bin_n = 0;
+    int8_t bin_n; // = 0
     int8_t bin[max_bin_n];
     uint8_t popn_minus_one[max_bin_n];
     frobj *head[max_bin_n], *tail[max_bin_n];
-    frobj *rest_head = nullptr;
+    frobj *rest_head; // = nullptr
   };
   
-  thread_local uintptr_t remote_thread_mask[(tmsg::thread_n + 8*sizeof(uintptr_t)-1)/sizeof(uintptr_t)] = {/*0...*/};
-  thread_local remote_thread_bins remote_bins[tmsg::thread_n] {};
+  __thread uintptr_t remote_thread_mask[(tmsg::thread_n + 8*sizeof(uintptr_t)-1)/sizeof(uintptr_t)] = {/*0...*/};
+  __thread remote_thread_bins remote_bins[tmsg::thread_n] {/*{}...*/};
 
   constexpr size_t pool_waste(int bin, int pn) {
     #define bin_sz (size_of_bin(bin))
@@ -90,9 +90,9 @@ namespace {
   constexpr array<int8_t, bin_n> pool_best_pages = make_pool_best_pages(opnew::make_index_sequence<bin_n>());
 }
 
-thread_local uint64_t opnew::bins_occupied_mask = 0;
-thread_local uint64_t opnew::opcalls = 0;
-thread_local bin_state opnew::bins[bin_n];
+__thread uint64_t opnew::bins_occupied_mask = 0;
+__thread uint64_t opnew::opcalls = 0;
+__thread bin_state opnew::bins[bin_n] {/*{}...*/};
 
 void* opnew::operator_new_slow(size_t size) {
   int bin_id = bin_of_size(size);
@@ -101,7 +101,7 @@ void* opnew::operator_new_slow(size_t size) {
   if(bin_id != -1) {
     // bin is empty!
     OPNEW_ASSERT(bin->popn == 0);
-    OPNEW_ASSERT(bin->head == &bin->tail);
+    OPNEW_ASSERT(bin->head() == &bin->tail);
     OPNEW_ASSERT(bin->tail.next_xor_prev == 0);
     int pn = pool_best_pages[bin_id];
     
@@ -137,8 +137,8 @@ void* opnew::operator_new_slow(size_t size) {
       }
       tail->change_link(nullptr, &bin->tail);
       bin->tail.set_links(tail, nullptr);
-      bin->head = head->next(nullptr);
-      bin->head->change_link(head, nullptr);
+      bin->head(head->next(nullptr));
+      bin->head()->change_link(head, nullptr);
       bin->popn = popn - 1;
       bin->sane();
       return (void*)head;
@@ -214,7 +214,7 @@ void opnew::gc_bins() {
       if(o != nullptr)
         o->change_link(oprev, &bin->tail);
       else
-        bin->head = &bin->tail;
+        bin->head(&bin->tail);
     }
     
     bin->popn_least = bin->popn;
@@ -240,9 +240,9 @@ void opnew::flush_remote() {
       tmsg::send(t, [=]() {
         for(int i=0; i < rbins.bin_n; i++) {
           bin_state *bin = &bins[rbins.bin[i]];
-          rbins.tail[i]->change_link(nullptr, bin->head);
-          bin->head->change_link(nullptr, rbins.tail[i]);
-          bin->head = rbins.head[i];
+          rbins.tail[i]->change_link(nullptr, bin->head());
+          bin->head()->change_link(nullptr, rbins.tail[i]);
+          bin->head(rbins.head[i]);
           bin->popn += int(rbins.popn_minus_one[i]) + 1;
           bin->sane();
         }
