@@ -34,7 +34,9 @@ else
 	override syms := 1
 	override optlev := 0
 	ppflags += -DDEBUG=1
-	cgflags += -fsanitize=address
+	ifeq ($(NERSC_HOST),)
+		cgflags += -fsanitize=address
+	endif
 endif
 
 # if a better c++ compiler can't be found
