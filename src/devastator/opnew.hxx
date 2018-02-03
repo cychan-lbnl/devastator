@@ -52,7 +52,8 @@ namespace opnew {
   constexpr int log2dn(unsigned long long x) {
     return 8*sizeof(unsigned long long)-1 - __builtin_clzll(x);
   }
-  template<typename T>
+  template<typename T,
+           typename = typename std::enable_if<std::is_signed<T>::value>::type>
   constexpr int log2dn(T x) {
     return log2dn(typename std::make_unsigned<T>::type(x));
   }
@@ -66,7 +67,8 @@ namespace opnew {
   constexpr int log2up(unsigned long long x) {
     return 8*sizeof(unsigned long long)-1 - __builtin_clzll(x|1) + (x&(x-1) ? 1 : 0);
   }
-  template<typename T>
+  template<typename T,
+           typename = typename std::enable_if<std::is_signed<T>::value>::type>
   constexpr int log2up(T x) {
     return log2up(typename std::make_unsigned<T>::type(x));
   }
@@ -89,7 +91,8 @@ namespace opnew {
   constexpr int bitffs(unsigned long long x) {
     return __builtin_ffsll(x);
   }
-  template<typename T>
+  template<typename T,
+           typename = typename std::enable_if<std::is_signed<T>::value>::type>
   constexpr int bitffs(T x) {
     return bitffs(typename std::make_unsigned<T>::type(x));
   }

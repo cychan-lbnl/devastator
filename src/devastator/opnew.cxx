@@ -265,6 +265,21 @@ void opnew::thread_me_initialized() {
 }
 
 namespace {
+  bool arena_heaps_sane(bool loud=true) {
+    #if 0 || OPNEW_DEBUG
+      for(int hp=0; hp < arena_heap_n; hp++) {
+        arena *a = arena_heaps[hp].top;
+        if(a && !(1<<hp <= a->holes[0])) {
+          if(loud)
+            OPNEW_ASSERT(0);
+          else
+            return false;
+        }
+      }
+    #endif
+    return true;
+  }
+  
   arena* arena_create() {
     void *m = mmap(nullptr, 2*arena_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     uintptr_t u0 = reinterpret_cast<uintptr_t>(m);
@@ -293,6 +308,8 @@ namespace {
     arena_hole_changed(a, 0, page_per_arena);
     
     arena_heaps[arena_heap_n-1].insert(&arena::heap_link, a);
+
+    arena_heaps_sane();
     
     return a;
   }
@@ -300,8 +317,10 @@ namespace {
   /*void arena_destroy(arena *a) {
     munmap((void*)a, arena_size);
   }*/
-  
+
   arena* arena_best(int pn) {
+    arena_heaps_sane();
+    
     int hp = std::min(arena_heap_n-1, log2up(pn));
     uintptr_t best = uintptr_t(-1);
     
@@ -312,8 +331,11 @@ namespace {
       hp += 1;
     }
     
-    if(best+1 != 0x0)
-      return reinterpret_cast<arena*>(best+1);
+    if(best+1 != 0x0) {
+      arena *a = reinterpret_cast<arena*>(best+1);
+      OPNEW_ASSERT(pn <= a->holes[0]);
+      return a;
+    }
     else
       return arena_create();
   }
@@ -344,10 +366,11 @@ namespace {
     int hp = 2*(t - ((1<<(arena::hole_lev_n-1))-1));
     hp += a->pmap_is_hole(hp) ? 0 : 1;
     OPNEW_ASSERT(hp < page_per_arena);
+
     int hpn = a->pmap_hole_length(hp);
     
-    int big_old = a->holes[0];
-
+    unsigned big_old = a->holes[0];
+    
     ASAN_UNPOISON(&a->pmap[hp + pn-1], 0, 1);
     a->pmap[hp + pn-1] = -hp - 1;
     a->pmap[hp] = -pn - 16*K;
@@ -364,17 +387,17 @@ namespace {
       arena_hole_changed(a, hp+pn, hpn-pn);
     }
     
-    int big_new = a->holes[0];
+    unsigned big_new = a->holes[0];
     
     // translate to heap ordinals
-    big_old = std::min(arena_heap_n-1, log2dn(big_old));
-    big_new = std::min(arena_heap_n-1, log2dn(big_new, -1));
-
-    if(big_new != big_old) {
-      arena_heaps[big_old].remove(&arena::heap_link, a);
+    int ah_old = std::min(arena_heap_n-1, log2dn(big_old));
+    int ah_new = std::min(arena_heap_n-1, log2dn(big_new, -1));
+    
+    if(ah_new != ah_old) {
+      arena_heaps[ah_old].remove(&arena::heap_link, a);
       
-      if(big_new != -1)
-        arena_heaps[big_new].insert(&arena::heap_link, a);
+      if(ah_new != -1)
+        arena_heaps[ah_new].insert(&arena::heap_link, a);
     }
     
     return (char*)(a+1) + hp*page_size;
@@ -397,25 +420,26 @@ namespace {
     ASAN_POISON(a->pmap, lp+1, rp + rpn-1);
     ASAN_POISON(a->pbin, lp, rp + rpn);
     
-    int big_old = a->holes[0];
+    unsigned big_old = a->holes[0];
     
     if(rhole)
       arena_hole_changed(a, rp, 0);
     
     arena_hole_changed(a, lp, lpn + pn + rpn);
     
-    int big_new = a->holes[0];
+    unsigned big_new = a->holes[0];
 
     // translate to heap ordinals
-    big_old = std::min(arena_heap_n-1, log2dn(big_old, -1));
-    big_new = std::min(arena_heap_n-1, log2dn(big_new));
+    int ah_old = std::min(arena_heap_n-1, log2dn(big_old, -1));
+    int ah_new = std::min(arena_heap_n-1, log2dn(big_new));
     
-    if(big_new != big_old) {
-      if(big_old != -1)
-        arena_heaps[big_old].remove(&arena::heap_link, a);
+    if(ah_new != ah_old) {
+      if(ah_old != -1)
+        arena_heaps[ah_old].remove(&arena::heap_link, a);
       
-      arena_heaps[big_new].insert(&arena::heap_link, a);
+      arena_heaps[ah_new].insert(&arena::heap_link, a);
     }
+    arena_heaps_sane();
   }
   
   int arena_pool_init(arena *a, void *b, int bin, frobj **out_head, frobj **out_tail) {

@@ -25,8 +25,8 @@ namespace {
 
 void assert_failed(const char *file, int line) {
   lock_.lock();
-  std::cout.flush();
-  std::cerr<<"ASSERT FAILED "<<file<<"@"<<line<<"\n";
+  fflush(stdout);
+  fprintf(stderr, "ASSERT FAILED %s@%d\n", file, line);
   lock_.unlock();
 
   #if DEBUG
@@ -38,10 +38,10 @@ void assert_failed(const char *file, int line) {
 
 say::say() {
   lock_.lock();
-  std::cerr << '['<<world::rank_me()<<"] ";
+  fprintf(stderr, "[%d] ", world::rank_me());
 }
 
 say::~say() {
-  std::cerr << std::endl;
+  fprintf(stderr, "\n");
   lock_.unlock();
 }
