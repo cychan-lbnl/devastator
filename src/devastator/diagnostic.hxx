@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <mutex>
+#include <inttypes.h>
 
 #if 0 || DEBUG
   #define ASSERT(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
@@ -33,11 +34,11 @@ struct say {
       return *this;
     }
     say& operator<<(std::int64_t x) {
-      fprintf(stderr, "%PRId64", x);
+      fprintf(stderr, "%" PRId64, x);
       return *this;
     }
     say& operator<<(std::uint64_t x) {
-      fprintf(stderr, "%PRIu64", x);
+      fprintf(stderr, "%" PRIu64, x);
       return *this;
     }
     say& operator<<(const char *x) {

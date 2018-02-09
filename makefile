@@ -30,6 +30,7 @@ ifeq ($(debug),)
 		cgflags += -flto
 	endif
 	#cgflags += -fsanitize=address
+	ppflags += -DNDEBUG
 else
 	override syms := 1
 	override optlev := 0
