@@ -17,6 +17,7 @@ ifeq ($(NERSC_HOST),)
   gasnet_makepart = $(gasnet_install)/include/smp-conduit/smp-seq.mak
 else
   gasnet_makepart = $(gasnet_install)/include/aries-conduit/aries-seq.mak
+	gasnet_config_args += --with-aries-max-medium=65472
 endif
 
 #gasnet_config_env += CXXFLAGS="$(cgflags)"

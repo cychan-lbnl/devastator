@@ -122,15 +122,13 @@ namespace {
 
     intrusive_map<
         event_on_creator, std::pair<int,unsigned>,
-        &event_on_creator::far_next,
+        event_on_creator::far_next_of,
         far_origin_id_of,
         far_origin_id_hash>
       from_far;
   };
   
   thread_local sim_state sim_me;
-
-  thread_local bool specialed = false;
 
   void arrive_far_anti(int origin, unsigned far_id);
   void arrive_near(int cd_ix, event *e, event_tdig tdig, int existence_delta);

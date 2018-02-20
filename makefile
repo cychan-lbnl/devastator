@@ -12,6 +12,10 @@ devastator ?= .
 devastator/src ?= $(devastator)/src/devastator
 upcxx ?= $(devastator)/src/upcxx
 
+########################################################################
+# toolchain variables init
+
+# normalize bools to empty/non-empty encoding
 ifeq ($(debug),0)
 	override debug :=
 endif
@@ -20,25 +24,47 @@ ifeq ($(syms),0)
 	override syms :=
 endif
 
-optlev ?= 3
-ppflags =
-cgflags =
-libflags =
+ifeq ($(asan),0)
+	override asan :=
+endif
 
+ifeq ($(opnew),0)
+	override opnew :=
+endif
+
+# integer optimization level
+optlev ?= $(if $(debug),0,3)
+
+# bools: empty/non-empty
+syms ?= $(if $(debug),1,)
+
+asan ?= $(if $(debug),1,)
+ifneq ($(NERSC_HOST),)
+	asan :=
+endif
+
+opnew ?= $(if $(debug),,1)
+
+# ppflags
+ppflags =
 ifeq ($(debug),)
-	ifeq ($(optlev),3)
-		cgflags += -flto
-	endif
-	#cgflags += -fsanitize=address
 	ppflags += -DNDEBUG
 else
-	override syms := 1
-	override optlev := 0
 	ppflags += -DDEBUG=1
-	ifeq ($(NERSC_HOST),)
-		cgflags += -fsanitize=address
-	endif
 endif
+ppflags += -DOPNEW_ENABLED=$(if $(opnew),1,0)
+
+# cgflags
+cgflags = -O$(optlev) $(if $(syms),-g,)
+ifeq ($(optlev),3)
+	cgflags += -flto
+endif
+ifneq ($(asan),)
+	cgflags += -fsanitize=address
+endif
+
+# libflags
+libflags =
 
 # if a better c++ compiler can't be found
 CXX ?= g++
@@ -48,16 +74,40 @@ else
   cxx = $(CXX)
 endif
 
+########################################################################
+# world variables
+
 world ?= $(if $(NERSC_HOST),gasnet,threads)
 threads ?= 2
 procs ?= 2
 workers ?= 2
 
+ifeq ($(world),gasnet)
+	include $(devastator)/ext/gasnet/makefile
+	
+	ppflags += -DWORLD_GASNET \
+	           -DPROCESS_N=$(procs) \
+	           -DWORKER_N=$(workers) \
+	           $(GASNET_CXXCPPFLAGS)
+	
+	cgflags += -pthread
+	libflags += $(GASNET_LIBS)
+else
+	ppflags += -DWORLD_THREADS \
+	           -DRANK_N=$(threads)
+	
+	cgflags += -pthread
+endif
+
+########################################################################
+# dependencies
+
 devastator/tmsg.deps = \
   $(devastator/src)/diagnostic.hxx \
   $(devastator/src)/opnew.hxx \
   $(devastator/src)/opnew_fwd.hxx \
-  $(devastator/src)/tmsg.hxx
+  $(devastator/src)/tmsg.hxx \
+  $(upcxx)/utility.hpp
 
 devastator/tmsg.srcs = \
   $(devastator/src)/diagnostic.cxx \
@@ -109,25 +159,7 @@ devastator/pdes.srcs = \
 
 ########################################################################
 
-ifeq ($(world),gasnet)
-	include $(devastator)/ext/gasnet/makefile
-	
-	ppflags += -DWORLD_GASNET \
-	           -DPROCESS_N=$(procs) \
-	           -DWORKER_N=$(workers) \
-	           $(GASNET_CXXCPPFLAGS)
-	
-	cgflags += -pthread
-	libflags += $(GASNET_LIBS)
-else
-	ppflags += -DWORLD_THREADS \
-	           -DRANK_N=$(threads)
-	
-	cgflags += -pthread
-endif
-
 ppflags += -I$(devastator)/src
-cgflags += -O$(optlev) $(if $(syms),-g,)
 
 ppflags := $($(app).ppflags) $(ppflags)
 cgflags := $($(app).cgflags) $(cgflags)

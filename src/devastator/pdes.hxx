@@ -65,6 +65,10 @@ namespace pdes {
     static event_tdig tdig_of(event_on_creator *e) {
       return {e->time, e->digest};
     }
+
+    static event_on_creator*& far_next_of(event_on_creator *me) {
+      return me->far_next;
+    }
   };
   
   struct alignas(64) event_on_target {

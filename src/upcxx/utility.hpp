@@ -75,7 +75,7 @@ namespace upcxx {
   
   template<typename Ret, typename ...Arg>
   class function_ref<Ret(Arg...)> {
-    Ret(*invoker_)(Arg...);
+    Ret(*invoker_)(void*, Arg...);
     void *fn_;
     
   private:
@@ -93,14 +93,19 @@ namespace upcxx {
       invoker_{the_nop_invoker},
       fn_{nullptr} {
     }
-    template<typename Fn>
-    function_ref(Fn &&fn):
-      invoker_{the_invoker<typename std::remove_reference<Fn>::type>},
+
+    template<typename Fn1,
+             typename Fn = typename std::decay<Fn1>::type>
+    function_ref(Fn1 &&fn):
+      invoker_{the_invoker<Fn>},
       fn_{reinterpret_cast<void*>(const_cast<Fn*>(&fn))} {
     }
+
     function_ref(const function_ref&) = default;
-    function_ref& operator=(const function_ref&) = default;
+    function_ref(function_ref &that): function_ref(const_cast<function_ref const&>(that)) {}
     function_ref(function_ref&&) = default;
+
+    function_ref& operator=(const function_ref&) = default;
     function_ref& operator=(function_ref&&) = default;
     
     Ret operator()(Arg ...arg) const {

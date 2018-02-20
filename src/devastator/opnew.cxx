@@ -9,12 +9,6 @@
 
 #if OPNEW_ENABLED // contains whole file
 
-#define ASAN_POISON(base, lo, hi) \
-  { if((lo)<(hi)) ASAN_POISON_MEMORY_REGION((base)+(lo), (const char*)((base)+(hi))-(const char*)((base)+(lo))); }
-
-#define ASAN_UNPOISON(base, lo, hi) \
-  { if((lo)<(hi)) ASAN_UNPOISON_MEMORY_REGION((base)+(lo), (const char*)((base)+(hi))-(const char*)((base)+(lo))); }
-
 using namespace std;
 using namespace opnew;
 
@@ -43,6 +37,8 @@ namespace {
   void arena_dealloc_remote(arena *a, frobj *o);
   
   int arena_pool_init(arena *a, void *b, int bin, frobj **out_head, frobj **out_tail);
+
+  std::mutex outsider_lock;
   
   thread_local arena *my_arenas = nullptr;
 
@@ -90,13 +86,11 @@ namespace {
   constexpr array<int8_t, bin_n> pool_best_pages = make_pool_best_pages(opnew::make_index_sequence<bin_n>());
 }
 
-__thread uint64_t opnew::bins_occupied_mask = 0;
-__thread uint64_t opnew::opcalls = 0;
-__thread bin_state opnew::bins[bin_n] {/*{}...*/};
+__thread thread_state opnew::my_ts {/*0...*/};
 
 void* opnew::operator_new_slow(size_t size) {
   int bin_id = bin_of_size(size);
-  bin_state *bin = &bins[bin_id];
+  bin_state *bin = &my_ts.bins[bin_id];
   
   if(bin_id != -1) {
     // bin is empty!
@@ -168,7 +162,7 @@ void opnew::operator_delete_slow(void *obj) {
   if(a != nullptr) {
     OPNEW_ASSERT(a->pmap_is_blob(((char*)obj - (char*)(a+1))/page_size));
     
-    if(a->owner_id == tmsg::thread_me())
+    if(a->owner_ts == &my_ts)
       arena_dealloc_blob(a, obj);
     else
       arena_dealloc_remote(a, (frobj*)obj);
@@ -178,14 +172,14 @@ void opnew::operator_delete_slow(void *obj) {
 }
 
 void opnew::gc_bins() {
-  uint64_t m = bins_occupied_mask;
-  bins_occupied_mask = 0;
+  uint64_t m = my_ts.bins_occupied_mask;
+  my_ts.bins_occupied_mask = 0;
 
   while(m != 0) {
     int bin_id = bitffs(m) - 1;
     m &= m-1;
 
-    bin_state *bin = &bins[bin_id];
+    bin_state *bin = &my_ts.bins[bin_id];
     bin->sane();
     int best_pn = pool_best_pages[bin_id];
     
@@ -219,12 +213,26 @@ void opnew::gc_bins() {
     
     bin->popn_least = bin->popn;
     bin->sane();
-    bins_occupied_mask |= uint64_t(bin->popn ? 1 : 0) << bin_id;
+    my_ts.bins_occupied_mask |= uint64_t(bin->popn ? 1 : 0) << bin_id;
   }
 }
 
 void opnew::flush_remote() {
   constexpr int B = 8*sizeof(uintptr_t);
+
+  if(my_ts.outsider_frees != nullptr) {
+    frobj *o; {
+      std::lock_guard<std::mutex> locked(outsider_lock);
+      o = my_ts.outsider_frees;
+      my_ts.outsider_frees = nullptr;
+    }
+    
+    while(o != nullptr) {
+      frobj *o1 = o->next(nullptr);
+      operator_delete</*known_size=*/0, /*known_local=*/true>((void*)o);
+      o = o1;
+    }
+  }
   
   for(int mi=0; mi < (tmsg::thread_n + B-1)/B; mi++) {
     uintptr_t m = remote_thread_mask[mi];
@@ -239,7 +247,7 @@ void opnew::flush_remote() {
       
       tmsg::send(t, [=]() {
         for(int i=0; i < rbins.bin_n; i++) {
-          bin_state *bin = &bins[rbins.bin[i]];
+          bin_state *bin = &my_ts.bins[rbins.bin[i]];
           rbins.tail[i]->change_link(nullptr, bin->head());
           bin->head()->change_link(nullptr, rbins.tail[i]);
           bin->head(rbins.head[i]);
@@ -250,7 +258,7 @@ void opnew::flush_remote() {
         frobj *o = rbins.rest_head;
         while(o != nullptr) {
           frobj *o1 = o->next(nullptr);
-          opnew::opcalls -= 1;
+          opnew::my_ts.opcalls -= 1;
           opnew::operator_delete</*known_size=*/0, /*known_local*/true>(o);
           o = o1;
         }
@@ -292,15 +300,13 @@ namespace {
       munmap(reinterpret_cast<void*>(u1 + arena_size), u0 + arena_size - u1);
 
     arena *a = reinterpret_cast<arena*>(u1);
+    a->owner_ts = &my_ts;
     a->owner_id = tmsg::thread_me();
     a->owner_next = my_arenas;
     my_arenas = a;
     
     a->pmap[0] = page_per_arena;
-    ASAN_POISON(a->pmap, 1, page_per_arena-1);
     a->pmap[page_per_arena-1] = page_per_arena;
-
-    ASAN_POISON(a->pbin, 0, page_per_arena);
     
     for(int t=0; t < sizeof(arena::holes)/sizeof(arena::holes[0]); t++)
       a->holes[t] = 0;
@@ -371,17 +377,14 @@ namespace {
     
     unsigned big_old = a->holes[0];
     
-    ASAN_UNPOISON(&a->pmap[hp + pn-1], 0, 1);
     a->pmap[hp + pn-1] = -hp - 1;
     a->pmap[hp] = -pn - 16*K;
 
-    ASAN_UNPOISON(&a->pbin[hp], 0, 1);
     a->pbin[hp] = -1;
     
     arena_hole_changed(a, hp, 0);
     
     if(hpn != pn) {
-      ASAN_UNPOISON(&a->pmap[hp + pn], 0, 1);
       a->pmap[hp + pn] = hpn-pn;
       a->pmap[hp + hpn-1] = hpn-pn;
       arena_hole_changed(a, hp+pn, hpn-pn);
@@ -417,8 +420,6 @@ namespace {
     
     a->pmap[rp + rpn-1] = lpn + pn + rpn;
     a->pmap[lp] = lpn + pn + rpn;
-    ASAN_POISON(a->pmap, lp+1, rp + rpn-1);
-    ASAN_POISON(a->pbin, lp, rp + rpn);
     
     unsigned big_old = a->holes[0];
     
@@ -451,11 +452,9 @@ namespace {
       poo->deadbeef = 0xdeadbeef;
     #endif
     
-    ASAN_UNPOISON(a->pbin, p0, p1);
     for(int p=p0; p < p1; p++)
       a->pbin[p] = bin;
 
-    ASAN_UNPOISON(a->pmap, p0+1, p1);
     for(int p=p0+1; p < p1; p++)
       a->pmap[p] = -p0 - 1;
     
@@ -538,37 +537,46 @@ namespace {
 
   void arena_dealloc_remote(arena *a, frobj *o) {
     int t = a->owner_id;
-    auto rbin = &remote_bins[t];
-    
-    int bin = bin_of(a, o);
 
-    constexpr int B = 8*sizeof(uintptr_t);
-    remote_thread_mask[t/B] |= uintptr_t(1)<<(t%B);
-    
-    if(bin != -1) {
-      for(int i=0; i < rbin->bin_n; i++) {
-        if(rbin->bin[i] == bin && rbin->popn_minus_one[i] != 255) {
-          o->set_links(nullptr, rbin->head[i]);
-          rbin->head[i]->change_link(nullptr, o);
+    if(t >= 0) {
+      auto rbin = &remote_bins[t];
+      
+      int bin = bin_of(a, o);
+
+      constexpr int B = 8*sizeof(uintptr_t);
+      remote_thread_mask[t/B] |= uintptr_t(1)<<(t%B);
+      
+      if(bin != -1) {
+        for(int i=0; i < rbin->bin_n; i++) {
+          if(rbin->bin[i] == bin && rbin->popn_minus_one[i] != 255) {
+            o->set_links(nullptr, rbin->head[i]);
+            rbin->head[i]->change_link(nullptr, o);
+            rbin->head[i] = o;
+            rbin->popn_minus_one[i] += 1;
+            return;
+          }
+        }
+        
+        if(rbin->bin_n < remote_thread_bins::max_bin_n) {
+          int i = rbin->bin_n++;
+          rbin->bin[i] = bin;
+          rbin->popn_minus_one[i] = 0;
           rbin->head[i] = o;
-          rbin->popn_minus_one[i] += 1;
+          rbin->tail[i] = o;
+          o->set_links(nullptr, nullptr);
           return;
         }
       }
       
-      if(rbin->bin_n < remote_thread_bins::max_bin_n) {
-        int i = rbin->bin_n++;
-        rbin->bin[i] = bin;
-        rbin->popn_minus_one[i] = 0;
-        rbin->head[i] = o;
-        rbin->tail[i] = o;
-        o->set_links(nullptr, nullptr);
-        return;
-      }
+      o->set_links(nullptr, rbin->rest_head);
+      rbin->rest_head = o;
     }
-    
-    o->set_links(nullptr, rbin->rest_head);
-    rbin->rest_head = o;
+    else {
+      thread_state *ts = a->owner_ts;
+      std::lock_guard<std::mutex> locked{outsider_lock};
+      o->set_links(nullptr, ts->outsider_frees);
+      ts->outsider_frees = o;
+    }
   }
 }
 

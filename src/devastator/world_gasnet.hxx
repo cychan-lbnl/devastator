@@ -96,7 +96,12 @@ namespace world {
 
   void barrier();
   
-  void run_and_die(const std::function<void()> &fn);
+  void run(upcxx::function_ref<void()> fn);
+
+  inline void run_and_die(upcxx::function_ref<void()> fn) {
+    run(fn);
+    std::exit(0);
+  }
 
   using upcxx::bind;
 }

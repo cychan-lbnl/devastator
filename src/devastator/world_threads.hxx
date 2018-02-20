@@ -58,8 +58,13 @@ namespace world {
     tmsg::barrier();
   }
   
-  inline void run_and_die(const std::function<void()> &fn) {
-    tmsg::run_and_die(fn);
+  inline void run(upcxx::function_ref<void()> fn) {
+    tmsg::run(fn);
+  }
+
+  inline void run_and_die(upcxx::function_ref<void()> fn) {
+    run(fn);
+    std::exit(0);
   }
 
   #if 0

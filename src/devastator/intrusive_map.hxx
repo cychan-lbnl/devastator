@@ -8,7 +8,7 @@
 #include <utility>
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 class intrusive_map {
@@ -59,7 +59,7 @@ private:
 
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 intrusive_map<T,Key,next_of,key_of,hash_of>::intrusive_map() {
@@ -69,7 +69,7 @@ intrusive_map<T,Key,next_of,key_of,hash_of>::intrusive_map() {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 intrusive_map<T,Key,next_of,key_of,hash_of>::~intrusive_map() {
@@ -78,7 +78,7 @@ intrusive_map<T,Key,next_of,key_of,hash_of>::~intrusive_map() {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 intrusive_map<T,Key,next_of,key_of,hash_of>::intrusive_map(intrusive_map &&that) {
@@ -91,7 +91,7 @@ intrusive_map<T,Key,next_of,key_of,hash_of>::intrusive_map(intrusive_map &&that)
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 intrusive_map<T,Key,next_of,key_of,hash_of>&
@@ -103,7 +103,7 @@ intrusive_map<T,Key,next_of,key_of,hash_of>::operator=(intrusive_map &&that) {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 void intrusive_map<T,Key,next_of,key_of,hash_of>::insert(T *o) {
@@ -112,7 +112,7 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::insert(T *o) {
   int b = bucket_of(hbit_, key_of(o));
   T **p = hbit_ == 0 ? &bkt0_ : &bkts_[b];
   
-  o->*next_of = *p;
+  next_of(o) = *p;
   *p = o;
   
   popn_ += 1;
@@ -120,7 +120,7 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::insert(T *o) {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(Key const &key) {
@@ -129,10 +129,10 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(Key const &key) {
   
   while(*p) {
     if(key_of(*p) != key)
-      p = &((*p)->*next_of);
+      p = &next_of(*p);
     else {
       T *o = *p;
-      *p = o->*next_of;
+      *p = next_of(o);
       popn_ -= 1;
       this->popn_changed<-1>();
       return o;
@@ -143,7 +143,7 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(Key const &key) {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(T *x) {
@@ -152,9 +152,9 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(T *x) {
   
   while(*p) {
     if(*p != x)
-      p = &((*p)->*next_of);
+      p = &next_of(*p);
     else {
-      *p = x->*next_of;
+      *p = next_of(x);
       popn_ -= 1;
       this->popn_changed<-1>();
       return x;
@@ -165,7 +165,7 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::remove(T *x) {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 template<typename Vtor>
@@ -181,11 +181,11 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::visit(
     if(key == key_of(o))
       break;
     else
-      p = &(o->*next_of);
+      p = &next_of(o);
   }
   
   T *o0 = *p;
-  T *next = o0 ? o0->*next_of : nullptr;
+  T *next = o0 ? next_of(o0) : nullptr;
   T *o1 = visitor(o0); // not worrying about reentrance but should
   
   if(o0 == o1) // no change
@@ -193,7 +193,7 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::visit(
   
   if(o0) {
     if(o1) { // replaced
-      o1->*next_of = next;
+      next_of(o1) = next;
       *p = o1;
     }
     else { // removed
@@ -205,7 +205,7 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::visit(
   }
   else { // added
     *p = o1;
-    o1->*next_of = nullptr;
+    next_of(o1) = nullptr;
     popn_ += 1;
     this->template popn_changed<1>();
     return o1;
@@ -213,7 +213,7 @@ T* intrusive_map<T,Key,next_of,key_of,hash_of>::visit(
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 template<typename F>
@@ -222,7 +222,7 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::for_each(F &&f) {
   for(int b=0; b < 1<<hbit_; b++) {
     T *o = bkts[b];
     while(o) {
-      T *o_next = o->*next_of;
+      T *o_next = next_of(o);
       f(o);
       o = o_next;
     }
@@ -230,7 +230,7 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::for_each(F &&f) {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 template<typename F>
@@ -255,7 +255,7 @@ namespace intrusive_map_help {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 template<int delta>
@@ -271,7 +271,7 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::popn_changed() {
 }
 
 template<typename T, typename Key,
-         T* T::*next_of,
+         T*&(&next_of)(T*),
          Key(&key_of)(T*),
          std::size_t(&hash_of)(Key const&)>
 void intrusive_map<T,Key,next_of,key_of,hash_of>::resize(int hbit_new) {
@@ -288,9 +288,9 @@ void intrusive_map<T,Key,next_of,key_of,hash_of>::resize(int hbit_new) {
   for(int b0=0; b0 < 1<<hbit_old; b0++) {
     T *o = hbit_ == 0 ? bkt0_ : bkts_[b0];
     while(o) {
-      T *o_next = o->*next_of;
+      T *o_next = next_of(o);
       int b1 = bucket_of(hbit_new, key_of(o));
-      o->*next_of = bkts_new[b1];
+      next_of(o) = bkts_new[b1];
       bkts_new[b1] = o;
       o = o_next;
     }

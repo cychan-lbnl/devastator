@@ -3,11 +3,11 @@
 #include "opnew.hxx"
 
 #include <atomic>
-#include <thread>
 
+#include <pthread.h>
 #include <sched.h>
 
-__thread int tmsg::thread_me_ = 0;
+__thread int tmsg::thread_me_ = -1;
 
 tmsg::active_channels_r<tmsg::thread_n> tmsg::ams_r[thread_n];
 tmsg::active_channels_w<tmsg::thread_n> tmsg::ams_w[thread_n];
@@ -50,28 +50,106 @@ void tmsg::barrier() {
   epoch += 1;
 }
 
-void tmsg::run_and_die(const std::function<void()> &fn) {
-  auto tmain = [=](int me) {
-    thread_me_ = me;
-    opnew::thread_me_initialized();
-    
-    for(int r=0; r < thread_n; r++)
-      ams_w[me].connect(r, ams_r[r]);
-    
-    fn();
-  };
+namespace {
+  pthread_t threads[tmsg::thread_n];
+  pthread_mutex_t lock;
+  pthread_cond_t wake;
+  int awake_n = tmsg::thread_n;
+  bool shutdown = false;
+  upcxx::function_ref<void()> run_fn;
   
-  std::thread *threads[thread_n];
+  void* tmain(void *me1) {
+    int me = reinterpret_cast<std::intptr_t>(me1);
+    static bool zero_inited = false;
+
+    if(me != 0 || !zero_inited) {
+      if(me == 0)
+        zero_inited = true;
+      
+      tmsg::thread_me_ = me;
+      opnew::thread_me_initialized();
+      
+      for(int r=0; r < tmsg::thread_n; r++)
+        tmsg::ams_w[me].connect(r, tmsg::ams_r[r]);
+    }
+
+    bool running;
+    do {
+      run_fn();
+      tmsg::barrier();
+
+      if(me == 0)
+        running = false;
+      else {
+        pthread_mutex_lock(&lock);
+        awake_n -= 1;
+        pthread_cond_wait(&wake, &lock);
+        awake_n += 1;
+        running = !shutdown;
+        pthread_mutex_unlock(&lock);
+      }
+    } while(running);
+
+    return nullptr;
+  }
+
+  void* finalizer_tmain(void*) {
+    ASSERT_ALWAYS(tmsg::thread_me() == -1);
+    
+    for(int t=0; t < tmsg::thread_n; t++) {
+      pthread_join(threads[t], nullptr);
+      tmsg::ams_w[t].destroy();
+    }
+
+    return nullptr;
+  }
+
+  void main_exited() {
+    pthread_mutex_lock(&lock);
+    while(awake_n != 1) {
+      pthread_mutex_unlock(&lock);
+      sched_yield();
+      pthread_mutex_lock(&lock);
+    }
+    shutdown = true;
+    pthread_cond_broadcast(&wake);
+    pthread_mutex_unlock(&lock);
+  }
+}
+
+void tmsg::run(upcxx::function_ref<void()> fn) {
+  static bool inited = false;
+
+  run_fn = fn;
   
-  for(int t=1; t < thread_n; t++)
-    threads[t] = new std::thread(tmain, t);
+  if(!inited) {
+    inited = true;
 
-  tmain(0);
+    (void)pthread_cond_init(&wake, nullptr);
+    (void)pthread_mutex_init(&lock, nullptr);
+    
+    threads[0] = pthread_self();
+    for(int t=1; t < thread_n; t++) {
+      (void)pthread_create(&threads[t], nullptr, tmain, reinterpret_cast<void*>(t));
+    }
 
-  for(int t=1; t < thread_n; t++) {
-    threads[t]->join();
-    delete threads[t];
+    #if DEBUG
+      pthread_t the_finalizer;
+      (void)pthread_create(&the_finalizer, nullptr, finalizer_tmain, nullptr);
+    #endif
+
+    std::atexit(main_exited);
+  }
+  else {
+    pthread_mutex_lock(&lock);
+    while(awake_n != 1) {
+      pthread_mutex_unlock(&lock);
+      sched_yield();
+      pthread_mutex_lock(&lock);
+    }
+    pthread_cond_broadcast(&wake);
+    pthread_mutex_unlock(&lock);
   }
   
-  std::exit(0);
+  tmain(0);
 }

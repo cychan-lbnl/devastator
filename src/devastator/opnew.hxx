@@ -111,11 +111,12 @@ namespace opnew {
   }
 
   constexpr int bin_of_size_help2(int nw, int log2dn_nw) {
-    return nw < 8
-      ? nw - 1
-      : nw < 128
-        ? (nw >> (log2dn_nw-3))-0x8 + (nw&((1<<(log2dn_nw-3))-1)?1:0) + (log2dn_nw<<3) + 7 - (3<<3)
-        : (nw >> (log2dn_nw-2))-0x4 + (nw&((1<<(log2dn_nw-2))-1)?1:0) + (log2dn_nw<<2) + 39 - (7<<2);
+    return nw == 0 ? 0 :
+      nw < 8
+        ? nw - 1
+        : nw < 128
+          ? (nw >> (log2dn_nw-3))-0x8 + (nw&((1<<(log2dn_nw-3))-1)?1:0) + (log2dn_nw<<3) + 7 - (3<<3)
+          : (nw >> (log2dn_nw-2))-0x4 + (nw&((1<<(log2dn_nw-2))-1)?1:0) + (log2dn_nw<<2) + 39 - (7<<2);
   }
 
   constexpr int bin_of_size_help1(std::size_t size) {
@@ -200,12 +201,15 @@ namespace opnew {
     intru_heap_link<pool> heap_link;
   };
 
+  struct thread_state;
+
   template<int page_per_arena>
   struct arena_form {
     using arena = arena_form<page_per_arena>;
     
     alignas(64)
-    int owner_id; // points to tmsg::thread_me_
+    thread_state *owner_ts; // &my_ts of owner
+    int owner_id; // thread_me() of owner
     arena *owner_next;
     
     alignas(64)
@@ -313,10 +317,16 @@ namespace opnew {
     }
   };
 
-  extern __thread std::uint64_t opcalls;
-  extern __thread std::uint64_t bins_occupied_mask;
-  extern __thread bin_state bins[bin_n];
-
+  struct thread_state {
+    std::uint64_t opcalls;
+    std::uint64_t bins_occupied_mask;
+    frobj *outsider_frees;
+    
+    bin_state bins[bin_n];
+  };
+  
+  extern __thread thread_state my_ts;
+  
   //////////////////////////////////////////////////////////////////////
 
   void thread_me_initialized();
@@ -329,22 +339,22 @@ namespace opnew {
   // public API
   
   inline void progress() {
-    opcalls += 1;
+    my_ts.opcalls += 1;
     
-    if(opcalls >= 10000) {
+    if(my_ts.opcalls >= 10000) {
       gc_bins();
-      opcalls = 0;
+      my_ts.opcalls = 0;
     }
 
     flush_remote();
   }
   
   inline void* operator_new(std::size_t size) {
-    opcalls += 1;
+    my_ts.opcalls += 1;
     int bin = bin_of_size(size);
     
-    if(bin != -1 && bins[bin].popn != 0) {
-      bin_state *b = &bins[bin];
+    if(bin != -1 && my_ts.bins[bin].popn != 0) {
+      bin_state *b = &my_ts.bins[bin];
       frobj *o = b->head();
       b->head(o->next(nullptr));
       b->head()->change_link(o, nullptr);
@@ -360,22 +370,22 @@ namespace opnew {
 
   template<std::size_t known_size=0, bool known_local=false>
   void operator_delete(void *obj) {
-    opcalls += 1;
+    my_ts.opcalls += 1;
     arena *a = opnew::template arena_of<known_size>(obj);
     
     if((known_size != 0 && known_size < huge_size) || a != nullptr) {
       int bin = opnew::template bin_of<known_size>(a, obj);
 
-      OPNEW_ASSERT(!known_local || a->owner_id == tmsg::thread_me());
+      OPNEW_ASSERT(!known_local || a->owner_ts == &my_ts);
       
-      if((known_local || a->owner_id == tmsg::thread_me()) && bin != -1) {
-        bin_state *b = &bins[bin];
+      if((known_local || a->owner_ts == &my_ts) && bin != -1) {
+        bin_state *b = &my_ts.bins[bin];
         frobj *o = (frobj*)obj;
         o->set_links(nullptr, b->head());
         b->head()->change_link(nullptr, o);
         b->head(o);
         b->popn += 1;
-        bins_occupied_mask |= std::uint64_t(1)<<bin;
+        my_ts.bins_occupied_mask |= std::uint64_t(1)<<bin;
         
         b->sane();
         return;

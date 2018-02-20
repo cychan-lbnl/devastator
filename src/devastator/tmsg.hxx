@@ -4,10 +4,11 @@
 #include "diagnostic.hxx"
 #include "opnew_fwd.hxx"
 
+#include <upcxx/utility.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <new>
 #include <utility>
 
@@ -79,7 +80,8 @@ namespace tmsg {
 
   public:
     channels_w() = default;
-    ~channels_w();
+    
+    void destroy();
     
     template<int m>
     void connect(int id, channels_r<m> &rs);
@@ -90,11 +92,13 @@ namespace tmsg {
   };
 
   template<int n>
-  channels_w<n>::~channels_w() {
-    cleanup();
-    
-    for(int i=0; i < n; i++)
+  void channels_w<n>::destroy() {
+    for(int i=0; i < n; i++) {
+      while(w_[i].ack_head != w_[i].sent_last)
+        cleanup();
+      
       ::operator delete(w_[i].ack_head);
+    }
   }
     
   template<int n>
@@ -216,7 +220,7 @@ namespace tmsg {
       
       do {
         message *m1 = m->next;
-        #if 0
+        #if OPNEW_ENABLED
           opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(m);
         #else
           ::operator delete(m);
@@ -285,7 +289,9 @@ namespace tmsg {
   
   extern __thread int thread_me_;
 
-  inline int thread_me() { return thread_me_; }
+  inline int const& thread_me() {
+    return thread_me_;
+  }
 
   template<typename Fn>
   void send(int thread, Fn fn) {
@@ -297,6 +303,6 @@ namespace tmsg {
   
   void barrier();
   
-  void run_and_die(const std::function<void()> &fn);
+  void run(upcxx::function_ref<void()> fn);
 }
 #endif
