@@ -43,7 +43,7 @@ private:
 
   bool decreased(int ix, T x, Key key);
   void increased(int ix, T x, Key key);
-  
+
 public:
   int size() const { return this->n_; }
 
@@ -122,6 +122,15 @@ public:
     Key key = key_of(x);
     if(!this->decreased(ix, x, key))
       this->increased(ix, x, key);
+  }
+
+  void clear() {
+    n_ = 0;
+    cap_ = 0;
+    if(buf_) {
+      delete[] buf_;
+      buf_ = nullptr;
+    }
   }
 };
 

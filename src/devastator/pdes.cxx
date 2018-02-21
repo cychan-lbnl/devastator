@@ -476,7 +476,7 @@ void pdes::drain() {
         }
         else if(gvt_old == ~uint64_t(0)) {
           ASSERT(remote_near_events.size() == 0);
-          return;
+          goto drain_complete;
         }
         
         // begin new epoch
@@ -544,6 +544,13 @@ void pdes::drain() {
       }
     }
   }
+
+drain_complete:
+  ASSERT_ALWAYS(sim_me.from_far.size() == 0);
+  ASSERT_ALWAYS(remote_near_events.size() == 0);
+  sim_me.cds_by_dawn.clear();
+  sim_me.cds_by_now.clear();
+  sim_me.cds.reset();
 }
 
 pair<size_t, size_t> pdes::get_total_event_counts() {

@@ -301,7 +301,7 @@ namespace tmsg {
   void progress();
   bool progress_noyield();
   
-  void barrier();
+  void barrier(bool do_progress=true);
   
   void run(upcxx::function_ref<void()> fn);
 }

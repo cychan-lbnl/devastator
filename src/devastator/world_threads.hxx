@@ -54,8 +54,8 @@ namespace world {
     tmsg::progress();
   }
 
-  inline void barrier() {
-    tmsg::barrier();
+  inline void barrier(bool do_progress=true) {
+    tmsg::barrier(do_progress);
   }
   
   inline void run(upcxx::function_ref<void()> fn) {

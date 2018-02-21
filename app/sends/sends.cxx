@@ -31,49 +31,80 @@ struct rng_state {
   }
 };
 
-thread_local int unacked = 0;
-thread_local size_t sent = 0;
+thread_local int sent_n, recv_n, ack_n;
+thread_local uint64_t sent_sz, recv_sz;
+thread_local int epoch = 0;
 
 struct message {
   int origin;
+  int epoch;
   vector<char> hunk;
 
   void operator()() {
+    if(::epoch != this->epoch) {
+      say()<<this->epoch<<" landed on "<<::epoch;
+      ASSERT_ALWAYS(0);
+    }
+    
     for(char x: hunk)
       ASSERT_ALWAYS(x == 'x');
-    sent += hunk.size();
+
+    recv_n += 1;
+    recv_sz += hunk.size();
     world::send(origin, []() {
-      unacked -= 1;
+      ack_n += 1;
     });
   }
 
   template<typename Re>
   friend void reflect(Re &re, message &me) {
     re(me.origin);
+    re(me.epoch);
     re(me.hunk);
   }
 };
 
 int main() {
   auto doit = []() {
+    epoch += 1;
+    if(rank_me() == 0)
+      std::cout<<"round "<<epoch<<'\n';
+    
     rng_state rng{rank_me()};
-    
-    sent = 0;
-    
+
+    sent_n = 0;
+    recv_n = 0;
+    ack_n = 0;
+    sent_sz = 0;
+    recv_sz = 0;
+
     for(int i=0; i < 1000; i++) {
-      unacked += 1;
-      world::send(i % rank_n, message{rank_me(), vector<char>(1<<(rng()%20), 'x')});
+      int len = 1<<(rng()%20);
+      //int len = 1;
+      sent_n += 1;
+      sent_sz += len;
+      world::send(i % rank_n, message{rank_me(), epoch, vector<char>(len, 'x')});
       world::progress();
     }
 
-    while(unacked != 0)
+    while(ack_n != sent_n)
       world::progress();
 
     world::barrier();
+
+    auto sum2 = [](const char *name, uint64_t a, uint64_t b) {
+      uint64_t a1 = world::reduce_sum(a);
+      uint64_t b1 = world::reduce_sum(b);
+      if(rank_me() == 0 || a1 != b1) {
+        std::cout<<name<<" = "<<a1<<" "<<b1<<'\n';
+      }
+      world::barrier();
+      ASSERT_ALWAYS(a1 == b1);
+    };
     
-    size_t sent_sum = world::reduce_sum(sent);
-    if(rank_me() == 0)
-      std::cout << "total bytes = "<<sent_sum<<'\n';
+    sum2("send/recv n", sent_n, recv_n);
+    sum2("sent/recv sz", sent_sz, recv_sz);
+    if(rank_me() == 0) std::cout<<'\n';
   };
    
   world::run(doit);

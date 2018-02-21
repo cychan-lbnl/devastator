@@ -77,9 +77,9 @@ void world::run(upcxx::function_ref<void()> fn) {
       }
       else
         remote_send_chan_w[tme-1].connect(0, remote_send_chan_r);
+
+      tmsg::barrier(/*do_progress=*/false);
     }
-    
-    tmsg::barrier();
     
     if(tme == 0) {
       rank_me_ = -process_me - 1;
@@ -89,7 +89,7 @@ void world::run(upcxx::function_ref<void()> fn) {
       rank_me_ = process_rank_lo_ + tme-1;
       fn();
       
-      world::barrier();
+      world::barrier(/*do_progress=*/false);
       
       if(tme == 1)
         leave_pump.store(true, std::memory_order_release);
@@ -180,7 +180,7 @@ namespace {
   }
 }
 
-void world::barrier() {
+void world::barrier(bool do_progress) {
   static std::atomic<int> c[2]{{0}, {0}};
   static thread_local unsigned epoch = 0;
   
@@ -199,8 +199,12 @@ void world::barrier() {
     });
   }
 
-  while(barrier_done.load(std::memory_order_acquire) != epoch+1)
-    world::progress();
+  while(barrier_done.load(std::memory_order_acquire) != epoch+1) {
+    if(do_progress)
+      world::progress();
+    else
+      sched_yield();
+  }
 
   epoch += 1;
 }

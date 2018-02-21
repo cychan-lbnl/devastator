@@ -94,7 +94,7 @@ namespace world {
 
   void progress();
 
-  void barrier();
+  void barrier(bool do_progress=true);
   
   void run(upcxx::function_ref<void()> fn);
 

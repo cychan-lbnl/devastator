@@ -36,11 +36,11 @@ struct rng_state {
   }
 };
 
-constexpr int actor_n = 1000;
+constexpr int actor_n = 1000; // 1000
 constexpr int actor_per_rank = (actor_n + rank_n-1)/rank_n;
 constexpr double percent_remote = .5;
 constexpr double lambda = 100;
-constexpr uint64_t end_time = uint64_t(2000*lambda);
+constexpr uint64_t end_time = uint64_t(2000*lambda); // 2000
 
 thread_local rng_state state_cur[actor_per_rank];
 thread_local uint64_t check[actor_per_rank];
@@ -129,14 +129,11 @@ uint64_t checksum() {
     lacc ^= check[a - a_lb];
   }
 
-  uint64_t gacc = world::reduce_xor(lacc);
-  
-  if(rank_me() == 0)
-    say() << "checksum = "<< gacc;
+  return world::reduce_xor(lacc);
 }
 
 int main() {
-  world::run_and_die([]() {
+  auto doit = []() {
     pdes::init(actor_per_rank);
     
     int actor_lb = rank_me()*actor_per_rank;
@@ -150,6 +147,17 @@ int main() {
     }
     
     pdes::drain();
-    checksum();
-  });
+
+    uint64_t chk = checksum();
+    thread_local uint64_t chkprev = 666;
+
+    ASSERT_ALWAYS(chkprev == 666 || chk == chkprev);
+    chkprev = chk;
+    
+    if(rank_me() == 0)
+      say() << "checksum = "<< chk;
+  };
+
+  for(int i=0; i < 10; i++)
+    world::run(doit);
 }

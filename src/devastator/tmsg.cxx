@@ -35,16 +35,20 @@ void tmsg::progress() {
   }
 }
 
-void tmsg::barrier() {
+void tmsg::barrier(bool do_progress) {
   static std::atomic<int> c[2]{{0}, {0}};
   static thread_local unsigned epoch = 0;
 
-  int end = epoch & 2 ? 0 : thread_n;
+  int end = epoch & 2 ? 0 : tmsg::thread_n;
   int bump = epoch & 2 ? -1 : 1;
   
   if((c[epoch & 1] += bump) != end) {
-    while(c[epoch & 1].load(std::memory_order_acquire) != end)
-      progress();
+    while(c[epoch & 1].load(std::memory_order_acquire) != end) {
+      if(do_progress)
+        tmsg::progress();
+      else
+        sched_yield();
+    }
   }
   
   epoch += 1;
@@ -54,7 +58,7 @@ namespace {
   pthread_t threads[tmsg::thread_n];
   pthread_mutex_t lock;
   pthread_cond_t wake;
-  int awake_n = tmsg::thread_n;
+  unsigned run_epoch = 0;
   bool shutdown = false;
   upcxx::function_ref<void()> run_fn;
   
@@ -74,18 +78,20 @@ namespace {
     }
 
     bool running;
+    unsigned run_epoch_prev = 0;
     do {
       run_fn();
-      tmsg::barrier();
+      tmsg::barrier(/*do_progress=*/false);
 
       if(me == 0)
         running = false;
       else {
         pthread_mutex_lock(&lock);
-        awake_n -= 1;
-        pthread_cond_wait(&wake, &lock);
-        awake_n += 1;
+        if(!shutdown && run_epoch == run_epoch_prev)
+          pthread_cond_wait(&wake, &lock);
         running = !shutdown;
+        run_epoch_prev = run_epoch;
+        pthread_cond_signal(&wake);
         pthread_mutex_unlock(&lock);
       }
     } while(running);
@@ -106,13 +112,8 @@ namespace {
 
   void main_exited() {
     pthread_mutex_lock(&lock);
-    while(awake_n != 1) {
-      pthread_mutex_unlock(&lock);
-      sched_yield();
-      pthread_mutex_lock(&lock);
-    }
     shutdown = true;
-    pthread_cond_broadcast(&wake);
+    pthread_cond_signal(&wake);
     pthread_mutex_unlock(&lock);
   }
 }
@@ -142,12 +143,8 @@ void tmsg::run(upcxx::function_ref<void()> fn) {
   }
   else {
     pthread_mutex_lock(&lock);
-    while(awake_n != 1) {
-      pthread_mutex_unlock(&lock);
-      sched_yield();
-      pthread_mutex_lock(&lock);
-    }
-    pthread_cond_broadcast(&wake);
+    run_epoch += 1;
+    pthread_cond_signal(&wake);
     pthread_mutex_unlock(&lock);
   }
   
