@@ -32,6 +32,10 @@ ifeq ($(opnew),0)
 	override opnew :=
 endif
 
+ifeq ($(opnew_debug),0)
+	override opnew_debug :=
+endif
+
 # integer optimization level
 optlev ?= $(if $(debug),0,3)
 
@@ -53,6 +57,7 @@ else
 	ppflags += -DDEBUG=1
 endif
 ppflags += -DOPNEW_ENABLED=$(if $(opnew),1,0)
+ppflags += $(if $(opnew_debug),-DOPNEW_DEBUG,)
 
 # cgflags
 cgflags = -O$(optlev) $(if $(syms),-g,)

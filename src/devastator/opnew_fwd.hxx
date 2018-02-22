@@ -6,7 +6,10 @@
 #ifndef OPNEW_ENABLED
   #define OPNEW_ENABLED !DEBUG
 #endif
-#define OPNEW_DEBUG 0
+
+#ifndef OPNEW_DEBUG
+  #define OPNEW_DEBUG 0
+#endif
 
 #if !OPNEW_ENABLED
 namespace opnew {
