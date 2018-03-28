@@ -15,39 +15,31 @@ upcxx ?= $(devastator)/src/upcxx
 ########################################################################
 # toolchain variables init
 
-# normalize bools to empty/non-empty encoding
 ifeq ($(debug),0)
 	override debug :=
 endif
+override debug := $(if $(debug),1,)
 
+syms ?= $(debug)
 ifeq ($(syms),0)
 	override syms :=
 endif
 
-ifeq ($(asan),0)
-	override asan :=
-endif
-
+opnew ?= $(if $(debug),,1)
 ifeq ($(opnew),0)
 	override opnew :=
+endif
+
+asan ?= $(and $(debug),$(if $(opnew),,1),$(if $(NERSC_HOST),,1))
+ifeq ($(asan),0)
+	override asan :=
 endif
 
 ifeq ($(opnew_debug),0)
 	override opnew_debug :=
 endif
 
-# integer optimization level
 optlev ?= $(if $(debug),0,3)
-
-# bools: empty/non-empty
-syms ?= $(if $(debug),1,)
-
-asan ?= $(if $(debug),1,)
-ifneq ($(NERSC_HOST),)
-	asan :=
-endif
-
-opnew ?= $(if $(debug),,1)
 
 # ppflags
 ppflags =
@@ -57,7 +49,7 @@ else
 	ppflags += -DDEBUG=1
 endif
 ppflags += -DOPNEW_ENABLED=$(if $(opnew),1,0)
-ppflags += $(if $(opnew_debug),-DOPNEW_DEBUG,)
+ppflags += $(if $(opnew_debug),-DOPNEW_DEBUG=$(opnew_debug),)
 
 # cgflags
 cgflags = -O$(optlev) $(if $(syms),-g,)
@@ -69,7 +61,7 @@ ifneq ($(asan),)
 endif
 
 # libflags
-libflags =
+libflags = $(if $(and $(debug),$(NERSC_HOST)),-dynamic,)
 
 # if a better c++ compiler can't be found
 CXX ?= g++

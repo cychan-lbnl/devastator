@@ -8,12 +8,13 @@
 #if 0 || DEBUG
   #define ASSERT(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
 #else
-  #define ASSERT(ok) (!!(ok) || (__builtin_unreachable(), 0))
+  //#define ASSERT(ok) (!!(ok) || (__builtin_unreachable(), 0))
+  #define ASSERT(ok) ((void)0)
 #endif
 
 #define ASSERT_ALWAYS(ok) (!!(ok) || (assert_failed(__FILE__, __LINE__), 0))
 
-[[noreturn]] void assert_failed(const char *file, int line);
+/*[[noreturn]]*/ void assert_failed(const char *file, int line);
 
 void dbgbrk();
 

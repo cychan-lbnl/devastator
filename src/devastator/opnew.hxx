@@ -12,18 +12,10 @@
 #include <new>
 #include <type_traits>
 
-#include <sanitizer/asan_interface.h>
-
 #if OPNEW_DEBUG
-  #define OPNEW_ASSERT(ok) ASSERT(ok)
+  #define OPNEW_ASSERT(ok) (!!(ok) || (assert_failed(__FILE__,__LINE__), 0))
 #else
   #define OPNEW_ASSERT(ok) ((void)0)
-#endif
-
-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
- #define ASAN_ENABLED 1
-#else
- #define ASAN_ENABLED 0
 #endif
 
 namespace opnew {
@@ -215,20 +207,14 @@ namespace opnew {
     alignas(64)
     intru_heap_link<arena> heap_link;
 
-    #if OPNEW_DEBUG && ASAN_ENABLED
-      // use 8-byte types so we accurately track our own poisoning
-      std::int64_t pbin[page_per_arena];
-      std::int64_t pmap[page_per_arena];
-    #else
-      // bin id of pool for any page belonging to a pool, otherwise
-      // for non-pool blobs head page has -1 and body pages are undefined.
-      std::int8_t pbin[page_per_arena];
+    // bin id of pool for any page belonging to a pool, otherwise
+    // for non-pool blobs head page has -1 and body pages are undefined.
+    std::int8_t pbin[page_per_arena];
 
-      // x < -16k: blob head, -x-16k is length
-      // x < 0: -x-1 is blob head
-      // x >= 0: hole of length x+1
-      std::int16_t pmap[page_per_arena];
-    #endif
+    // x < -16k: blob head, -x-16k is length
+    // x < 0: -x-1 is blob head
+    // x >= 0: hole of length x+1
+    std::int16_t pmap[page_per_arena];
     
     int pmap_is_hole(int p) {
       return pmap[p] > 0;
@@ -303,7 +289,9 @@ namespace opnew {
     }
     
     void sane() {
-      #if OPNEW_DEBUG
+      held_pools.sane(&pool::heap_link);
+      
+      #if OPNEW_DEBUG > 1
         frobj *x, *y;
         x = head();
         y = nullptr;
@@ -312,7 +300,7 @@ namespace opnew {
           y = x;
           x = z;
         }
-        ASSERT(x == &tail);
+        OPNEW_ASSERT(x == &tail);
       #endif
     }
   };

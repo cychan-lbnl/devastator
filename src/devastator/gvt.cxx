@@ -1,29 +1,32 @@
 #include "gvt.hxx"
 
-#include <algorithm>
-
 using namespace std;
 
 namespace gvt {
-  thread_local bool epoch_ended_;
-  thread_local uint64_t epoch_gvt_;
-  thread_local reducibles epoch_rxs_;
+  __thread bool epoch_ended_;
+  __thread uint64_t epoch_gvt_;
+  __thread reducibles epoch_rxs_;
   
-  thread_local unsigned round_;
-  thread_local uint64_t round_lvt_;
-  thread_local uint64_t round_lsend_;
-  thread_local uint64_t round_lrecv_[3];
+  __thread unsigned round_;
+  __thread uint64_t round_lvt_[2];
+  __thread uint64_t round_lsend_[2];
+  __thread uint64_t round_lrecv_[3];
 }
 
 namespace {
-  thread_local bool rdxn_active;
-  thread_local int rdxn_incoming;
-  thread_local uint64_t rdxn_gsend, rdxn_grecv;
-  thread_local uint64_t rdxn_gvt;
-  thread_local gvt::reducibles rdxn_rxs;
+  enum class rdxn_status_e  {
+    reducing,
+    quiesced,
+    non_quiesced,
+  };
   
-  thread_local uint64_t fresh_gvt;
-  thread_local gvt::reducibles fresh_rxs;
+  __thread rdxn_status_e rdxn_status;
+  __thread int rdxn_incoming;
+  __thread uint64_t rdxn_gsend, rdxn_grecv;
+  __thread uint64_t rdxn_gvt_acc;
+  __thread gvt::reducibles rdxn_rxs_acc;
+  __thread uint64_t rdxn_gvt_ans;
+  __thread gvt::reducibles rdxn_rxs_ans;
   
   void rdxn_up(uint64_t lvt, uint64_t lsend, uint64_t lrecv, gvt::reducibles rxs);
   void rdxn_down(int to_ub, uint64_t gvt, gvt::reducibles rxs);
@@ -35,46 +38,55 @@ void gvt::init(gvt::reducibles rxs0) {
   gvt::epoch_rxs_ = rxs0;
 
   gvt::round_ = 0;
-  gvt::round_lvt_ = ~uint64_t(0);
-  gvt::round_lsend_ = 0;
+  gvt::round_lvt_[0] = 0;
+  gvt::round_lvt_[1] = 0;
+  gvt::round_lsend_[0] = 0;
+  gvt::round_lsend_[1] = 0;
   gvt::round_lrecv_[0] = 0;
   gvt::round_lrecv_[1] = 0;
   gvt::round_lrecv_[2] = 0;
   
-  rdxn_active = false;
+  rdxn_status = rdxn_status_e::non_quiesced;
   rdxn_incoming = 0;
-  rdxn_gvt = 0;
-  fresh_gvt = 0;
-  fresh_rxs = rxs0;
+  rdxn_gvt_acc = 0;
+  rdxn_gvt_ans = 0;
+  rdxn_rxs_ans = rxs0;
   
   world::barrier();
 }
 
 void gvt::advance() {
-  gvt::epoch_ended_ = !rdxn_active;
-  gvt::epoch_gvt_ = fresh_gvt;
-  gvt::epoch_rxs_ = fresh_rxs;
+  gvt::epoch_ended_ = rdxn_status != rdxn_status_e::reducing;
+  gvt::epoch_gvt_ = rdxn_gvt_ans;
+  gvt::epoch_rxs_ = rdxn_rxs_ans;
 }
 
 void gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
-  ASSERT(!rdxn_active);
+  ASSERT(rdxn_status != rdxn_status_e::reducing);
 
-  rdxn_active = true;
+  if(rdxn_status == rdxn_status_e::quiesced) {
+    gvt::round_ += 1;
+    
+    gvt::round_lvt_[0] = gvt::round_lvt_[1];
+    gvt::round_lvt_[1] = lvt;
+  
+    gvt::round_lsend_[0] = gvt::round_lsend_[1];
+    gvt::round_lsend_[1] = 0;
+    
+    gvt::round_lrecv_[0] = gvt::round_lrecv_[1];
+    gvt::round_lrecv_[1] = gvt::round_lrecv_[2];
+    gvt::round_lrecv_[2] = 0;
+  }
+  
   gvt::epoch_ended_ = false;
+  rdxn_status = rdxn_status_e::reducing;
   
   rdxn_up(
-    std::min(lvt, gvt::round_lvt_),
-    gvt::round_lsend_,
+    gvt::round_lvt_[0],
+    gvt::round_lsend_[0],
     gvt::round_lrecv_[0],
     rxs
   );
-
-  gvt::round_ += 1;
-  gvt::round_lvt_ = ~uint64_t(0);
-  gvt::round_lsend_ = 0;
-  gvt::round_lrecv_[0] = gvt::round_lrecv_[1];
-  gvt::round_lrecv_[1] = gvt::round_lrecv_[2];
-  gvt::round_lrecv_[2] = 0;
 }
 
 namespace {
@@ -91,15 +103,15 @@ namespace {
       }
       rdxn_incoming += 1; // add one for self
 
-      rdxn_gvt = ~uint64_t(0);
-      rdxn_rxs = rxs;
+      rdxn_gvt_acc = ~uint64_t(0);
+      rdxn_rxs_acc = rxs;
       rdxn_gsend = 0;
       rdxn_grecv = 0;
     }
     else
-      rdxn_rxs.reduce_with(rxs);
+      rdxn_rxs_acc.reduce_with(rxs);
     
-    rdxn_gvt = std::min(rdxn_gvt, lvt);
+    rdxn_gvt_acc = std::min(rdxn_gvt_acc, lvt);
     rdxn_gsend += lsend;
     rdxn_grecv += lrecv;
     
@@ -107,17 +119,17 @@ namespace {
       if(rank_me == 0) {
         bool quiesced = rdxn_gsend == rdxn_grecv;
 
-        //say()<<"root gvt="<<rdxn_gvt<<" send="<<rdxn_gsend<<" recv="<<rdxn_grecv;
+        //say()<<"root gvt="<<rdxn_gvt_acc<<" send="<<rdxn_gsend<<" recv="<<rdxn_grecv;
         
-        rdxn_down(rank_n ^ (quiesced ? -1 : 0), rdxn_gvt, rdxn_rxs);
+        rdxn_down(rank_n ^ (quiesced ? -1 : 0), rdxn_gvt_acc, rdxn_rxs_acc);
       }
       else {
         //say()<<"sending up";
         int parent = rank_me & (rank_me-1);
         uint64_t gsend = rdxn_gsend;
         uint64_t grecv = rdxn_grecv;
-        rxs = rdxn_rxs;
-        lvt = rdxn_gvt;
+        rxs = rdxn_rxs_acc;
+        lvt = rdxn_gvt_acc;
         world::send(parent, [=]() {
           rdxn_up(lvt, gsend, grecv, rxs);
         });
@@ -145,9 +157,9 @@ namespace {
     }
     
     //say()<<"epoch bump rxs={"<<grxs.sum1<<" "<<grxs.sum2<<"}";
-    rdxn_active = false;
-    fresh_rxs = grxs;
+    rdxn_status = quiesced ? rdxn_status_e::quiesced : rdxn_status_e::non_quiesced;
+    rdxn_rxs_ans = grxs;
     if(quiesced)
-      fresh_gvt = gvt;
+      rdxn_gvt_ans = gvt;
   }
 }

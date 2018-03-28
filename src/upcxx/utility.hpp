@@ -84,6 +84,10 @@ namespace upcxx {
       return reinterpret_cast<Fn*>(fn)->operator()(static_cast<Arg>(arg)...);
     }
     
+    static Ret the_fnptr_invoker(void *fn, Arg ...arg) {
+      return reinterpret_cast<Ret(*)(Arg...)>(fn)(static_cast<Arg>(arg)...);
+    }
+    
     static Ret the_nop_invoker(void *fn, Arg ...arg) {
       return nop_function<Ret(Arg...)>{}();
     }
@@ -94,6 +98,11 @@ namespace upcxx {
       fn_{nullptr} {
     }
 
+    function_ref(Ret(*fn)(Arg...)):
+      invoker_{the_fnptr_invoker},
+      fn_{reinterpret_cast<void*>(fn)} {
+    }
+    
     template<typename Fn1,
              typename Fn = typename std::decay<Fn1>::type>
     function_ref(Fn1 &&fn):

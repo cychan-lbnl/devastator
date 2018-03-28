@@ -114,7 +114,7 @@ void* opnew::operator_new_slow(size_t size) {
         poo->hold_tail = nullptr;
         poo->popn_not_held = poo->popn;
 
-        #if OPNEW_DEBUG
+        #if OPNEW_DEBUG > 1
           frobj *x = head,*y=nullptr;
           for(int n=0; n < popn; n++) {
             frobj *z = x->next(y);
@@ -274,7 +274,7 @@ void opnew::thread_me_initialized() {
 
 namespace {
   bool arena_heaps_sane(bool loud=true) {
-    #if 0 || OPNEW_DEBUG
+    #if OPNEW_DEBUG > 0
       for(int hp=0; hp < arena_heap_n; hp++) {
         arena *a = arena_heaps[hp].top;
         if(a && !(1<<hp <= a->holes[0])) {
@@ -618,6 +618,9 @@ T* opnew::intru_heap<T>::pop_top(intru_heap_link<T> T::*link_of) {
     return reinterpret_cast<uintptr_t>(o);
   };
 
+  OPNEW_ASSERT(key_of(this->top) > 100);
+  OPNEW_ASSERT(this->n != 0);
+  
   T *ans = this->top;
   
   // pop last item off heap
@@ -765,25 +768,27 @@ void opnew::intru_heap<T>::remove(intru_heap_link<T> T::*link_of, T *a) {
 
 template<typename T>
 void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
-  #if OPNEW_DEBUG
-    auto key_of = [](void *o) {
-      return reinterpret_cast<uintptr_t>(o);
-    };
-    
+  auto key_of = [](void *o) {
+    return reinterpret_cast<uintptr_t>(o);
+  };
+  
+  #if OPNEW_DEBUG > 1
     for(intptr_t ix0=0; ix0 < this->n; ix0++) {
       intptr_t ix = ix0;
       T *x = top;
       while(ix != 0) {
         T **kid = (x->*link_of).kid;
-        ASSERT(!kid[0] || key_of(x) < key_of(kid[0]));
-        ASSERT(!kid[1] || key_of(x) < key_of(kid[1]));
-        ASSERT(!kid[1] || kid[0]);
+        OPNEW_ASSERT(!kid[0] || key_of(x) < key_of(kid[0]));
+        OPNEW_ASSERT(!kid[1] || key_of(x) < key_of(kid[1]));
+        OPNEW_ASSERT(!kid[1] || kid[0]);
         ix -= 1;
         x = (x->*link_of).kid[ix & 1];
         ix >>= 1;
       }
-      ASSERT((x->*link_of).ix == ix0);
+      OPNEW_ASSERT((x->*link_of).ix == ix0);
     }
+  #else
+    OPNEW_ASSERT((key_of(this->top) & 1) == 0);
   #endif
 }
 #endif

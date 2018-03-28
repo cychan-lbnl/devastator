@@ -530,7 +530,7 @@ void pdes::drain() {
               sent->existence = 1;
               
               cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
-              
+
               if(cd != sent_cd && sent_tdig < sent_cd->was())
                 rollback(sent_cd, sent_tdig);
 

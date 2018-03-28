@@ -1,5 +1,6 @@
 #include "world_gasnet.hxx"
 #include "intrusive_map.hxx"
+#include "opnew.hxx"
 
 #include <gasnet.h>
 
@@ -9,6 +10,7 @@
 #include <thread>
 #include <tuple>
 
+#include <unistd.h>
 #include <sched.h>
 #include <fcntl.h>
 
@@ -78,9 +80,28 @@ void world::run(upcxx::function_ref<void()> fn) {
       else
         remote_send_chan_w[tme-1].connect(0, remote_send_chan_r);
 
+      #if 0
+        for(int i=0; i < process_n; i++) {
+          if(i == process_me) {
+            static std::mutex mu;
+            mu.lock();
+            std::cerr<<"[pid "<<getpid()<<" t "<<tme<<"] watch *((uintptr_t*)"<<&opnew::my_ts.bins[29].held_pools.top<<")&1\n";
+            mu.unlock();
+            tmsg::barrier(false);
+            if(tme == 0)
+              gasnett_freezeForDebuggerErr();
+          }
+          if(tme==0){
+            gasnet_barrier_notify(0,0);
+            gasnet_barrier_wait(0,0);
+          }
+          tmsg::barrier(false);
+        }
+      #endif
+      
       tmsg::barrier(/*do_progress=*/false);
     }
-    
+
     if(tme == 0) {
       rank_me_ = -process_me - 1;
       master_pump();
