@@ -139,7 +139,7 @@ namespace opnew {
       : -1;
   }
   
-  //////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
 
   constexpr std::intptr_t K = 1<<10;
   constexpr std::intptr_t arena_size = 4*K*K;
@@ -185,19 +185,30 @@ namespace opnew {
 
   struct pool {
     #if OPNEW_DEBUG
-      int deadbeef;
+      unsigned deadbeef;
     #endif
     int popn, popn_not_held;
     frobj *hold_head;
     frobj *hold_tail;
     intru_heap_link<pool> heap_link;
   };
-
+  
+  template<typename Arena, typename Size>
+  struct arena_holes_link {
+    Arena *kid[2];
+    Size kid_max[2];
+    int ix;
+  };
+  
+  template<typename Arena, typename Size>
+  struct arena_holes;
+  
   struct thread_state;
 
   template<int page_per_arena>
   struct arena_form {
     using arena = arena_form<page_per_arena>;
+    using arena_holes = opnew::arena_holes<arena, std::uint16_t>;
     
     alignas(64)
     thread_state *owner_ts; // &my_ts of owner
@@ -205,7 +216,7 @@ namespace opnew {
     arena *owner_next;
     
     alignas(64)
-    intru_heap_link<arena> heap_link;
+    arena_holes_link<arena, std::uint16_t> holes_link;
 
     // bin id of pool for any page belonging to a pool, otherwise
     // for non-pool blobs head page has -1 and body pages are undefined.
@@ -243,6 +254,10 @@ namespace opnew {
 
     static constexpr int hole_lev_n = 1 + log2up((page_per_arena+1)/2);
     std::uint16_t holes[(2<<log2up((page_per_arena+1)/2))-1];
+    
+    std::uint16_t hole_size_max() const {
+      return holes[0];
+    }
   };
 
   constexpr int page_per_arena = (arena_size - sizeof(arena_form<arena_size/page_size>))/page_size;
@@ -271,8 +286,33 @@ namespace opnew {
       return a->pbin[((char*)o - (char*)(a+1))/page_size];
   }
 
-  //////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
 
+  template<typename Arena, typename Size>
+  class arena_holes {
+    Arena *root_ = nullptr;
+    Size root_max_ = 0;
+    int popn_ = 0;
+    
+  public:
+    Size size_max() const {
+      return root_max_;
+    }
+    
+    void insert(Arena *a);
+    
+    template<typename Fn>
+    auto fit_and_decrease(Size size, Fn &&fn)
+      -> decltype(fn(std::declval<Arena*>()));
+    
+    void increased(Arena *a);
+
+  private:
+    void repair(Arena *p, Arena *p_up, std::uint64_t kpath);
+  };
+
+  //////////////////////////////////////////////////////////////////////////////
+  
   struct bin_state {
     frobj tail; // = {0}
     std::uintptr_t head_xor_tail; // = 0

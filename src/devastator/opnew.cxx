@@ -25,10 +25,9 @@ static_assert(sizeof(arena) % page_size != 0, "Crap, arena is page aligned");
 namespace {
   arena* arena_create();
   void arena_destroy(arena *a);
-  arena* arena_best(int pn);
-
-  void arena_hole_changed(arena *a, int p, int pn);
   
+  tuple<arena*,void*> arena_fit_and_alloc(int pn);
+  void arena_hole_changed(arena *a, int p, int pn);
   void* arena_alloc_avail(arena *a, int pn);
   void arena_dealloc_blob(arena *a, void *o);
 
@@ -40,11 +39,9 @@ namespace {
 
   std::mutex outsider_lock;
   
-  thread_local arena *my_arenas = nullptr;
-
-  constexpr int arena_heap_n = 1 + log2up((huge_size-1 + page_size-1)/page_size);
-  __thread intru_heap<arena> arena_heaps[arena_heap_n] {/*{}...*/};
-
+  __thread arena *my_arenas = nullptr;
+  thread_local arena::arena_holes my_holes;
+  
   struct remote_thread_bins {
     static constexpr int max_bin_n = 5;
     int8_t bin_n; // = 0
@@ -125,10 +122,11 @@ void* opnew::operator_new_slow(size_t size) {
         #endif
       }
       else {
-        arena *a = arena_best(pn);
-        void *b = arena_alloc_avail(a, pn);
+        arena *a; void *b;
+        std::tie(a,b) = arena_fit_and_alloc(pn);
         popn = arena_pool_init(a, b, bin_id, &head, &tail);
       }
+      
       tail->change_link(nullptr, &bin->tail);
       bin->tail.set_links(tail, nullptr);
       bin->head(head->next(nullptr));
@@ -139,14 +137,12 @@ void* opnew::operator_new_slow(size_t size) {
     }
     else {
       pn = (size_of_bin(bin_id) + page_size-1)/page_size;
-      arena *a = arena_best(pn);
-      return arena_alloc_avail(a, pn);
+      return std::get<1>(arena_fit_and_alloc(pn));
     }
   }
   else if(size < huge_size) {
     int pn = (size + page_size-1)/page_size;
-    arena *a = arena_best(pn);
-    return arena_alloc_avail(a, pn);
+    return std::get<1>(arena_fit_and_alloc(pn));
   }
   else {
     void *ans;
@@ -273,33 +269,39 @@ void opnew::thread_me_initialized() {
 }
 
 namespace {
-  bool arena_heaps_sane(bool loud=true) {
-    #if OPNEW_DEBUG > 0
-      for(int hp=0; hp < arena_heap_n; hp++) {
-        arena *a = arena_heaps[hp].top;
-        if(a && !(1<<hp <= a->holes[0])) {
-          if(loud)
-            OPNEW_ASSERT(0);
-          else
-            return false;
-        }
-      }
-    #endif
-    return true;
-  }
+  mutex mm_lock;
+  arena* mm_block = nullptr;
+  int mm_id_bump = tmsg::thread_n;
   
   arena* arena_create() {
-    void *m = mmap(nullptr, 2*arena_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    uintptr_t u0 = reinterpret_cast<uintptr_t>(m);
-    uintptr_t u1 = (u0 + arena_size-1) & -arena_size;
+    arena *a;
+    {
+      lock_guard<mutex> mm_locked{mm_lock};
+      int id = mm_id_bump++;
+      
+      if(id == tmsg::thread_n) {
+        uintptr_t block_size = tmsg::thread_n*uintptr_t(arena_size);
+        uintptr_t request_size = block_size + arena_size;
+        
+        void *m = mmap(nullptr, request_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        
+        uintptr_t u0 = reinterpret_cast<uintptr_t>(m);
+        uintptr_t u1 = (u0 + arena_size-1) & -arena_size;
+        
+        if(u1 != u0)
+          munmap(m, u1-u0);
+        
+        if(u1 + block_size != u0 + request_size)
+          munmap(reinterpret_cast<void*>(u1 + block_size), u0 + arena_size - u1);
+        
+        mm_block = reinterpret_cast<arena*>(u1);
+        mm_id_bump = 1;
+        id = 0;
+      }
+      
+      a = (arena*)((char*)mm_block + id*uintptr_t(arena_size));
+    }
     
-    if(u1 != u0)
-      munmap(m, u1-u0);
-    
-    if(u1 + arena_size != u0 + 2*arena_size)
-      munmap(reinterpret_cast<void*>(u1 + arena_size), u0 + arena_size - u1);
-
-    arena *a = reinterpret_cast<arena*>(u1);
     a->owner_ts = &my_ts;
     a->owner_id = tmsg::thread_me();
     a->owner_next = my_arenas;
@@ -313,9 +315,7 @@ namespace {
 
     arena_hole_changed(a, 0, page_per_arena);
     
-    arena_heaps[arena_heap_n-1].insert(&arena::heap_link, a);
-
-    arena_heaps_sane();
+    my_holes.insert(a);
     
     return a;
   }
@@ -324,26 +324,18 @@ namespace {
     munmap((void*)a, arena_size);
   }*/
 
-  arena* arena_best(int pn) {
-    arena_heaps_sane();
-    
-    int hp = std::min(arena_heap_n-1, log2up(pn));
-    uintptr_t best = uintptr_t(-1);
-    
-    while(hp < arena_heap_n) {
-      uintptr_t a = -1 + reinterpret_cast<uintptr_t>(arena_heaps[hp].top);
-      if(a < best)
-        best = a;
-      hp += 1;
+  tuple<arena*,void*> arena_fit_and_alloc(int pn) {
+    if(uint16_t(pn) <= my_holes.size_max()) {
+      return my_holes.fit_and_decrease(pn,
+        [=](arena *a) {
+          return std::make_tuple(a, arena_alloc_avail(a, pn));
+        }
+      );
     }
-    
-    if(best+1 != 0x0) {
-      arena *a = reinterpret_cast<arena*>(best+1);
-      OPNEW_ASSERT(pn <= a->holes[0]);
-      return a;
+    else {
+      arena *a = arena_create();
+      return std::make_tuple(a, arena_alloc_avail(a, pn));
     }
-    else
-      return arena_create();
   }
 
   void arena_hole_changed(arena *a, int p, int pn) {
@@ -375,8 +367,6 @@ namespace {
 
     int hpn = a->pmap_hole_length(hp);
     
-    unsigned big_old = a->holes[0];
-    
     a->pmap[hp + pn-1] = -hp - 1;
     a->pmap[hp] = -pn - 16*K;
 
@@ -388,19 +378,6 @@ namespace {
       a->pmap[hp + pn] = hpn-pn;
       a->pmap[hp + hpn-1] = hpn-pn;
       arena_hole_changed(a, hp+pn, hpn-pn);
-    }
-    
-    unsigned big_new = a->holes[0];
-    
-    // translate to heap ordinals
-    int ah_old = std::min(arena_heap_n-1, log2dn(big_old));
-    int ah_new = std::min(arena_heap_n-1, log2dn(big_new, -1));
-    
-    if(ah_new != ah_old) {
-      arena_heaps[ah_old].remove(&arena::heap_link, a);
-      
-      if(ah_new != -1)
-        arena_heaps[ah_new].insert(&arena::heap_link, a);
     }
     
     return (char*)(a+1) + hp*page_size;
@@ -421,26 +398,12 @@ namespace {
     a->pmap[rp + rpn-1] = lpn + pn + rpn;
     a->pmap[lp] = lpn + pn + rpn;
     
-    unsigned big_old = a->holes[0];
-    
     if(rhole)
       arena_hole_changed(a, rp, 0);
     
     arena_hole_changed(a, lp, lpn + pn + rpn);
     
-    unsigned big_new = a->holes[0];
-
-    // translate to heap ordinals
-    int ah_old = std::min(arena_heap_n-1, log2dn(big_old, -1));
-    int ah_new = std::min(arena_heap_n-1, log2dn(big_new));
-    
-    if(ah_new != ah_old) {
-      if(ah_old != -1)
-        arena_heaps[ah_old].remove(&arena::heap_link, a);
-      
-      arena_heaps[ah_new].insert(&arena::heap_link, a);
-    }
-    arena_heaps_sane();
+    my_holes.increased(a);
   }
   
   int arena_pool_init(arena *a, void *b, int bin, frobj **out_head, frobj **out_tail) {
@@ -579,6 +542,9 @@ namespace {
     }
   }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// opnew::intru_heap
 
 template<typename T>
 void opnew::intru_heap<T>::insert(intru_heap_link<T> T::*link_of, T *a) {
@@ -791,4 +757,122 @@ void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
     OPNEW_ASSERT((key_of(this->top) & 1) == 0);
   #endif
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// opnew::arena_holes
+
+template<typename Arena, typename Size>
+void opnew::arena_holes<Arena,Size>::insert(Arena *a) {
+  int ix = popn_++;
+  a->holes_link.ix = ix;
+  
+  Arena **pkid = &root_;
+  Size *pmax = &root_max_;
+  Size a_max = a->hole_size_max();
+  
+  while(true) {
+    if(ix == 0) {
+      ASSERT(*pkid == nullptr);
+      ASSERT(*pmax == 0);
+      *pkid = a;
+      *pmax = a_max;
+      a->holes_link.kid[0] = nullptr;
+      a->holes_link.kid_max[0] = 0;
+      a->holes_link.kid[1] = nullptr;
+      a->holes_link.kid_max[1] = 0;
+      break;
+    }
+    else if((ix & (ix+1)) == 0) {
+      ASSERT(a != *pkid);
+      a->holes_link.kid[0] = *pkid;
+      a->holes_link.kid_max[0] = *pmax;
+      a->holes_link.kid[1] = nullptr;
+      a->holes_link.kid_max[1] = 0;
+      *pkid = a;
+      *pmax = std::max(*pmax, a_max);
+      break;
+    }
+    else {
+      *pmax = std::max(*pmax, a_max);
+      pmax = &(*pkid)->holes_link.kid_max[1];
+      pkid = &(*pkid)->holes_link.kid[1];
+      ix ^= 1 << log2dn(ix);
+    }
+  }
+}
+
+template<typename Arena, typename Size>
+template<typename Fn>
+auto opnew::arena_holes<Arena,Size>::fit_and_decrease(Size size, Fn &&fn)
+  -> decltype(fn(std::declval<Arena*>())) {
+  
+  ASSERT(size <= root_max_);
+  
+  Arena *a = root_;
+  Arena *a_up = nullptr;
+  std::uint64_t kpath = 0;
+  
+  while(true) {
+    int k;
+    if(size <= a->holes_link.kid_max[0])
+      k = 0;
+    else if(size <= a->hole_size_max())
+      break;
+    else
+      k = 1;
+    
+    Arena *kid = a->holes_link.kid[k];
+    ASSERT(kid != nullptr);
+    a->holes_link.kid[k] = a_up;
+    a_up = a;
+    a = kid;
+    kpath = (kpath<<1) | k;
+  }
+  
+  auto ans = fn(a);
+  repair(a, a_up, kpath);
+  return ans;
+}
+
+template<typename Arena, typename Size>
+void opnew::arena_holes<Arena,Size>::increased(Arena *a) {
+  Size a_max = a->hole_size_max();
+  int a_ix = a->holes_link.ix;
+  
+  Arena *p = root_;
+  root_max_ = std::max(root_max_, a_max);
+  
+  while(a_ix != p->holes_link.ix) {
+    int k = a_ix < p->holes_link.ix ? 0 : 1;
+    p->holes_link.kid_max[k] = std::max(p->holes_link.kid_max[k], a_max);
+    p = p->holes_link.kid[k];
+  }
+  
+  ASSERT(p == a);
+}
+
+template<typename Arena, typename Size>
+void opnew::arena_holes<Arena,Size>::repair(Arena *p, Arena *p_up, std::uint64_t kpath) {
+  Size max1;
+  
+  while(true) {
+    max1 = std::max(
+      p->hole_size_max(),
+      std::max(p->holes_link.kid_max[0], p->holes_link.kid_max[1])
+    );
+    
+    if(p_up == nullptr)
+      break;
+    
+    Arena *p_up_up = p_up->holes_link.kid[kpath & 1];
+    p_up->holes_link.kid_max[kpath & 1] = max1;
+    p_up->holes_link.kid[kpath & 1] = p;
+    p = p_up;
+    p_up = p_up_up;
+    kpath >>= 1;
+  }
+  
+  root_max_ = max1;
+}
+
 #endif
