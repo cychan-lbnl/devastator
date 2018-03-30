@@ -62,7 +62,8 @@ public:
 
 template<typename T>
 class queue {
-  int n_ = 0, cap_ = 0;
+  int n_ = 0;
+  int cap_ = 0;
   int beg_ = 0;
   T *buf_ = nullptr;
   
@@ -141,17 +142,20 @@ public:
   void push_front(T x) {
     if(n_ == cap_)
       resize(cap_ == 0 ? 1 : cap_<<1);
-    buf_[--beg_ & (cap_-1)] = x;
+    beg_ = (beg_-1) & (cap_-1);
+    buf_[beg_] = x;
     n_ += 1;
   }
   
   void push_front_reserved(T x) {
-    buf_[--beg_ & (cap_-1)] = x;
+    beg_ = (beg_-1) & (cap_-1);
+    buf_[beg_] = x;
     n_ += 1;
   }
 
   T pop_front() {
-    T ans = buf_[beg_++ & (cap_-1)];
+    T ans = buf_[beg_];
+    beg_ = (beg_+1) & (cap_-1);
     n_ -= 1;
     if(n_ <= cap_>>3 && cap_ >= 16)
       resize(cap_>>1);
@@ -159,7 +163,7 @@ public:
   }
 
   void chop_front(int n) {
-    beg_ += n;
+    beg_ = (beg_ + n) & (cap_-1);
     n_ -= n;
     int cap = cap_;
     while(n_ <= cap>>3 && cap >= 16)
