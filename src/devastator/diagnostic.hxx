@@ -2,6 +2,7 @@
 #define _33b82d57a3f346d59a519f14e65d9323
 
 #include <cstdio>
+#include <iostream>
 #include <mutex>
 #include <inttypes.h>
 
@@ -23,7 +24,7 @@ struct say {
   say(say const&) = delete;
   ~say();
 
-  #if 0
+  #if 1
     template<typename T>
     say& operator<<(T &&x) {
       std::cerr << x;

@@ -30,7 +30,7 @@ ifeq ($(opnew),0)
 	override opnew :=
 endif
 
-asan ?= $(and $(debug),$(if $(opnew),,1),$(if $(NERSC_HOST),,1))
+asan ?= $(and $(debug),$(if $(opnew),,1))
 ifeq ($(asan),0)
 	override asan :=
 endif
@@ -61,7 +61,7 @@ ifneq ($(asan),)
 endif
 
 # libflags
-libflags = $(if $(and $(debug),$(NERSC_HOST)),-dynamic,)
+libflags = $(if $(and $(or $(debug),$(asan)),$(NERSC_HOST)),-dynamic,)
 
 # if a better c++ compiler can't be found
 CXX ?= g++
