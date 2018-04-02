@@ -67,9 +67,9 @@ void gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
   if(rdxn_status == rdxn_status_e::quiesced) {
     gvt::round_ += 1;
     
-    gvt::round_lvt_[0] = gvt::round_lvt_[1];
-    gvt::round_lvt_[1] = lvt;
-  
+    gvt::round_lvt_[0] = std::min(lvt, gvt::round_lvt_[1]);
+    gvt::round_lvt_[1] = ~uint64_t(0);
+    
     gvt::round_lsend_[0] = gvt::round_lsend_[1];
     gvt::round_lsend_[1] = 0;
     
@@ -159,7 +159,9 @@ namespace {
     //say()<<"epoch bump rxs={"<<grxs.sum1<<" "<<grxs.sum2<<"}";
     rdxn_status = quiesced ? rdxn_status_e::quiesced : rdxn_status_e::non_quiesced;
     rdxn_rxs_ans = grxs;
-    if(quiesced)
+    if(quiesced) {
+      ASSERT(gvt::epoch_gvt_ <= gvt);
       rdxn_gvt_ans = gvt;
+    }
   }
 }

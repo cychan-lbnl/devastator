@@ -1,6 +1,7 @@
 #include "diagnostic.hxx"
 #include "world.hxx"
 
+#include <csignal>
 #include <cstdlib>
 #include <mutex>
 
@@ -16,11 +17,13 @@ namespace {
     volatile int dbgflag;
   }
 
-  void dbgbrk() {
+  void dbgbrk(bool &aborting) {
     gasnett_freezeForDebuggerNow(&dbgflag, "dbgflag");
   }
 #else
-  void dbgbrk() {}
+  void dbgbrk(bool &aborting) {
+    std::raise(SIGINT);
+  }
 #endif
 
 void assert_failed(const char *file, int line) {
@@ -29,11 +32,12 @@ void assert_failed(const char *file, int line) {
   fprintf(stderr, "ASSERT FAILED %s@%d\n", file, line);
   lock_.unlock();
 
+  bool aborting = true;
   #if DEBUG
-    dbgbrk();
+    dbgbrk(aborting);
   #endif
   
-  std::abort();
+  if(aborting) std::abort();
 }
 
 say::say() {
