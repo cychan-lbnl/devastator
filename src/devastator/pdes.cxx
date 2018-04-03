@@ -7,6 +7,7 @@
 #include "reduce.hxx"
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <utility>
 
@@ -29,7 +30,12 @@ namespace {
     uint64_t hist_comm_n[hist_len] = {/*0...*/};
     uint64_t hist_exec_sum = 0;
     uint64_t hist_comm_sum = 0;
-
+    
+    std::chrono::time_point<std::chrono::steady_clock>
+      last_io_tick = std::chrono::steady_clock::now();
+    uint64_t io_exec_sum = 0;
+    uint64_t io_comm_sum = 0;
+    
   public:
     uint64_t dt = 1;
     uint64_t t_ub = 1;
@@ -137,6 +143,9 @@ namespace {
     hist_exec_sum += exec_n;
     hist_comm_sum += comm_n;
 
+    io_exec_sum += exec_n;
+    io_comm_sum += comm_n;
+    
     uint64_t comm1 = hist_comm_sum;
     
     double eff_num = hist_comm_sum;
@@ -163,14 +172,21 @@ namespace {
     dt = std::min<uint64_t>(1ull<<58, dt);
     dt = std::max<uint64_t>(1, dt);
     
-    #if 0
-      static thread_local int skips = 0;
-      if(world::rank_me() == 0 && skips++ == 100) {
-        skips = 0;
-        std::cout<<"lookahead = "<<float(dt)<<'\n';
-        std::cout<<"commit = "<<hist_comm_sum<<'\n';
-        std::cout<<"efficiency = "<<eff_num/eff_den<<'\n';
+    #if 1
+      constexpr auto io_period = std::chrono::seconds(3);
+      auto now = std::chrono::steady_clock::now();
+      
+      if(world::rank_me() == 0 && now - last_io_tick > io_period) {
+        std::cout<<"GVT lookahead update:\n";
+        std::cout<<"  gvt = "<<double(gvt)<<'\n';
+        std::cout<<"  lookahead = "<<float(dt)<<'\n';
+        std::cout<<"  commits = "<<double(io_comm_sum)<<'\n';
+        std::cout<<"  efficiency = "<<double(io_comm_sum)/double(io_exec_sum)<<'\n';
         std::cout<<'\n';
+        
+        last_io_tick = now;
+        io_exec_sum = 0;
+        io_comm_sum = 0;
       }
     #endif
 
