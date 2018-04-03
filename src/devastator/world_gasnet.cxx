@@ -438,7 +438,7 @@ namespace {
               int proc = bun_head;
               bun_head = -1;
               
-              do {
+              while(true) {
                 bundle *bun = &bun_table[proc];
                 int proc_next = bun->next;
                 
@@ -575,7 +575,12 @@ namespace {
 
                   proc = proc_next;
                 }
-              } while(proc != -1);
+                
+                if(proc == -1)
+                  break; // all messages in this batch have been sent
+                
+                gasnet_AMPoll();
+              }
             }
           }
         );
