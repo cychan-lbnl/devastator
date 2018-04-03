@@ -18,16 +18,7 @@ thread_local unsigned pdes::event::far_id_bump = 0;
 namespace {
   thread_local int cds_on_rank = -1;
   
-  struct Counters {
-    size_t exec_n = 0;
-    size_t commit_n = 0;
-    Counters &operator+=(const Counters &that) {
-      this->exec_n += that.exec_n;
-      this->commit_n += that.commit_n;
-      return *this;
-    }
-  };
-  thread_local Counters total_local;
+  thread_local statistics local_stats_;
   
   class lookahead_state {
     static constexpr int hist_len = 16; // must be pow2
@@ -69,6 +60,7 @@ namespace {
 
   // causality domain (logical process)
   struct cd_state {
+    int cd_ix;
     queue<local_event> past_events;
     
     intrusive_min_heap<
@@ -194,9 +186,12 @@ void pdes::init(int cds_this_rank) {
   sim_me.cds.reset(cds);
 
   for(int i=0; i < cds_on_rank; i++) {
+    cds[i].cd_ix = i;
     sim_me.cds_by_dawn.insert({&cds[i], cds[i].dawn()});
     sim_me.cds_by_now.insert({&cds[i], cds[i].now()});
   }
+  
+  local_stats_ = {};
   
   gvt::init({0, 0});
   gvt::epoch_begin(0, {0, 0});
@@ -207,6 +202,10 @@ void pdes::root_event(int cd_ix, event *e) {
   cd_state *cd = &sim_me.cds[cd_ix];
   cd->future_events.insert({e, e->tdig()});
   sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+}
+
+pdes::statistics pdes::local_stats() {
+  return local_stats_;
 }
 
 namespace {
@@ -405,6 +404,9 @@ void pdes::drain() {
   
   uint64_t executed_n = 0;
   uint64_t committed_n = 0;
+  
+  uint64_t total_executed_n = 0;
+  uint64_t total_committed_n = 0;
 
   // time-sorted list of all locally created events which were sent away
   intrusive_min_heap<
@@ -465,7 +467,7 @@ void pdes::drain() {
               break;
             
             committed_n += commit_n;
-            total_local.commit_n += commit_n;
+            total_committed_n += commit_n;
             cd->past_events.chop_front(commit_n);
             sim_me.cds_by_dawn.increased({cd, cd->dawn()});
           }
@@ -500,6 +502,7 @@ void pdes::drain() {
 
         event *sent_near; {
           execute_context_impl cxt;
+          cxt.cd = cd->cd_ix;
           cxt.time = le.tdig.first;
           cxt.digest = le.tdig.second;
           cxt.sent_far = &le.e->sent_far;
@@ -510,7 +513,7 @@ void pdes::drain() {
           sent_near = cxt.sent_near_head;
           
           executed_n += 1;
-          total_local.exec_n += 1;
+          total_executed_n += 1;
         }
         
         { // walk the `sent_near` list of the event's execution
@@ -551,9 +554,7 @@ drain_complete:
   sim_me.cds_by_dawn.clear();
   sim_me.cds_by_now.clear();
   sim_me.cds.reset();
-}
-
-pair<size_t, size_t> pdes::get_total_event_counts() {
-  auto total_global = world::reduce_sum(total_local);
-  return make_pair(total_global.exec_n, total_global.commit_n);
+  
+  local_stats_.executed_n = total_executed_n;
+  local_stats_.committed_n = total_committed_n;
 }

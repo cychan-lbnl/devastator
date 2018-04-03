@@ -10,6 +10,7 @@
 
 namespace pdes {
   struct execute_context {
+    int cd;
     std::uint64_t time, digest;
     
     template<typename E>
@@ -22,6 +23,19 @@ namespace pdes {
   template<typename E>
   void root_event(int cd_ix, std::uint64_t time, std::uint64_t digest, E ev);
 
+  struct statistics {
+    std::uint64_t executed_n = 0;
+    std::uint64_t committed_n = 0;
+    
+    statistics& operator+=(statistics x) {
+      this->executed_n += x.executed_n;
+      this->committed_n += x.committed_n;
+      return *this;
+    }
+  };
+  
+  statistics local_stats();
+  
   //////////////////////////////////////////////////////////////////////
   // internal
 
@@ -200,8 +214,6 @@ namespace pdes {
     e->digest = digest;
     root_event(cd_ix, e);
   }
-
-  std::pair<size_t, size_t> get_total_event_counts();
 }
 
 #endif
