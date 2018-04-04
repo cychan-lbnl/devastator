@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <forward_list>
+#include <iostream>
 #include <utility>
 
 namespace pdes {
@@ -17,6 +18,11 @@ namespace pdes {
     void send(int rank, int cd, std::uint64_t time, std::uint64_t digest, E ev);
   };
 
+  // Set these to determine how frequently and where drain should print global
+  // statistics such as gvt and efficiency.
+  extern int chitter_secs; // non-positive disables chitter io
+  extern std::ostream *chitter_io;
+  
   void init(int cds_this_rank);
   void drain();
 

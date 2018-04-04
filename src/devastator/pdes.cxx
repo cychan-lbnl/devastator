@@ -14,6 +14,9 @@
 using namespace pdes;
 using namespace std;
 
+std::ostream* pdes::chitter_io = &std::cout;
+int pdes::chitter_secs = 3;
+
 thread_local unsigned pdes::event::far_id_bump = 0;
 
 namespace {
@@ -21,7 +24,7 @@ namespace {
   
   thread_local statistics local_stats_;
   
-  class lookahead_state {
+  class global_status_state {
     static constexpr int hist_len = 16; // must be pow2
     
     bool prev_sign = true; // true=pos, false=neg
@@ -32,13 +35,13 @@ namespace {
     uint64_t hist_comm_sum = 0;
     
     std::chrono::time_point<std::chrono::steady_clock>
-      last_io_tick = std::chrono::steady_clock::now();
+      last_chit_tick = std::chrono::steady_clock::now();
     uint64_t io_exec_sum = 0;
     uint64_t io_comm_sum = 0;
     
   public:
-    uint64_t dt = 1;
-    uint64_t t_ub = 1;
+    uint64_t look_dt = 1;
+    uint64_t look_t_ub = 1;
 
     void update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n);
   };
@@ -132,7 +135,7 @@ namespace {
   void arrive_near(int cd_ix, event *e, event_tdig tdig, int existence_delta);
   void rollback(cd_state *cd, event_tdig new_now);
   
-  void lookahead_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
+  void global_status_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
     unsigned r = round++;
     uint64_t comm0 = hist_comm_sum;
 
@@ -151,12 +154,15 @@ namespace {
     double eff_num = hist_comm_sum;
     double eff_den = hist_exec_sum;
     
-    if(eff_num < .33*eff_den) {
-      dt *= 1/2.0;
+    if(eff_num < .66*eff_den) {
+      if(eff_num < .33*eff_den)
+        look_dt /= 4;
+      else
+        look_dt /= 2;
       prev_sign = false;
     }
-    else if(eff_num > .99*eff_den) {
-      dt *= 2.0;
+    else if(eff_num > .95*eff_den) {
+      look_dt *= 2;
       prev_sign = true;
     }
     else {
@@ -164,35 +170,37 @@ namespace {
       prev_sign = sign;
       
       if(sign)
-        dt = 1 + uint64_t(1.01*double(dt));
+        look_dt = 1 + uint64_t(1.01*double(look_dt));
       else
-        dt = uint64_t((1/1.01)*double(dt-1));
+        look_dt = uint64_t((1/1.01)*double(look_dt-1));
     }
 
-    dt = std::min<uint64_t>(1ull<<58, dt);
-    dt = std::max<uint64_t>(1, dt);
+    look_dt = std::min<uint64_t>(1ull<<58, look_dt);
+    look_dt = std::max<uint64_t>(1, look_dt);
     
-    #if 1
-      constexpr auto io_period = std::chrono::seconds(3);
+    if(pdes::chitter_secs > 0) {
+      auto period = std::chrono::seconds(chitter_secs);
       auto now = std::chrono::steady_clock::now();
       
-      if(world::rank_me() == 0 && now - last_io_tick > io_period) {
-        std::cout<<"GVT lookahead update:\n";
-        std::cout<<"  gvt = "<<double(gvt)<<'\n';
-        std::cout<<"  lookahead = "<<float(dt)<<'\n';
-        std::cout<<"  commits = "<<double(io_comm_sum)<<'\n';
-        std::cout<<"  efficiency = "<<double(io_comm_sum)/double(io_exec_sum)<<'\n';
-        std::cout<<'\n';
+      if(world::rank_me() == 0 && now - last_chit_tick > period) {
+        (*pdes::chitter_io)
+          <<"pdes::drain() status:\n"
+          <<"  gvt = "<<double(gvt)<<'\n'
+          <<"  lookahead = "<<float(look_dt)<<'\n'
+          <<"  commits/sec = "<<double(io_comm_sum)/std::chrono::duration<double>(now - last_chit_tick).count()<<'\n'
+          <<"  efficiency = "<<double(io_comm_sum)/double(io_exec_sum)<<'\n'
+          <<'\n';
+        pdes::chitter_io->flush();
         
-        last_io_tick = now;
+        last_chit_tick = now;
         io_exec_sum = 0;
         io_comm_sum = 0;
       }
-    #endif
-
-    t_ub = gvt + dt;
-    if(t_ub < gvt)
-      t_ub = uint64_t(-1);
+    }
+    
+    look_t_ub = gvt + look_dt;
+    if(look_t_ub < gvt)
+      look_t_ub = uint64_t(-1);
   }
 }
 
@@ -431,7 +439,7 @@ void pdes::drain() {
     remote_near_events;
 
   gvt::reducibles rxs_acc = {0,0};
-  lookahead_state lookahead;
+  global_status_state global_status;
   
   while(true) {
     world::progress();
@@ -487,9 +495,9 @@ void pdes::drain() {
             cd->past_events.chop_front(commit_n);
             sim_me.cds_by_dawn.increased({cd, cd->dawn()});
           }
-                    
-          // update lookahead
-          lookahead.update(gvt_new, rxs_acc.sum1, rxs_acc.sum2);
+          
+          // update global status
+          global_status.update(gvt_new, rxs_acc.sum1, rxs_acc.sum2);
           rxs_acc = {0,0};
         }
         else if(gvt_old == ~uint64_t(0)) {
@@ -508,7 +516,7 @@ void pdes::drain() {
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
       local_event le = cd->future_events.peek_least_or({nullptr, end_of_time});
       
-      if(le.tdig.first < lookahead.t_ub) {
+      if(le.tdig.first < global_status.look_t_ub) {
         cd->future_events.pop_least();
         sim_me.cds_by_now.increased({cd, cd->now()});
         
