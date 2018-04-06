@@ -232,6 +232,11 @@ pdes::statistics pdes::local_stats() {
   return local_stats_;
 }
 
+pair<size_t, size_t> pdes::get_total_event_counts() {
+  auto total_global = world::reduce_sum(total_local);
+  return make_pair(total_global.executed_n, total_global.committed_n);
+}
+
 namespace {
   constexpr event_vtable anti_vtable = {
     /*destruct_and_delete*/nullptr,

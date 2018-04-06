@@ -40,8 +40,14 @@ namespace pdes {
     }
   };
   
+  // The non-reduced statistics for this rank pertaining to the last invocation
+  // of `drain()`.
   statistics local_stats();
   
+  // Use and reduce `local_stats` yourself please.
+  [[deprecated]]
+  std::pair<size_t, size_t> get_total_event_counts();
+
   //////////////////////////////////////////////////////////////////////
   // internal
 
