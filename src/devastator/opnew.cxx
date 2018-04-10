@@ -774,8 +774,8 @@ void opnew::arena_holes<Arena,Size>::insert(Arena *a) {
   
   while(true) {
     if(ix == 0) {
-      ASSERT(*pkid == nullptr);
-      ASSERT(*pmax == 0);
+      OPNEW_ASSERT(*pkid == nullptr);
+      OPNEW_ASSERT(*pmax == 0);
       *pkid = a;
       *pmax = a_max;
       a->holes_link.kid[0] = nullptr;
@@ -785,7 +785,7 @@ void opnew::arena_holes<Arena,Size>::insert(Arena *a) {
       break;
     }
     else if((ix & (ix+1)) == 0) {
-      ASSERT(a != *pkid);
+      OPNEW_ASSERT(a != *pkid);
       a->holes_link.kid[0] = *pkid;
       a->holes_link.kid_max[0] = *pmax;
       a->holes_link.kid[1] = nullptr;
@@ -808,7 +808,7 @@ template<typename Fn>
 auto opnew::arena_holes<Arena,Size>::fit_and_decrease(Size size, Fn &&fn)
   -> decltype(fn(std::declval<Arena*>())) {
   
-  ASSERT(size <= root_max_);
+  OPNEW_ASSERT(size <= root_max_);
   
   Arena *a = root_;
   Arena *a_up = nullptr;
@@ -824,7 +824,7 @@ auto opnew::arena_holes<Arena,Size>::fit_and_decrease(Size size, Fn &&fn)
       k = 1;
     
     Arena *kid = a->holes_link.kid[k];
-    ASSERT(kid != nullptr);
+    OPNEW_ASSERT(kid != nullptr);
     a->holes_link.kid[k] = a_up;
     a_up = a;
     a = kid;
@@ -850,7 +850,7 @@ void opnew::arena_holes<Arena,Size>::increased(Arena *a) {
     p = p->holes_link.kid[k];
   }
   
-  ASSERT(p == a);
+  OPNEW_ASSERT(p == a);
 }
 
 template<typename Arena, typename Size>

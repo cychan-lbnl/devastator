@@ -71,7 +71,7 @@ namespace world {
       
       upcxx::command<>::pack(w, ub.size, fn);
 
-      ASSERT(w.alignment() <= 8);
+      DEVA_ASSERT(w.alignment() <= 8);
       
       return rm;
     }

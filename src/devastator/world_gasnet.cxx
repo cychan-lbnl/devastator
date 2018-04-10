@@ -135,14 +135,14 @@ namespace {
     ok = gex_Client_Init(
       &client, &endpoint, &the_team, "devastator", nullptr, nullptr, 0
     );
-    ASSERT_ALWAYS(ok == GASNET_OK);
+    DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
 
-    ASSERT_ALWAYS(world::process_n == gex_TM_QuerySize(the_team));
+    DEVA_ASSERT_ALWAYS(world::process_n == gex_TM_QuerySize(the_team));
     process_me = gex_TM_QueryRank(the_team);
 
     if(0) {
       int fd = open(("err."+std::to_string(process_me)).c_str(), O_CREAT|O_TRUNC|O_RDWR, 0666);
-      ASSERT(fd >= 0);
+      DEVA_ASSERT(fd >= 0);
       dup2(fd, 2);
     }
     
@@ -150,11 +150,11 @@ namespace {
       {id_am_recv, (void(*)())am_recv, GEX_FLAG_AM_MEDIUM | GEX_FLAG_AM_REQUEST, 1, nullptr, "am_recv"}
     };
     ok = gex_EP_RegisterHandlers(endpoint, am_table, sizeof(am_table)/sizeof(am_table[0]));
-    ASSERT_ALWAYS(ok == GASNET_OK);
+    DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
 
     gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
     ok = gasnet_barrier_wait(0, GASNET_BARRIERFLAG_ANONYMOUS);
-    ASSERT_ALWAYS(ok == GASNET_OK);
+    DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
   }
 }
 
@@ -286,7 +286,7 @@ namespace {
         if(m == nullptr) {
           void *mem = operator new(sizeof(remote_in_chunked_message) + total_size);
           m = new(mem) remote_in_chunked_message;
-          ASSERT((void*)m == mem);
+          DEVA_ASSERT((void*)m == mem);
           
           m->header_size = sizeof(remote_in_chunked_message);
           m->count = 1;
@@ -532,7 +532,7 @@ namespace {
                             bun->of[worker].offset8 = part->part_size8;
                             bun->of[worker].nonce = part->nonce;
                             bun->size8 -= part->part_size8;
-                            ASSERT(part->part_size8 < rm->size8);
+                            DEVA_ASSERT(part->part_size8 < rm->size8);
                             
                             std::memcpy(w.place(8*part->part_size8, 8), rm + 1, 8*part->part_size8);
                           }
@@ -560,12 +560,12 @@ namespace {
                   }
 
                   if(true) { // depleted all messages to proc
-                    ASSERT(bun->size8 == 0);
+                    DEVA_ASSERT(bun->size8 == 0);
                     bun->next = -2; // not in list
                   }
                   else { // messages still remain to proc
                   am_full:
-                    ASSERT(bun->size8 != 0);
+                    DEVA_ASSERT(bun->size8 != 0);
                     bun->next = bun_head;
                     bun_head = proc;
                   }
@@ -598,6 +598,6 @@ namespace {
 
     leave_pump.store(false, std::memory_order_relaxed);
     
-    ASSERT_ALWAYS(bun_head == -1); // No messages in flight when run() terminates
+    DEVA_ASSERT_ALWAYS(bun_head == -1); // No messages in flight when run() terminates
   }
 }

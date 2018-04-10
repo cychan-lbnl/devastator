@@ -16,7 +16,7 @@ constexpr int per_rank = 100;
 void send_someday(uint64_t t, int delta);
 
 void orbit(uint64_t t, int delta) {
-  ASSERT(gvt::epoch_gvt() <= t);
+  DEVA_ASSERT(gvt::epoch_gvt() <= t);
 
   landed_n += 1;
   
@@ -25,7 +25,7 @@ void orbit(uint64_t t, int delta) {
 }
 
 void send_someday(uint64_t t, int delta) {
-  ASSERT(gvt::epoch_gvt() <= t+1);
+  DEVA_ASSERT(gvt::epoch_gvt() <= t+1);
   
   if(rng() % 4 == 0) {
     gvt::send(

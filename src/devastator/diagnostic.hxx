@@ -23,13 +23,13 @@ namespace deva {
 
 // Assert that will only happen in debug-mode.
 #if DEBUG
-  #define ASSERT(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
+  #define DEVA_ASSERT(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
 #else
-  #define ASSERT(...) ((void)0)
+  #define DEVA_ASSERT(...) ((void)0)
 #endif
 
 // Assert that happens regardless of debug-mode.
-#define ASSERT_ALWAYS(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
+#define DEVA_ASSERT_ALWAYS(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
 
 struct say {
   say();

@@ -62,7 +62,7 @@ void gvt::advance() {
 }
 
 void gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
-  ASSERT(rdxn_status != rdxn_status_e::reducing);
+  DEVA_ASSERT(rdxn_status != rdxn_status_e::reducing);
 
   if(rdxn_status == rdxn_status_e::quiesced) {
     gvt::round_ += 1;
@@ -160,7 +160,7 @@ namespace {
     rdxn_status = quiesced ? rdxn_status_e::quiesced : rdxn_status_e::non_quiesced;
     rdxn_rxs_ans = grxs;
     if(quiesced) {
-      ASSERT(gvt::epoch_gvt_ <= gvt);
+      DEVA_ASSERT(gvt::epoch_gvt_ <= gvt);
       rdxn_gvt_ans = gvt;
     }
   }

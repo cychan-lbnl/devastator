@@ -43,11 +43,11 @@ struct message {
   void operator()() {
     if(::epoch != this->epoch) {
       say()<<this->epoch<<" landed on "<<::epoch;
-      ASSERT_ALWAYS(0);
+      DEVA_ASSERT_ALWAYS(0);
     }
     
     for(char x: hunk)
-      ASSERT_ALWAYS(x == 'x');
+      DEVA_ASSERT_ALWAYS(x == 'x');
 
     recv_n += 1;
     recv_sz += hunk.size();
@@ -94,7 +94,7 @@ int main() {
         std::cout<<name<<" = "<<a1<<" "<<b1<<'\n';
       }
       world::barrier();
-      ASSERT_ALWAYS(a1 == b1);
+      DEVA_ASSERT_ALWAYS(a1 == b1);
     };
     
     sum2("send/recv n", sent_n, recv_n);

@@ -13,7 +13,7 @@
 #include <type_traits>
 
 #if OPNEW_DEBUG
-  #define OPNEW_ASSERT(ok) (!!(ok) || (assert_failed(__FILE__,__LINE__), 0))
+  #define OPNEW_ASSERT(ok) (!!(ok) || (::deva::assert_failed(__FILE__,__LINE__), 0))
 #else
   #define OPNEW_ASSERT(ok) ((void)0)
 #endif

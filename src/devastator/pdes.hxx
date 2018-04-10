@@ -179,7 +179,7 @@ namespace pdes {
     ) {
     auto *me = static_cast<execute_context_impl*>(this);
     
-    ASSERT(me->time <= time);
+    DEVA_ASSERT(me->time <= time);
     
     if(world::rank_is_local(rank)) {
       auto *e = new event_impl<E>{std::move(ev)};

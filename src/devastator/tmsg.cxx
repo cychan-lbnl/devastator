@@ -100,7 +100,7 @@ namespace {
   }
 
   void* finalizer_tmain(void*) {
-    ASSERT_ALWAYS(tmsg::thread_me() == -1);
+    DEVA_ASSERT_ALWAYS(tmsg::thread_me() == -1);
     
     for(int t=0; t < tmsg::thread_n; t++) {
       pthread_join(threads[t], nullptr);

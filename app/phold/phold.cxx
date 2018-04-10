@@ -146,7 +146,7 @@ int main() {
     uint64_t chk = checksum();
     thread_local uint64_t chkprev = 666;
 
-    ASSERT_ALWAYS(chkprev == 666 || chk == chkprev);
+    DEVA_ASSERT_ALWAYS(chkprev == 666 || chk == chkprev);
     chkprev = chk;
     
     if(rank_me() == 0)

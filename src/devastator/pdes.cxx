@@ -256,7 +256,7 @@ void pdes::arrive_far(int origin, unsigned far_id, event *e) {
         return e;
       }
       else {
-        ASSERT(o->vtbl1 == &anti_vtable);
+        DEVA_ASSERT(o->vtbl1 == &anti_vtable);
         // early annihilation (NOT present with bug)
         delete o;
         e->vtbl1->destruct_and_delete(e);
@@ -272,7 +272,7 @@ namespace {
       {origin, far_id},
       [&](event_on_creator *o)->event_on_creator* {
         if(o != nullptr) {
-          ASSERT(o->vtbl1 != &anti_vtable);
+          DEVA_ASSERT(o->vtbl1 != &anti_vtable);
           // late anninilation
           auto *o1 = static_cast<event*>(o);
           arrive_near(o1->target_cd, o1, o1->tdig(), /*existence_delta=*/-1);
@@ -400,9 +400,11 @@ namespace {
           }
 
           if(le.e->existence == -1) {
-            ASSERT(le.e->far_next == reinterpret_cast<event_on_creator*>(0x1) &&
-                   le.e->target_rank == world::rank_me() &&
-                   &sim_me.cds[le.e->target_cd] == cd);
+            DEVA_ASSERT(
+              le.e->far_next == reinterpret_cast<event_on_creator*>(0x1) &&
+              le.e->target_rank == world::rank_me() &&
+              &sim_me.cds[le.e->target_cd] == cd
+            );
             le.e->vtbl1->destruct_and_delete(le.e);
           }
           else {
@@ -506,7 +508,7 @@ void pdes::drain() {
           rxs_acc = {0,0};
         }
         else if(gvt_old == ~uint64_t(0)) {
-          ASSERT(remote_near_events.size() == 0);
+          DEVA_ASSERT(remote_near_events.size() == 0);
           goto drain_complete;
         }
         
@@ -578,8 +580,8 @@ void pdes::drain() {
   }
 
 drain_complete:
-  ASSERT_ALWAYS(sim_me.from_far.size() == 0);
-  ASSERT_ALWAYS(remote_near_events.size() == 0);
+  DEVA_ASSERT_ALWAYS(sim_me.from_far.size() == 0);
+  DEVA_ASSERT_ALWAYS(remote_near_events.size() == 0);
   sim_me.cds_by_dawn.clear();
   sim_me.cds_by_now.clear();
   sim_me.cds.reset();

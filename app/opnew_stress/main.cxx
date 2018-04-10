@@ -51,7 +51,7 @@ int main() {
         [=]() {
           sent += n;
           for(int j=0; j < n; j++)
-            ASSERT(blob[j] == "ab"[j%2]);
+            DEVA_ASSERT(blob[j] == "ab"[j%2]);
           operator delete(blob);
           
           world::send(origin, []() { unacked -= 1; });

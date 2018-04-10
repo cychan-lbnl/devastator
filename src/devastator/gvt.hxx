@@ -60,7 +60,7 @@ inline gvt::reducibles gvt::epoch_reducibles() {
 
 template<typename Fn>
 void gvt::send(int rank, std::uint64_t t, Fn fn) {
-  ASSERT(gvt::epoch_gvt_ <= t);
+  DEVA_ASSERT(gvt::epoch_gvt_ <= t);
   
   unsigned r = gvt::round_ + 1;
   gvt::round_lsend_[1] += 1;
@@ -70,8 +70,8 @@ void gvt::send(int rank, std::uint64_t t, Fn fn) {
     world::bind(
       [=](Fn const &fn) {
         int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
-        ASSERT(0 <= i && i < 3);
-        ASSERT(gvt::epoch_gvt_ <= t);
+        DEVA_ASSERT(0 <= i && i < 3);
+        DEVA_ASSERT(gvt::epoch_gvt_ <= t);
         
         gvt::round_lrecv_[i] += 1;
         
@@ -84,7 +84,7 @@ void gvt::send(int rank, std::uint64_t t, Fn fn) {
 
 template<typename Fn>
 void gvt::send_local(int rank, std::uint64_t t, Fn fn) {
-  ASSERT(gvt::epoch_gvt_ <= t);
+  DEVA_ASSERT(gvt::epoch_gvt_ <= t);
   
   unsigned r = gvt::round_ + 1;
   gvt::round_lsend_[1] += 1;
@@ -94,8 +94,8 @@ void gvt::send_local(int rank, std::uint64_t t, Fn fn) {
     world::bind(
       [=](Fn const &fn) {
         int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
-        ASSERT(0 <= i && i < 3);
-        ASSERT(gvt::epoch_gvt_ <= t);
+        DEVA_ASSERT(0 <= i && i < 3);
+        DEVA_ASSERT(gvt::epoch_gvt_ <= t);
         
         gvt::round_lrecv_[i] += 1;
         
@@ -108,7 +108,7 @@ void gvt::send_local(int rank, std::uint64_t t, Fn fn) {
 
 template<typename Fn>
 void gvt::send_remote(int rank, std::uint64_t t, Fn fn) {
-  ASSERT(gvt::epoch_gvt_ <= t);
+  DEVA_ASSERT(gvt::epoch_gvt_ <= t);
   
   unsigned r = gvt::round_ + 1;
   gvt::round_lsend_[1] += 1;
@@ -118,8 +118,8 @@ void gvt::send_remote(int rank, std::uint64_t t, Fn fn) {
     world::bind(
       [=](Fn const &fn) {
         int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
-        ASSERT(0 <= i && i < 3);
-        ASSERT(gvt::epoch_gvt_ <= t);
+        DEVA_ASSERT(0 <= i && i < 3);
+        DEVA_ASSERT(gvt::epoch_gvt_ <= t);
         
         gvt::round_lrecv_[i] += 1;
         

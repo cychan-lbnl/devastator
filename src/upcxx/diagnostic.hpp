@@ -3,7 +3,7 @@
 
 #include <devastator/diagnostic.hxx>
 
-#define UPCXX_ASSERT        ASSERT
-#define UPCXX_ASSERT_ALWAYS ASSERT_ALWAYS
+#define UPCXX_ASSERT        DEVA_ASSERT
+#define UPCXX_ASSERT_ALWAYS DEVA_ASSERT_ALWAYS
 
 #endif

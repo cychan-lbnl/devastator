@@ -47,7 +47,7 @@ namespace world {
   
   template<typename Fn>
   void send_remote(int rank, Fn fn) {
-    ASSERT(0);
+    DEVA_ASSERT(0);
   }
   
   inline void progress() {
