@@ -9,7 +9,7 @@
 #endif
 
 #define THREAD_N (WORKER_N)+1
-#include "tmsg.hxx"
+#include <devastator/tmsg.hxx>
 
 #include <upcxx/bind.hpp>
 #include <upcxx/command.hpp>
@@ -18,7 +18,7 @@
 #include <functional>
 #include <utility>
 
-namespace world {
+namespace deva {
   inline constexpr int log2up(int x) {
     return x <= 0 ? -1 :
            x == 1 ? 0 :
@@ -47,11 +47,6 @@ namespace world {
     return process_rank_lo_ <= rank && rank < process_rank_hi_;
   }
   
-  template<typename Fn>
-  void send_local(int rank, Fn fn) {
-    tmsg::send(1 + rank-process_rank_lo_, std::move(fn));
-  }
-
   struct alignas(8) remote_out_message: tmsg::message {
     int rank, size8;
     remote_out_message *bundle_next;
@@ -77,19 +72,27 @@ namespace world {
     }
   };
 
-  template<typename Fn>
-  void send_remote(int rank, Fn fn) {
-    auto *m = remote_out_message::create(rank, std::move(fn));
+  using upcxx::bind;
+
+  template<typename Fn, typename ...Arg>
+  void send_local(int rank, Fn fn, Arg ...arg) {
+    tmsg::send(1 + rank-process_rank_lo_, upcxx::bind(std::move(fn), std::move(arg)...));
+  }
+
+  template<typename Fn, typename ...Arg>
+  void send_remote(int rank, Fn fn, Arg ...arg) {
+    auto *m = remote_out_message::create(rank, upcxx::bind(std::move(fn), std::move(arg)...));
     //say()<<"send_remote to "<<rank<<" size "<<m->size8;
     remote_send_chan_w[rank_me_ - process_rank_lo_].send(0, m);
   }
 
-  template<typename Fn>
-  void send(int rank, Fn fn) {
+  template<typename Fn, typename ...Arg>
+  void send(int rank, Fn fn, Arg ...arg) {
+    auto bound = upcxx::bind(std::move(fn), std::move(arg)...);
     if(rank_is_local(rank))
-      send_local(rank, std::move(fn));
+      send_local(rank, std::move(bound));
     else
-      send_remote(rank, std::move(fn));
+      send_remote(rank, std::move(bound));
   }
 
   void progress();
@@ -102,8 +105,6 @@ namespace world {
     run(fn);
     std::exit(0);
   }
-
-  using upcxx::bind;
 }
 
 #define REFLECTED UPCXX_REFLECTED

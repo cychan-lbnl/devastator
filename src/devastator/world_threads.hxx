@@ -6,12 +6,12 @@
 #endif
 
 #define THREAD_N RANK_N
-#include "tmsg.hxx"
+#include <devastator/tmsg.hxx>
 
 #include <functional>
 #include <tuple>
 
-namespace world {
+namespace deva {
   inline constexpr int log2up(int x) {
     return x <= 0 ? -1 :
            x == 1 ? 0 :
@@ -31,23 +31,8 @@ namespace world {
     return rank_me();
   }
   
-  template<typename Fn>
-  void send(int rank, Fn fn) {
-    tmsg::send(rank, std::move(fn));
-  }
-
   constexpr bool rank_is_local(int rank) {
     return true;
-  }
-  
-  template<typename Fn>
-  void send_local(int rank, Fn fn) {
-    tmsg::send(rank, std::move(fn));
-  }
-  
-  template<typename Fn>
-  void send_remote(int rank, Fn fn) {
-    DEVA_ASSERT(0);
   }
   
   inline void progress() {
@@ -81,15 +66,17 @@ namespace world {
         return me.fn_(std::get<bi>(me.b_)..., std::forward<Arg>(a)...);
       }
       
+      using b_ixseq = std::make_index_sequence<sizeof...(B)>;
+      
       template<typename ...Arg>
       auto operator()(Arg &&...a)
-        -> decltype(apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...)) {
-        return apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...);
+        -> decltype(apply(*this, b_ixseq(), std::forward<Arg>(a)...)) {
+        return apply(*this, b_ixseq(), std::forward<Arg>(a)...);
       }
       template<typename ...Arg>
       auto operator()(Arg &&...a) const
-        -> decltype(apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...)) {
-        return apply(*this, std::make_index_sequence<sizeof...(B)>(), std::forward<Arg>(a)...);
+        -> decltype(apply(*this, b_ixseq(), std::forward<Arg>(a)...)) {
+        return apply(*this, b_ixseq(), std::forward<Arg>(a)...);
       }
     };
     
@@ -98,7 +85,27 @@ namespace world {
       -> decltype(bound<Fn,B...>{std::move(fn), std::tuple<B...>{std::move(b)...}}) {
       return bound<Fn,B...>{std::move(fn), std::tuple<B...>{std::move(b)...}};
     }
+    
+    template<typename Fn>
+    Fn&& bind(Fn &&fn) {
+      return static_cast<Fn&&>(fn);
+    }
   #endif
+  
+  template<typename Fn, typename ...Arg>
+  void send(int rank, Fn fn, Arg ...arg) {
+    tmsg::send(rank, deva::bind(std::move(fn), std::move(arg)...));
+  }
+
+  template<typename Fn, typename ...Arg>
+  void send_local(int rank, Fn fn, Arg ...arg) {
+    tmsg::send(rank, deva::bind(std::move(fn), std::move(arg)...));
+  }
+  
+  template<typename Fn, typename ...Arg>
+  void send_remote(int rank, Fn fn, Arg ...arg) {
+    DEVA_ASSERT(0);
+  }
 }
 
 #define REFLECTED(...) /*nothing*/

@@ -1,16 +1,20 @@
-#include "gvt.hxx"
+#include <devastator/gvt.hxx>
 
 using namespace std;
 
-namespace gvt {
-  __thread bool epoch_ended_;
-  __thread uint64_t epoch_gvt_;
-  __thread reducibles epoch_rxs_;
-  
-  __thread unsigned round_;
-  __thread uint64_t round_lvt_[2];
-  __thread uint64_t round_lsend_[2];
-  __thread uint64_t round_lrecv_[3];
+namespace gvt = deva::gvt;
+
+namespace deva {
+  namespace gvt {
+    __thread bool epoch_ended_;
+    __thread uint64_t epoch_gvt_;
+    __thread reducibles epoch_rxs_;
+    
+    __thread unsigned round_;
+    __thread uint64_t round_lvt_[2];
+    __thread uint64_t round_lsend_[2];
+    __thread uint64_t round_lrecv_[3];
+  }
 }
 
 namespace {
@@ -32,7 +36,7 @@ namespace {
   void rdxn_down(int to_ub, uint64_t gvt, gvt::reducibles rxs);
 }
 
-void gvt::init(gvt::reducibles rxs0) {
+void deva::gvt::init(gvt::reducibles rxs0) {
   gvt::epoch_ended_ = true;
   gvt::epoch_gvt_ = 0;
   gvt::epoch_rxs_ = rxs0;
@@ -52,16 +56,16 @@ void gvt::init(gvt::reducibles rxs0) {
   rdxn_gvt_ans = 0;
   rdxn_rxs_ans = rxs0;
   
-  world::barrier();
+  deva::barrier();
 }
 
-void gvt::advance() {
+void deva::gvt::advance() {
   gvt::epoch_ended_ = rdxn_status != rdxn_status_e::reducing;
   gvt::epoch_gvt_ = rdxn_gvt_ans;
   gvt::epoch_rxs_ = rdxn_rxs_ans;
 }
 
-void gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
+void deva::gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
   DEVA_ASSERT(rdxn_status != rdxn_status_e::reducing);
 
   if(rdxn_status == rdxn_status_e::quiesced) {
@@ -90,9 +94,9 @@ void gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
 }
 
 namespace {
-  void rdxn_up(uint64_t lvt, uint64_t lsend, uint64_t lrecv, gvt::reducibles rxs) {
-    const int rank_me = world::rank_me();
-    const int rank_n = world::rank_n;
+  void rdxn_up(uint64_t lvt, uint64_t lsend, uint64_t lrecv, deva::gvt::reducibles rxs) {
+    const int rank_me = deva::rank_me();
+    const int rank_n = deva::rank_n;
     
     if(rdxn_incoming == 0) {
       while(true) {
@@ -130,26 +134,26 @@ namespace {
         uint64_t grecv = rdxn_grecv;
         rxs = rdxn_rxs_acc;
         lvt = rdxn_gvt_acc;
-        world::send(parent, [=]() {
+        deva::send(parent, [=]() {
           rdxn_up(lvt, gsend, grecv, rxs);
         });
       }
     }
   }
   
-  void rdxn_down(int to_ub, uint64_t gvt, gvt::reducibles grxs) {
+  void rdxn_down(int to_ub, uint64_t gvt, deva::gvt::reducibles grxs) {
     const bool quiesced = to_ub < 0;
     to_ub ^= quiesced ? -1 : 0;
     
-    const int rank_me = world::rank_me();
-    const int rank_n = world::rank_n;
+    const int rank_me = deva::rank_me();
+    const int rank_n = deva::rank_n;
     
     while(true) {
       int mid = rank_me + (to_ub - rank_me)/2;
       if(mid == rank_me) break;
 
       int to_ub1 = to_ub ^ (quiesced ? -1 : 0);
-      world::send(mid, [=]() {
+      deva::send(mid, [=]() {
         rdxn_down(to_ub1, gvt, grxs);
       });
       

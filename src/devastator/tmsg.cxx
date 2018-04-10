@@ -1,11 +1,14 @@
-#include "world.hxx"
-#include "tmsg.hxx"
-#include "opnew.hxx"
+#include <devastator/world.hxx>
+#include <devastator/tmsg.hxx>
+#include <devastator/opnew.hxx>
 
 #include <atomic>
 
 #include <pthread.h>
 #include <sched.h>
+
+namespace opnew = deva::opnew;
+namespace tmsg = deva::tmsg;
 
 __thread int tmsg::thread_me_ = -1;
 

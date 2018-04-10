@@ -7,8 +7,8 @@
 
 using namespace std;
 
-using world::rank_n;
-using world::rank_me;
+using deva::rank_n;
+using deva::rank_me;
 
 struct rng_state {
   uint64_t a, b;
@@ -42,7 +42,7 @@ struct message {
 
   void operator()() {
     if(::epoch != this->epoch) {
-      say()<<this->epoch<<" landed on "<<::epoch;
+      deva::say()<<this->epoch<<" landed on "<<::epoch;
       DEVA_ASSERT_ALWAYS(0);
     }
     
@@ -51,7 +51,7 @@ struct message {
 
     recv_n += 1;
     recv_sz += hunk.size();
-    world::send(origin, []() {
+    deva::send(origin, []() {
       ack_n += 1;
     });
   }
@@ -78,22 +78,22 @@ int main() {
       //int len = 1;
       sent_n += 1;
       sent_sz += len;
-      world::send(i % rank_n, message{rank_me(), epoch, vector<char>(len, 'x')});
-      world::progress();
+      deva::send(i % rank_n, message{rank_me(), epoch, vector<char>(len, 'x')});
+      deva::progress();
     }
 
     while(ack_n != sent_n)
-      world::progress();
+      deva::progress();
 
-    world::barrier();
+    deva::barrier();
 
     auto sum2 = [](const char *name, uint64_t a, uint64_t b) {
-      uint64_t a1 = world::reduce_sum(a);
-      uint64_t b1 = world::reduce_sum(b);
+      uint64_t a1 = deva::reduce_sum(a);
+      uint64_t b1 = deva::reduce_sum(b);
       if(rank_me() == 0 || a1 != b1) {
         std::cout<<name<<" = "<<a1<<" "<<b1<<'\n';
       }
-      world::barrier();
+      deva::barrier();
       DEVA_ASSERT_ALWAYS(a1 == b1);
     };
     
@@ -102,8 +102,8 @@ int main() {
     if(rank_me() == 0) std::cout<<'\n';
   };
    
-  world::run(doit);
-  world::run(doit);
-  world::run(doit);
-  world::run(doit);
+  deva::run(doit);
+  deva::run(doit);
+  deva::run(doit);
+  deva::run(doit);
 }

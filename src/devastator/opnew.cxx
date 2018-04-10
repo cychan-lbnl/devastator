@@ -1,5 +1,5 @@
-#include "opnew.hxx"
-#include "diagnostic.hxx"
+#include <devastator/opnew.hxx>
+#include <devastator/diagnostic.hxx>
 
 #if OPNEW_ENABLED // contains whole file
 
@@ -10,6 +10,9 @@
 #include <mutex>
 
 #include <sys/mman.h>
+
+namespace opnew = deva::opnew;
+namespace tmsg = deva::tmsg;
 
 using namespace std;
 using namespace opnew;

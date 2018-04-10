@@ -9,11 +9,12 @@
 #include <memory>
 #include <sched.h>
 
-
 using namespace std;
 
-using world::rank_n;
-using world::rank_me;
+namespace pdes = deva::pdes;
+
+using deva::rank_n;
+using deva::rank_me;
 
 struct rng_state {
   uint64_t a, b;
@@ -124,7 +125,7 @@ uint64_t checksum() {
     lacc ^= check[a - a_lb];
   }
 
-  return world::reduce_xor(lacc);
+  return deva::reduce_xor(lacc);
 }
 
 int main() {
@@ -150,9 +151,9 @@ int main() {
     chkprev = chk;
     
     if(rank_me() == 0)
-      say() << "checksum = "<< chk;
+      deva::say() << "checksum = "<< chk;
   };
 
   for(int i=0; i < 10; i++)
-    world::run(doit);
+    deva::run(doit);
 }

@@ -1,5 +1,5 @@
-#include "diagnostic.hxx"
-#include "world.hxx"
+#include <devastator/diagnostic.hxx>
+#include <devastator/world.hxx>
 
 #include <csignal>
 #include <mutex>
@@ -52,12 +52,12 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
   if(aborting) std::abort();
 }
 
-say::say() {
+deva::say::say() {
   lock_.lock();
-  std::cerr<<"["<<world::rank_me()<<"] ";
+  std::cerr<<"["<<deva::rank_me()<<"] ";
 }
 
-say::~say() {
+deva::say::~say() {
   std::cerr<<"\n";
   lock_.unlock();
 }

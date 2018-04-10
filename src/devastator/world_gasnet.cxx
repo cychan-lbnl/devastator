@@ -1,6 +1,6 @@
-#include "world_gasnet.hxx"
-#include "intrusive_map.hxx"
-#include "opnew.hxx"
+#include <devastator/world_gasnet.hxx>
+#include <devastator/intrusive_map.hxx>
+#include <devastator/opnew.hxx>
 
 #include <gasnet.h>
 
@@ -14,16 +14,18 @@
 #include <sched.h>
 #include <fcntl.h>
 
+namespace tmsg = deva::tmsg;
+
 using namespace std;
 
-using world::worker_n;
-using world::remote_out_message;
+using deva::worker_n;
+using deva::remote_out_message;
 
-__thread int world::rank_me_ = 0xdeadbeef;
+__thread int deva::rank_me_ = 0xdeadbeef;
 
 alignas(64)
-int world::process_rank_lo_ = 0xdeadbeef;
-int world::process_rank_hi_ = 0xdeadbeef;
+int deva::process_rank_lo_ = 0xdeadbeef;
+int deva::process_rank_hi_ = 0xdeadbeef;
 
 namespace {
   int process_me;
@@ -34,10 +36,10 @@ namespace {
 }
 
 alignas(64)
-tmsg::channels_r<worker_n> world::remote_send_chan_r;
-tmsg::channels_w<1> world::remote_send_chan_w[worker_n];
-tmsg::channels_r<1> world::remote_recv_chan_r[worker_n];
-tmsg::channels_w<worker_n> world::remote_recv_chan_w;
+tmsg::channels_r<worker_n> deva::remote_send_chan_r;
+tmsg::channels_w<1> deva::remote_send_chan_w[worker_n];
+tmsg::channels_r<1> deva::remote_recv_chan_r[worker_n];
+tmsg::channels_w<worker_n> deva::remote_recv_chan_w;
 
 namespace {
   enum {
@@ -55,7 +57,7 @@ namespace {
   };
 }
 
-void world::run(upcxx::function_ref<void()> fn) {
+void deva::run(upcxx::function_ref<void()> fn) {
   static bool inited = false;
 
   if(!inited) {
@@ -110,7 +112,7 @@ void world::run(upcxx::function_ref<void()> fn) {
       rank_me_ = process_rank_lo_ + tme-1;
       fn();
       
-      world::barrier(/*do_progress=*/false);
+      deva::barrier(/*do_progress=*/false);
       
       if(tme == 1)
         leave_pump.store(true, std::memory_order_release);
@@ -121,10 +123,10 @@ void world::run(upcxx::function_ref<void()> fn) {
 namespace {
   void init_gasnet() {
     #if GASNET_CONDUIT_SMP
-      setenv("GASNET_PSHM_NODES", std::to_string(world::process_n).c_str(), 1);
+      setenv("GASNET_PSHM_NODES", std::to_string(deva::process_n).c_str(), 1);
     #elif GASNET_CONDUIT_ARIES
       // Everyone carves out 1GB and shares it evenly across peers
-      setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string((1<<30)/world::process_n).c_str(), 1);
+      setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string((1<<30)/deva::process_n).c_str(), 1);
     #endif
     
     int ok;
@@ -137,7 +139,7 @@ namespace {
     );
     DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
 
-    DEVA_ASSERT_ALWAYS(world::process_n == gex_TM_QuerySize(the_team));
+    DEVA_ASSERT_ALWAYS(deva::process_n == gex_TM_QuerySize(the_team));
     process_me = gex_TM_QueryRank(the_team);
 
     if(0) {
@@ -158,7 +160,7 @@ namespace {
   }
 }
 
-void world::progress() {
+void deva::progress() {
   bool did_something = tmsg::progress_noyield();
 
   int wme = tmsg::thread_me() - 1;
@@ -201,7 +203,7 @@ namespace {
   }
 }
 
-void world::barrier(bool do_progress) {
+void deva::barrier(bool do_progress) {
   static std::atomic<int> c[2]{{0}, {0}};
   static thread_local unsigned epoch = 0;
   
@@ -210,7 +212,7 @@ void world::barrier(bool do_progress) {
   
   if(c[epoch & 1].fetch_add(bump) + bump != end) {
     while(c[epoch & 1].load(std::memory_order_acquire) != end)
-      world::progress();
+      deva::progress();
   }
   else {
     unsigned epoch1 = epoch + 1;
@@ -222,7 +224,7 @@ void world::barrier(bool do_progress) {
 
   while(barrier_done.load(std::memory_order_acquire) != epoch+1) {
     if(do_progress)
-      world::progress();
+      deva::progress();
     else
       sched_yield();
   }
@@ -266,7 +268,7 @@ namespace {
     }
   };
 
-  intrusive_map<
+  deva::intrusive_map<
       remote_in_chunked_message, pair<int,uint32_t>,
       remote_in_chunked_message::next_of,
       remote_in_chunked_message::key_of,
@@ -302,7 +304,7 @@ namespace {
         m->waiting_size8 -= hdr.part_size8;
         
         if(m->waiting_size8 == 0) {
-          world::remote_recv_chan_w.send(worker, m);
+          deva::remote_recv_chan_w.send(worker, m);
           m = nullptr; // removes m from table
         }
         return m;
@@ -341,7 +343,7 @@ namespace {
         std::memcpy(w.place(size, 8), r.pop(size, 8), size);
 
         //say()<<"rrecv send w="<<worker<<" mn="<<msg_n;
-        world::remote_recv_chan_w.send(hdr.worker, m);
+        deva::remote_recv_chan_w.send(hdr.worker, m);
       }
 
       if(hdr.has_part_tail)
@@ -361,10 +363,10 @@ namespace {
         remote_out_message *tail;
         int32_t offset8;
         uint32_t nonce;
-      } of[world::worker_n] = {/*{nullptr,0,0}...*/};
+      } of[deva::worker_n] = {/*{nullptr,0,0}...*/};
     };
     
-    std::unique_ptr<bundle[]> bun_table{ new bundle[world::process_n] };
+    std::unique_ptr<bundle[]> bun_table{ new bundle[deva::process_n] };
     int bun_head = -1;
 
     uint32_t nonce_bump = 0;
@@ -374,17 +376,17 @@ namespace {
       
       bool did_something = tmsg::progress_noyield();
       
-      did_something |= world::remote_recv_chan_w.cleanup();
+      did_something |= deva::remote_recv_chan_w.cleanup();
 
       // Non-bundling algorithm. One message from a worker = one AM.
       #if 0
         #error "Not updated to use new partial-message format"
         
-        did_something |= world::remote_send_chan_r.receive(
+        did_something |= deva::remote_send_chan_r.receive(
           [&](tmsg::message *m) {
             auto *rm = static_cast<remote_out_message*>(m);
-            int proc = rm->rank / world::worker_n;
-            int wrkr = rm->rank % world::worker_n;
+            int proc = rm->rank / deva::worker_n;
+            int wrkr = rm->rank % deva::worker_n;
 
             alignas(8) char buf[16<<10];
             upcxx::parcel_writer w{buf};
@@ -404,12 +406,12 @@ namespace {
         );
       // Bundling algorithm.
       #else 
-        did_something |= world::remote_send_chan_r.receive_batch(
+        did_something |= deva::remote_send_chan_r.receive_batch(
           // lambda called to receive each message
           [&](tmsg::message *m) {
             auto *rm = static_cast<remote_out_message*>(m);
-            int p = rm->rank / world::worker_n;
-            int w = rm->rank % world::worker_n;
+            int p = rm->rank / deva::worker_n;
+            int w = rm->rank % deva::worker_n;
             //say()<<"rsend to p="<<p<<" w="<<w<<" sz="<<rm->size8;
 
             bundle *bun = &bun_table[p];
@@ -458,7 +460,7 @@ namespace {
                   upcxx::parcel_writer w{am_buf};
                   int committed_workers = 0;
                   
-                  for(int worker=0; worker < world::worker_n; worker++) {
+                  for(int worker=0; worker < deva::worker_n; worker++) {
                     remote_out_message *rm_tail = bun->of[worker].tail;
 
                     if(rm_tail != nullptr) {

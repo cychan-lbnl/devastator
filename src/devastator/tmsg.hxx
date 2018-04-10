@@ -1,8 +1,8 @@
 #ifndef _185047ccc3634e778407efc12d5bea5d
 #define _185047ccc3634e778407efc12d5bea5d
 
-#include "diagnostic.hxx"
-#include "opnew_fwd.hxx"
+#include <devastator/diagnostic.hxx>
+#include <devastator/opnew_fwd.hxx>
 
 #include <upcxx/utility.hpp>
 
@@ -16,6 +16,7 @@
 #  error "-DTHREAD_N=<num> required"
 #endif
 
+namespace deva {
 namespace tmsg {
   struct hot_slot {
     std::uint32_t ix, delta, old;
@@ -304,5 +305,6 @@ namespace tmsg {
   void barrier(bool do_progress=true);
   
   void run(upcxx::function_ref<void()> fn);
+}
 }
 #endif

@@ -1,15 +1,18 @@
-#include "diagnostic.hxx"
-#include "gvt.hxx"
-#include "pdes.hxx"
-#include "intrusive_map.hxx"
-#include "intrusive_min_heap.hxx"
-#include "queue.hxx"
-#include "reduce.hxx"
+#include <devastator/diagnostic.hxx>
+#include <devastator/gvt.hxx>
+#include <devastator/pdes.hxx>
+#include <devastator/intrusive_map.hxx>
+#include <devastator/intrusive_min_heap.hxx>
+#include <devastator/queue.hxx>
+#include <devastator/reduce.hxx>
 
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <utility>
+
+namespace gvt = deva::gvt;
+namespace pdes = deva::pdes;
 
 using namespace pdes;
 using namespace std;
@@ -70,9 +73,9 @@ namespace {
   // causality domain (logical process)
   struct cd_state {
     int cd_ix;
-    queue<local_event> past_events;
+    deva::queue<local_event> past_events;
     
-    intrusive_min_heap<
+    deva::intrusive_min_heap<
         local_event, event_tdig,
         local_event::future_ix_of, local_event::tdig_of>
       future_events;
@@ -107,21 +110,21 @@ namespace {
   struct sim_state {
     unique_ptr<cd_state[]> cds;
     
-    intrusive_min_heap<
+    deva::intrusive_min_heap<
         cd_by<&cd_state::by_now_ix>,
         uint64_t,
         cd_by<&cd_state::by_now_ix>::ix_of,
         cd_by<&cd_state::by_now_ix>::key_of>
       cds_by_now;
     
-    intrusive_min_heap<
+    deva::intrusive_min_heap<
         cd_by<&cd_state::by_dawn_ix>,
         uint64_t,
         cd_by<&cd_state::by_dawn_ix>::ix_of,
         cd_by<&cd_state::by_dawn_ix>::key_of>
       cds_by_dawn;
 
-    intrusive_map<
+    deva::intrusive_map<
         event_on_creator, std::pair<int,unsigned>,
         event_on_creator::far_next_of,
         far_origin_id_of,
@@ -182,7 +185,7 @@ namespace {
       auto period = std::chrono::seconds(chitter_secs);
       auto now = std::chrono::steady_clock::now();
       
-      if(world::rank_me() == 0 && now - last_chit_tick > period) {
+      if(deva::rank_me() == 0 && now - last_chit_tick > period) {
         (*pdes::chitter_io)
           <<"pdes::drain() status:\n"
           <<"  gvt = "<<double(gvt)<<'\n'
@@ -233,7 +236,7 @@ pdes::statistics pdes::local_stats() {
 }
 
 pair<size_t, size_t> pdes::get_total_event_counts() {
-  auto ans = world::reduce_sum(local_stats_);
+  auto ans = deva::reduce_sum(local_stats_);
   return make_pair(ans.executed_n, ans.committed_n);
 }
 
@@ -351,7 +354,7 @@ namespace {
             far_event_id far = le.e->sent_far.front();
             le.e->sent_far.pop_front();
 
-            int origin = world::rank_me();
+            int origin = deva::rank_me();
             unsigned far_id = far.id;
             gvt::send_remote(far.rank, far.time, [=]() {
               arrive_far_anti(origin, far_id);
@@ -364,7 +367,7 @@ namespace {
             event *sent_next = sent->sent_near_next;
             event_tdig sent_tdig = sent->tdig();
             
-            if(sent->target_rank != world::rank_me()) { // event sent to near-remote
+            if(sent->target_rank != deva::rank_me()) { // event sent to near-remote
               // send anti-message
               int target_cd = sent->target_cd;
               gvt::send_local(sent->target_rank, sent->time, [=]() {
@@ -402,7 +405,7 @@ namespace {
           if(le.e->existence == -1) {
             DEVA_ASSERT(
               le.e->far_next == reinterpret_cast<event_on_creator*>(0x1) &&
-              le.e->target_rank == world::rank_me() &&
+              le.e->target_rank == deva::rank_me() &&
               &sim_me.cds[le.e->target_cd] == cd
             );
             le.e->vtbl1->destruct_and_delete(le.e);
@@ -449,7 +452,7 @@ void pdes::drain() {
   global_status_state global_status;
   
   while(true) {
-    world::progress();
+    deva::progress();
     
     { // nurse gvt
       uint64_t lvt = sim_me.cds_by_now.least_key();
@@ -484,7 +487,7 @@ void pdes::drain() {
               commit_n += 1;
               le.e->vtbl2->commit(le.e);
               
-              if(le.e->creator_rank == world::rank_me()) {
+              if(le.e->creator_rank == deva::rank_me()) {
                 // We report as the creator of events which were sent from a
                 // far since we actually allocated and constructed them.
                 if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
@@ -553,7 +556,7 @@ void pdes::drain() {
             event_tdig sent_tdig = sent->tdig();
             int sent_cd_ix = sent->target_cd;
             
-            if(sent->target_rank != world::rank_me()) {
+            if(sent->target_rank != deva::rank_me()) {
               gvt::send_local(sent->target_rank, sent->time, [=]() {
                 arrive_near(sent_cd_ix, sent, sent_tdig, +1);
               });

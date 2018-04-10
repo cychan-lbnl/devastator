@@ -1,5 +1,5 @@
-#include "reduce.hxx"
+#include <devastator/reduce.hxx>
 
-thread_local int world::rdxn_incoming = 0;
-thread_local void *world::rdxn_acc;
-thread_local void *world::rdxn_ans;
+thread_local int deva::rdxn_incoming = 0;
+thread_local void *deva::rdxn_acc;
+thread_local void *deva::rdxn_ans;

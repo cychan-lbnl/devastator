@@ -1,14 +1,15 @@
 #ifndef _409355b8303d41628b1284d487a6d766
 #define _409355b8303d41628b1284d487a6d766
 
-#include "gvt.hxx"
-#include "world.hxx"
+#include <devastator/gvt.hxx>
+#include <devastator/world.hxx>
 
 #include <cstdint>
 #include <forward_list>
 #include <iostream>
 #include <utility>
 
+namespace deva {
 namespace pdes {
   struct execute_context {
     int cd;
@@ -112,7 +113,7 @@ namespace pdes {
     event(event_vtable const *vtbl) {
       this->vtbl1 = vtbl;
       this->vtbl2 = vtbl;
-      this->creator_rank = world::rank_me();
+      this->creator_rank = deva::rank_me();
     }
 
     static std::uint64_t time_of(event *e) {
@@ -181,7 +182,7 @@ namespace pdes {
     
     DEVA_ASSERT(me->time <= time);
     
-    if(world::rank_is_local(rank)) {
+    if(deva::rank_is_local(rank)) {
       auto *e = new event_impl<E>{std::move(ev)};
       e->target_rank = rank;
       e->target_cd = cd;
@@ -192,23 +193,21 @@ namespace pdes {
       me->sent_near_head = e;
     }
     else {
-      int origin = world::rank_me();
+      int origin = deva::rank_me();
       unsigned far_id = event::far_id_bump++;
       
       gvt::send_remote(rank, time,
-        world::bind(
-          [=](E &ev) {
-            auto *e = new event_impl<E>{std::move(ev)};
-            e->far_origin = origin;
-            e->far_id = far_id;
-            e->target_cd = cd;
-            e->time = time;
-            e->digest = digest;
-            
-            pdes::arrive_far(origin, far_id, e);
-          },
-          std::move(ev)
-        )
+        [=](E &ev) {
+          auto *e = new event_impl<E>{std::move(ev)};
+          e->far_origin = origin;
+          e->far_id = far_id;
+          e->target_cd = cd;
+          e->time = time;
+          e->digest = digest;
+          
+          pdes::arrive_far(origin, far_id, e);
+        },
+        std::move(ev)
       );
 
       me->sent_far->push_front({rank, far_id, time});
@@ -220,12 +219,12 @@ namespace pdes {
   template<typename E>
   void root_event(int cd_ix, std::uint64_t time, std::uint64_t digest, E ev) {
     auto *e = new event_impl<E>{std::move(ev)};
-    e->target_rank = world::rank_me();
+    e->target_rank = deva::rank_me();
     e->target_cd = cd_ix;
     e->time = time;
     e->digest = digest;
     root_event(cd_ix, e);
   }
-}
-
+} // namespace pdes
+} // namespace deva
 #endif

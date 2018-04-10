@@ -1,12 +1,12 @@
 #ifndef _1fa94734_0f88_4819_abb4_43776c659c8a
 #define _1fa94734_0f88_4819_abb4_43776c659c8a
 
-#include "opnew_fwd.hxx"
+#include <devastator/opnew_fwd.hxx>
 
 #if OPNEW_ENABLED
 
-#include "diagnostic.hxx"
-#include "world.hxx"
+#include <devastator/diagnostic.hxx>
+#include <devastator/world.hxx>
 
 #include <cstdint>
 #include <new>
@@ -18,6 +18,7 @@
   #define OPNEW_ASSERT(ok) ((void)0)
 #endif
 
+namespace deva {
 namespace opnew {
   template<int...>
   struct index_sequence {};
@@ -422,7 +423,7 @@ namespace opnew {
     
     operator_delete_slow(obj);
   }
-}
-
+} // namespace opnew
+} // namespace deva
 #endif
 #endif

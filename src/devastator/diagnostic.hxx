@@ -31,16 +31,18 @@ namespace deva {
 // Assert that happens regardless of debug-mode.
 #define DEVA_ASSERT_ALWAYS(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
 
-struct say {
-  say();
-  say(say const&) = delete;
-  ~say();
+namespace deva {
+  struct say {
+    say();
+    say(say const&) = delete;
+    ~say();
 
-  template<typename T>
-  say& operator<<(T &&x) {
-    std::cerr << x;
-    return *this;
-  }
-};
+    template<typename T>
+    say& operator<<(T &&x) {
+      std::cerr << x;
+      return *this;
+    }
+  };
+}
 
 #endif

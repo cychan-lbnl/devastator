@@ -12,6 +12,7 @@
 #endif
 
 #if !OPNEW_ENABLED
+namespace deva {
 namespace opnew {
   inline void progress() {}
   inline void thread_me_initialized() {}
@@ -25,12 +26,15 @@ namespace opnew {
     ::operator delete(obj);
   }
 }
+}
 #else
+namespace deva {
 namespace opnew {
   void* operator_new(std::size_t);
   
   template<std::size_t known_size=0, bool known_local=false>
   void operator_delete(void *obj);
+}
 }
 #endif
 #endif
