@@ -173,7 +173,7 @@ void world::progress() {
       int n = ms->count;
       while(n--) {
         r.pop(0, 8);
-        upcxx::command_execute(r);
+        upcxx::command<>::execute(r);
       }
     }
   );
@@ -233,7 +233,7 @@ void world::barrier(bool do_progress) {
 namespace {
   void am_master(gex_Token_t, void *buf, size_t buf_size) {
     upcxx::parcel_reader r{buf};
-    upcxx::command_execute(r);
+    upcxx::command<>::execute(r);
   }
 
   struct alignas(8) am_worker_header {
@@ -328,17 +328,17 @@ namespace {
       if(hdr.middle_msg_n != 0) {
         size_t size = 8*size_t(hdr.middle_size8);
         
-        upcxx::parcel_layout ub;
-        ub.add_trivial_aligned<remote_in_messages>();
-        ub.add_bytes(size, 8);
+        upcxx::parcel_size<> ub;
+        ub = ub.trivial_added<remote_in_messages>();
+        ub = ub.added(upcxx::parcel_size<>(size, 8));
         
-        void *buf = operator new(ub.size());
+        void *buf = operator new(ub.size);
         upcxx::parcel_writer w{buf};
         remote_in_messages *m = w.put_trivial_aligned<remote_in_messages>({});
 
         m->header_size = sizeof(remote_in_messages);
         m->count = hdr.middle_msg_n;
-        std::memcpy(w.put(size, 8), r.pop(size, 8), size);
+        std::memcpy(w.place(size, 8), r.pop(size, 8), size);
 
         //say()<<"rrecv send w="<<worker<<" mn="<<msg_n;
         world::remote_recv_chan_w.send(hdr.worker, m);
@@ -391,7 +391,7 @@ namespace {
             w.put_trivial_aligned<uint16_t>(wrkr);
             w.put_trivial_aligned<uint16_t>(1);
             w.put_trivial_aligned<int32_t>(rm->size8);
-            std::memcpy(w.put(8*rm->size8, 8), rm+1, 8*rm->size8);
+            std::memcpy(w.place(8*rm->size8, 8), rm+1, 8*rm->size8);
             
             //say()<<"gex_AM_RequestMedium1";
             gex_AM_RequestMedium1(
@@ -464,9 +464,9 @@ namespace {
                     if(rm_tail != nullptr) {
                       remote_out_message *rm = rm_tail->bundle_next;
                       
-                      upcxx::parcel_layout laytmp = w.layout();
-                      laytmp.add_trivial_aligned<am_worker_header>();
-                      if(laytmp.size() >= am_len) goto am_full;
+                      upcxx::parcel_size<> laytmp = {w.size(), w.align()};
+                      laytmp = laytmp.trivial_added<am_worker_header>();
+                      if(laytmp.size >= am_len) goto am_full;
                       
                       committed_workers += 1;
 
@@ -480,8 +480,8 @@ namespace {
                       if(bun->of[worker].offset8 != 0) {
                         int32_t offset8 = bun->of[worker].offset8;
 
-                        laytmp.add_trivial_aligned<am_worker_part_header>();
-                        if(laytmp.size() >= am_len) goto am_full;
+                        laytmp = laytmp.trivial_added<am_worker_part_header>();
+                        if(laytmp.size >= am_len) goto am_full;
 
                         hdr->has_part_head = 1;
                         auto *part = w.put_trivial_aligned<am_worker_part_header>({});
@@ -493,7 +493,7 @@ namespace {
                         bun->of[worker].offset8 += part->part_size8;
                         bun->size8 -= part->part_size8;
                         
-                        std::memcpy(w.put(8*part->part_size8, 8), (char*)(rm+1) + 8*offset8, 8*part->part_size8);
+                        std::memcpy(w.place(8*part->part_size8, 8), (char*)(rm+1) + 8*offset8, 8*part->part_size8);
 
                         if(bun->of[worker].offset8 == rm->size8) {
                           bun->of[worker].offset8 = 0;
@@ -511,17 +511,17 @@ namespace {
                       
                       while(rm != nullptr) {
                       rm_not_null:
-                        laytmp = w.layout();
-                        laytmp.add_bytes(8*rm->size8, 8);
+                        laytmp = {w.size(), w.align()};
+                        laytmp = laytmp.added(upcxx::parcel_size<>{8*size_t(rm->size8), 8});
                         
                         if(uint16_t(hdr->middle_msg_n + 1) == 0)
                           goto am_full;
                         
-                        if(laytmp.size() > am_len) {
-                          laytmp = w.layout();
-                          laytmp.add_trivial_aligned<am_worker_part_header>();
+                        if(laytmp.size > am_len) {
+                          laytmp = {w.size(), w.align()};
+                          laytmp = laytmp.trivial_added<am_worker_part_header>();
                           
-                          if(am_len >= laytmp.size() + 64) {
+                          if(am_len >= laytmp.size + 64) {
                             hdr->has_part_tail = 1;
                             auto *part = w.put_trivial_aligned<am_worker_part_header>({});
                             part->nonce = nonce_bump++;
@@ -534,7 +534,7 @@ namespace {
                             bun->size8 -= part->part_size8;
                             ASSERT(part->part_size8 < rm->size8);
                             
-                            std::memcpy(w.put(8*part->part_size8, 8), rm + 1, 8*part->part_size8);
+                            std::memcpy(w.place(8*part->part_size8, 8), rm + 1, 8*part->part_size8);
                           }
 
                           goto am_full;
@@ -544,7 +544,7 @@ namespace {
                         hdr->middle_size8 += rm->size8;
                         bun->size8 -= rm->size8;
                         
-                        std::memcpy(w.put(8*rm->size8, 8), rm + 1, 8*rm->size8);
+                        std::memcpy(w.place(8*rm->size8, 8), rm + 1, 8*rm->size8);
 
                         // pop rm from head of list
                         if(rm == rm_tail) break;

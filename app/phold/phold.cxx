@@ -58,18 +58,13 @@ struct event {
     devil[2]= 6;
   }
 
-  template<typename Re>
-  friend void reflect(Re &re, event &me) {
-    re(me.ray);
-    re(me.actor);
-    re(me.devil);
-  }
+  REFLECTED(ray, actor, devil);
 
   void sane(const char *file, int line) {
     bool ok = true;
     ok &= (devil.size()==3);
     ok &= (devil[0]==6 && devil[1]==6 && devil[2]==6);
-    if(!ok) assert_failed(file, line);
+    if(!ok) deva::assert_failed(file, line);
   }
   
   // only member is execute, unexecute is now a lambda returned by execute

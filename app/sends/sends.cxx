@@ -56,12 +56,7 @@ struct message {
     });
   }
 
-  template<typename Re>
-  friend void reflect(Re &re, message &me) {
-    re(me.origin);
-    re(me.epoch);
-    re(me.hunk);
-  }
+  REFLECTED(origin, epoch, hunk);
 };
 
 int main() {

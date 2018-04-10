@@ -58,10 +58,10 @@ namespace world {
     
     template<typename Fn>
     static remote_out_message* create(int rank, Fn fn) {
-      upcxx::parcel_layout ub;
-      ub.add_trivial_aligned<remote_out_message>();
-      ub.add_bytes(0, 8);
-      upcxx::command_size_ubound(ub, fn);
+      upcxx::parcel_size<> ub;
+      ub = ub.trivial_added<remote_out_message>();
+      ub = ub.added(upcxx::parcel_size_of<0, 8>());
+      ub = upcxx::command<>::ubound(ub, fn);
       
       void *buf = operator new(ub.size_aligned());
       upcxx::parcel_writer w{buf};
@@ -69,7 +69,7 @@ namespace world {
       rm->rank = rank;
       rm->size8 = (ub.size_aligned() - sizeof(remote_out_message))/8;
       
-      upcxx::command_pack(w, ub.size(), fn);
+      upcxx::command<>::pack(w, ub.size, fn);
 
       ASSERT(w.alignment() <= 8);
       
@@ -105,4 +105,7 @@ namespace world {
 
   using upcxx::bind;
 }
+
+#define REFLECTED UPCXX_REFLECTED
+
 #endif

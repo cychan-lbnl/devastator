@@ -101,4 +101,6 @@ namespace world {
   #endif
 }
 
+#define REFLECTED(...) /*nothing*/
+
 #endif

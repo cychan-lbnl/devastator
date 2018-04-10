@@ -17,38 +17,89 @@
  * struct my_type {
  *   int foo;
  *   float bar;
- *   
- *   template<typename Re>
- *   friend void reflect(Re &re, my_type &me) {
- *     re(me.foo);
- *     re(me.bar);
- *   }
+ *
+ *   UPCXX_REFLECTED(foo, bar)
  * };
  */
 
-// The default ADL method for reflection just considers its subject
-// entirely opaque.
-template<typename Reflector, typename Subject>
-inline void reflect(Reflector &re, Subject &x) {
-  re.opaque(x);
-}
-
 namespace upcxx {
+  namespace detail {
+    template<typename Re, typename ...Ts>
+    struct fold_reflected_help;
+
+    template<typename Re>
+    struct fold_reflected_help<Re> {
+      Re operator()(Re re) const {
+        return re;
+      }
+    };
+
+    template<typename Re, typename T0, typename ...Ts>
+    struct fold_reflected_help<Re,T0,Ts...> {
+      auto operator()(Re re, T0 &&x0, Ts &&...xs) const ->
+        decltype(
+          fold_reflected_help<decltype(re & static_cast<T0&&>(x0)),Ts...>()
+            (re & x0, static_cast<Ts&&>(xs)...)
+        ) {
+        return fold_reflected_help<decltype(re & static_cast<T0&&>(x0)),Ts...>()
+          (re & x0, static_cast<Ts&&>(xs)...);
+      }
+    };
+
+    template<typename Re, typename ...T>
+    auto fold_reflected(Re re, T &&...x) ->
+      decltype(fold_reflected_help<Re,T&&...>()(re, static_cast<T&&>(x)...)) {
+      return fold_reflected_help<Re,T&&...>()(re, static_cast<T&&>(x)...);
+    }
+  }
+  
+  #define UPCXX_REFLECTED(...) \
+    template<typename Re> \
+    auto upcxx_reflected(Re re) -> \
+      decltype(::upcxx::detail::fold_reflected(re, __VA_ARGS__)) { \
+      return ::upcxx::detail::fold_reflected(re, __VA_ARGS__); \
+    }
+    
   // How to apply a reflector on a subject. May be specialized per type
-  // but rarely is since default implementation finds a "reflect" associated
-  // with T via ADL.
-  template<typename Subject>
+  // but rarely is since default implementation finds a "upcxx_reflect"
+  // member T.
+  template<typename T, typename = void>
   struct reflection {
-    template<typename Reflector, typename Subject1>
-    void operator()(Reflector &re, Subject1 &&subj) {
-      reflect(re, const_cast<typename std::decay<Subject1>::type&>(subj));
+    static constexpr bool is_opaque = true;
+    
+    template<typename Re, typename T1>
+    auto operator()(Re re, T1 &&me) const ->
+      decltype(re.opaque(const_cast<T&>(me))) {
+      return re.opaque(const_cast<T&>(me));
     }
   };
-  
+
+  struct nop_reflector {
+    template<typename T>
+    constexpr nop_reflector operator&(T&&) const { return *this; }
+    template<typename T>
+    constexpr nop_reflector opaque(T&&) const { return *this; }
+  };
+
+  template<typename T>
+  struct reflection<T,
+      typename std::conditional<true, void, decltype(std::declval<T&>().upcxx_reflected(nop_reflector{}))>::type
+    > {
+    static constexpr bool is_opaque = false;
+    
+    template<typename Re, typename T1>
+    auto operator()(Re re, T1 &&me) const ->
+      decltype(const_cast<T&>(me).upcxx_reflected(re)) {
+      return const_cast<T&>(me).upcxx_reflected(re);
+    }
+  };
+
   // Invoke a reflector upon a subject object.
-  template<typename Reflector, typename Subject>
-  void reflect_upon(Reflector &re, Subject &&subj) {
-    reflection<typename std::decay<Subject>::type>()(re, std::forward<Subject>(subj));
+  template<typename Re, typename T,
+           typename T0 = typename std::decay<T>::type>
+  auto reflect_upon(Re re, T &&me) ->
+    decltype(reflection<T0>()(re, std::forward<T>(me))) {
+    return reflection<T0>()(re, std::forward<T>(me));
   }
 }
 
@@ -104,13 +155,14 @@ namespace upcxx {
     Hasher &h;
     
     template<typename T>
-    void operator()(const T &x) {
-      reflect_upon(*this, x);
+    hasher_reflector operator&(T const &x) const {
+      return reflect_upon(*this, x);
     }
     
     template<typename T>
-    void opaque(const T &x) {
+    hasher_reflector opaque(const T &x) const {
       h(std::hash<T>()(x));
+      return *this;
     }
   };
   
@@ -122,8 +174,7 @@ namespace upcxx {
   struct fast_hashing {
     std::size_t operator()(const T &x, std::size_t salt=0) const {
       fast_hasher h{salt};
-      hasher_reflector<fast_hasher> re{h};
-      reflect_upon(re, x);
+      reflect_upon(hasher_reflector<fast_hasher>{h}, x);
       return h.result();
     }
   };
@@ -133,69 +184,37 @@ namespace upcxx {
     return fast_hashing<T>()(x, salt);
   }
 
-
-  //////////////////////////////////////////////////////////////////////
-  // mod2n_hashing, mod2n_hash
-  
-  template<int bit_n>
-  struct integer_golden_ratio_bits;
-  
-  template<> struct integer_golden_ratio_bits<32> {
-    static constexpr std::uint32_t value = 0x9e3779b1u; // prime!
-  };
-  template<> struct integer_golden_ratio_bits<64> {
-    static constexpr std::uint64_t value = 0x9e3779b97f4a7c15u; // not prime, try harder?
-  };
-  
-  template<typename T>
-  struct integer_golden_ratio {
-    static constexpr T value = integer_golden_ratio_bits<8*sizeof(T)>::value;
-  };
-  
-  template<typename T>
-  struct mod2n_hashing {
-    std::size_t operator()(const T &x, int bit_n) const {
-      if(bit_n == 0)
-        return 0;
-      else {
-        std::size_t h = fast_hash(x);
-        h ^= h >> 4*sizeof(std::size_t);
-        h *= upcxx::integer_golden_ratio<std::size_t>::value;
-        h >>= 8*sizeof(std::size_t) - bit_n;
-        return h;
-      }
-    }
-  };
-  
-  template<typename T>
-  inline std::size_t mod2n_hash(const T &x, int bits) {
-    return mod2n_hashing<T>()(x, bits);
-  }
-  
-  
   //////////////////////////////////////////////////////////////////////
   // reflection<std::tuple>
   
   template<typename Tup, int i, int n>
   struct reflection_tuple {
     template<typename Re, typename Tup1>
-    void operator()(Re &re, Tup1 &&x) const {
-      re(std::get<i>(x));
-      reflection_tuple<Tup,i+1,n>()(re, static_cast<Tup1&&>(x));
+    auto operator()(Re re, Tup1 &&x) const
+      -> decltype(
+        re(std::get<i>(x)) &
+        reflection_tuple<Tup,i+1,n>()(re, static_cast<Tup1&&>(x))
+      ) {
+      return re(std::get<i>(x)) &
+             reflection_tuple<Tup,i+1,n>()(re, static_cast<Tup1&&>(x));
     }
   };
   template<typename Tup, int n>
   struct reflection_tuple<Tup,n,n> {
     template<typename Re, typename Tup1>
-    void operator()(Re &re, Tup1 &&x) const {}
+    Re operator()(Re re, Tup1 &&x) const {
+      return re;
+    }
   };
-
   
   template<typename ...Ts>
   struct reflection<std::tuple<Ts...>> {
     template<typename Re, typename Tup1>
-    void operator()(Re &re, Tup1 &&x) const {
-      reflection_tuple<std::tuple<Ts...>,0,sizeof...(Ts)>()(re, static_cast<Tup1&&>(x));
+    auto operator()(Re re, Tup1 &&x) const
+      -> decltype(
+        reflection_tuple<std::tuple<Ts...>, 0, sizeof...(Ts)>()(re, static_cast<Tup1&&>(x))
+      ) {
+      return reflection_tuple<std::tuple<Ts...>, 0, sizeof...(Ts)>()(re, static_cast<Tup1&&>(x));
     }
   };
   
@@ -206,22 +225,9 @@ namespace upcxx {
   template<typename A, typename B>
   struct reflection<std::pair<A,B>> {
     template<typename Re, typename Pair>
-    void operator()(Re &re, Pair &&x) const {
-      re(x.first);
-      re(x.second);
-    }
-  };
-  
-  
-  //////////////////////////////////////////////////////////////////////
-  // reflection<std::array>
-  
-  template<typename T, std::size_t n>
-  struct reflection<std::array<T,n>> {
-    template<typename Re, typename Array>
-    void operator()(Re &re, Array &&x) const {
-      for(std::size_t i=0; i < n; i++)
-        re(x[i]);
+    auto operator()(Re re, Pair &&x) const
+      -> decltype(re & x.first & x.second) {
+      return re & x.first & x.second;
     }
   };
 }
@@ -236,14 +242,15 @@ namespace upcxx {
     bool comma;
     
     template<typename T>
-    void opaque(const T &x) {
+    print_reflector& opaque(const T &x) {
       if(comma) o << ',';
       comma = true;
       o << x;
+      return *this;
     }
     template<typename T>
-    void operator()(const T &x) {
-      this->opaque(x);
+    print_reflector& operator()(const T &x) {
+      return this->opaque(x);
     }
   };
   

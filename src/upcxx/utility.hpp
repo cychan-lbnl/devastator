@@ -1,7 +1,7 @@
 #ifndef _661bba4d_9f90_4fbe_b617_4474e1ed8cab
 #define _661bba4d_9f90_4fbe_b617_4474e1ed8cab
 
-#include "diagnostic.hpp"
+#include <upcxx/diagnostic.hpp>
 
 #include <array>
 #include <cstdint>
@@ -55,7 +55,7 @@ namespace upcxx {
   inline constant_function<T> constant(T value) {
     return constant_function<T>{std::move(value)};
   }
-  
+
   //////////////////////////////////////////////////////////////////////
   // function_ref: reference to a function. Useful when you want to pass
   // a lambda into a subroutine knowing the lambda won't be used after
@@ -75,55 +75,94 @@ namespace upcxx {
   
   template<typename Ret, typename ...Arg>
   class function_ref<Ret(Arg...)> {
-    Ret(*invoker_)(void*, Arg...);
     void *fn_;
+    union {
+      Ret(*indirect)(void *fn, Arg...);
+      Ret(*direct)(Arg...);
+    } invoker_;
     
   private:
     template<typename Fn>
-    static Ret the_invoker(void *fn, Arg ...arg) {
-      return reinterpret_cast<Fn*>(fn)->operator()(static_cast<Arg>(arg)...);
+    static Ret the_functor_invoker(void *fn, Arg ...arg) {
+      return (*reinterpret_cast<Fn*>(fn))(static_cast<Arg>(arg)...);
     }
     
-    static Ret the_fnptr_invoker(void *fn, Arg ...arg) {
-      return reinterpret_cast<Ret(*)(Arg...)>(fn)(static_cast<Arg>(arg)...);
-    }
-    
-    static Ret the_nop_invoker(void *fn, Arg ...arg) {
+    static Ret the_nop_invoker(Arg ...arg) {
       return nop_function<Ret(Arg...)>{}();
     }
     
   public:
-    function_ref():
-      invoker_{the_nop_invoker},
-      fn_{nullptr} {
+    function_ref() {
+      fn_ = nullptr;
+      invoker_.direct = the_nop_invoker;
     }
-
-    function_ref(Ret(*fn)(Arg...)):
-      invoker_{the_fnptr_invoker},
-      fn_{reinterpret_cast<void*>(fn)} {
+    function_ref(Ret(*fn)(Arg...)) {
+      fn_ = nullptr;
+      invoker_.direct = fn;
     }
-    
-    template<typename Fn1,
-             typename Fn = typename std::decay<Fn1>::type>
-    function_ref(Fn1 &&fn):
-      invoker_{the_invoker<Fn>},
-      fn_{reinterpret_cast<void*>(const_cast<Fn*>(&fn))} {
+    template<typename Fn>
+    function_ref(Fn &&fn) {
+      fn_ = reinterpret_cast<void*>(
+          const_cast<typename std::decay<Fn>::type*>(&fn)
+        );
+      invoker_.indirect = the_functor_invoker<
+          typename std::decay<Fn>::type
+        >;
     }
-
-    function_ref(const function_ref&) = default;
+    function_ref(function_ref const&) = default;
     function_ref(function_ref &that): function_ref(const_cast<function_ref const&>(that)) {}
     function_ref(function_ref&&) = default;
-
-    function_ref& operator=(const function_ref&) = default;
+    
+    function_ref& operator=(function_ref const &) = default;
     function_ref& operator=(function_ref&&) = default;
     
     Ret operator()(Arg ...arg) const {
-      return invoker_(fn_, static_cast<Arg>(arg)...);
+      if(fn_ == nullptr)
+        return invoker_.direct(static_cast<Arg>(arg)...);
+      else
+        return invoker_.indirect(fn_, static_cast<Arg>(arg)...);
     }
   };
   
   //////////////////////////////////////////////////////////////////////
-  // trait_forall
+  // raw_storage<T>: Like std::aligned_storage, except more convenient to work
+  // with. The typed value exists in the `value` member, but isnt implicitly
+  // constructed. Construction should be done by user with placement new like:
+  //   `new(&raw.value) T{...}`.
+  // Also, the value won't be implicilty destructed either. That too is the user's
+  // responsibility.
+  
+  template<typename T>
+  union raw_storage {
+    typename std::aligned_storage<sizeof(T), alignof(T)>::type raw;
+    T value;
+    
+    raw_storage() {};
+    ~raw_storage() {};
+    
+    // Copy/assignment happen on the flat bytes of T.
+    raw_storage(raw_storage const &that): raw{that.raw} {}
+    raw_storage& operator=(raw_storage const &that) {
+      this->raw = that.raw;
+      return *this;
+    }
+
+    // Invoke value's destructor.
+    void destruct() {
+      value.~T();
+    }
+
+    // Move value out into a temporary and destruct it.
+    T value_and_destruct() {
+      T ans{std::move(value)};
+      value.~T();
+      return ans;
+    }
+  };
+
+  //////////////////////////////////////////////////////////////////////
+  // trait_forall: logical conjunction of one trait applied to
+  // variadically-many argument types.
   
   template<template<typename...> class Test, typename ...T>
   struct trait_forall;
@@ -144,7 +183,7 @@ namespace upcxx {
   };
   
   //////////////////////////////////////////////////////////////////////
-  // trait_any
+  // trait_any: disjunction, combines multiple traits into a new trait.
   
   template<template<typename...> class ...Tr>
   struct trait_any;
@@ -165,7 +204,7 @@ namespace upcxx {
   };
   
   //////////////////////////////////////////////////////////////////////
-  // trait_all
+  // trait_all: conjunction, combines multiple traits into a new trait
   
   template<template<typename...> class ...Tr>
   struct trait_all;
@@ -341,7 +380,7 @@ namespace upcxx {
   // tuple_rvals: Get a tuple of rvalue-references to tuple componenets.
   // Components which are already `&` or `&&` are returned unmodified.
   // Non-reference componenets are returned as `&&` only if the tuple is
-  // passed by non-const `&', otherwise the non-reference type is used
+  // passed by non-const `&`, otherwise the non-reference type is used
   // and the value is moved or copied from the input to output tuple.
   
   namespace detail {

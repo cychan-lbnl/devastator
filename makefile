@@ -119,19 +119,13 @@ devastator/world_threads.srcs = \
 
 devastator/world_gasnet.deps = \
   $(devastator/tmsg.deps) \
-	$(upcxx)/bind.hpp \
-	$(upcxx)/command.hpp \
-	$(upcxx)/diagnostic.hpp \
-	$(upcxx)/packing.hpp \
-	$(upcxx)/reflection.hpp \
-	$(upcxx)/utility.hpp \
-	$(devastator/src)/world_gasnet.hxx \
-	$(gasnet_fragment)
+  $(wildcard $(upcxx)/*.hpp) \
+  $(devastator/src)/world_gasnet.hxx \
+  $(gasnet_fragment)
 
 devastator/world_gasnet.srcs = \
   $(devastator/tmsg.srcs) \
-  $(upcxx)/diagnostic.cpp \
-  $(upcxx)/packing.cpp \
+  $(wildcard $(upcxx)/*.cpp) \
   $(devastator/src)/world_gasnet.cxx
 
 devastator/world.deps = \
@@ -144,10 +138,10 @@ devastator/world.srcs = \
 
 devastator/pdes.deps = \
   $(devastator/src)/intrusive_min_heap.hxx \
-	$(devastator/src)/gvt.hxx \
-	$(devastator/src)/pdes.hxx \
-	$(devastator/src)/queue.hxx \
-	$(devastator/world.deps)
+  $(devastator/src)/gvt.hxx \
+  $(devastator/src)/pdes.hxx \
+  $(devastator/src)/queue.hxx \
+  $(devastator/world.deps)
 
 devastator/pdes.srcs = \
   $(devastator/src)/pdes.cxx \

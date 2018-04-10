@@ -1,13 +1,15 @@
 #include "opnew.hxx"
 #include "diagnostic.hxx"
 
+#if OPNEW_ENABLED // contains whole file
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
-#include <sys/mman.h>
+#include <mutex>
 
-#if OPNEW_ENABLED // contains whole file
+#include <sys/mman.h>
 
 using namespace std;
 using namespace opnew;

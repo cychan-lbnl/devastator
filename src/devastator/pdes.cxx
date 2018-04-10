@@ -233,8 +233,8 @@ pdes::statistics pdes::local_stats() {
 }
 
 pair<size_t, size_t> pdes::get_total_event_counts() {
-  auto total_global = world::reduce_sum(total_local);
-  return make_pair(total_global.executed_n, total_global.committed_n);
+  auto ans = world::reduce_sum(local_stats_);
+  return make_pair(ans.executed_n, ans.committed_n);
 }
 
 namespace {
