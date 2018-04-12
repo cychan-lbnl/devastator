@@ -66,6 +66,9 @@ namespace tmsg {
     bool receive(Rcv rcv);
     template<typename Rcv, typename Batch>
     bool receive_batch(Rcv rcv, Batch batch);
+  
+  private:
+    void prefetch(int hot_n, hot_slot hot[]);
   };
   
   template<int n>
@@ -154,12 +157,78 @@ namespace tmsg {
     
     return hot_n;
   }
+  
+  template<int chan_n>
+  void channels_r<chan_n>::prefetch(int hot_n, hot_slot hot[]) {
+  #if 0
+    message *mp[chan_n];
+    std::uint32_t mn[chan_n];
+    
+    for(int i=0; i < hot_n; i++) {
+      mp[i] = r_[hot[i].ix].recv_last;
+      mn[i] = hot[i].delta;
+    }
+    
+    while(hot_n >= 4) {
+      if(chan_n < 4) __builtin_unreachable();
+      
+      int r = 0;
+      int w = 0;
+      
+      while(r + 4 <= hot_n) {
+        
+        message *mp4[4];
+        std::uint32_t mn4_min = ~std::uint32_t(0);
+        
+        for(int i=0; i < 4; i++) {
+          mp4[i] = mp[r+i];
+          mn4_min = std::min(mn4_min, mn[r+i]);
+        }
 
+        for(int j=0; j < (int)mn4_min; j++) {
+          for(int i=0; i < 4; i++)
+            mp4[i] = *(message*volatile*)&mp4[i]->next;
+        }
+        
+        for(int i=0; i < 4; i++) {
+          mp[w] = mp4[i];
+          mn[w] = mn[r+i] - mn4_min;
+          w += mn[w] != 0 ? 1 : 0;
+        }
+        r += 4;
+      }
+      
+      while(r < hot_n) {
+        mp[w] = mp[r];
+        mn[w] = mn[r];
+        r++; w++;
+      }
+      
+      hot_n = w;
+    }
+    
+    while(hot_n > 1) {
+      int r = 0;
+      int w = r;
+      while(r < hot_n) {
+        mp[w] = *(message*volatile*)&mp[r]->next;
+        mn[w] = mn[r] - 1;
+        
+        r += 1;
+        w += 0 != mn[w] ? 1 : 0;
+      }
+      hot_n = w;
+    }
+  #endif
+  }
+  
   template<int chan_n>
   template<typename Rcv>
   bool channels_r<chan_n>::receive(Rcv rcv) {
     hot_slot hot[chan_n];
     int hot_n = this->slots_.reap(hot);
+    
+    prefetch(hot_n, hot);
     
     for(int i=0; i < hot_n; i++) {
       channels_r::each *ch = &this->r_[hot[i].ix];
@@ -185,6 +254,8 @@ namespace tmsg {
   bool channels_r<chan_n>::receive_batch(Rcv rcv, Batch batch) {
     hot_slot hot[chan_n];
     int hot_n = this->slots_.reap(hot);
+    
+    prefetch(hot_n, hot);
     
     for(int i=0; i < hot_n; i++) {
       channels_r::each *ch = &this->r_[hot[i].ix];
