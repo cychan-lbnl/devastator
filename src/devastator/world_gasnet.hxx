@@ -66,7 +66,7 @@ namespace deva {
       
       upcxx::command<>::pack(w, ub.size, fn);
 
-      DEVA_ASSERT(w.alignment() <= 8);
+      DEVA_ASSERT(w.align() <= 8);
       
       return rm;
     }

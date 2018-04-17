@@ -622,7 +622,7 @@ namespace upcxx {
 
       template<bool skippable>
       static void unpack(parcel_reader &r, void *into, std::integral_constant<bool,skippable>) {
-        reflect_upon(packing_unpack_reflector</*constructed=*/true>{r}, *(T*)into);
+        reflect_upon(packing_unpack_reflector</*constructed=*/true>{r}, *::new(into) T);
       }
     };
     
@@ -986,7 +986,7 @@ namespace upcxx {
 
       template<typename Iter, bool elt_skippable>
       static void pack_elts(parcel_writer &w, Iter begin, std::size_t n, std::integral_constant<bool,elt_skippable>) {
-        T *y = w.put_trivial_aligned<T>(n);
+        T *y = w.place_trivial_aligned<T>(n);
         while(n--) {
           std::memcpy(y++, &*begin, sizeof(T));
           ++begin;
