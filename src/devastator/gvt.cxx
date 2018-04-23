@@ -146,7 +146,6 @@ namespace {
     to_ub ^= quiesced ? -1 : 0;
     
     const int rank_me = deva::rank_me();
-    const int rank_n = deva::rank_n;
     
     while(true) {
       int mid = rank_me + (to_ub - rank_me)/2;

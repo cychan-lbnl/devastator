@@ -132,7 +132,7 @@ namespace {
     int ok;
     gex_Client_t client;
     gex_EP_t endpoint;
-    gex_Segment_t segment;
+    //gex_Segment_t segment;
     
     ok = gex_Client_Init(
       &client, &endpoint, &the_team, "devastator", nullptr, nullptr, 0
