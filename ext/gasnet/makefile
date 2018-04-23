@@ -22,7 +22,7 @@ gasnet_conduit ?= $(if $(NERSC_HOST),aries,smp)
 gasnet_cross ?= $(if $(NERSC_HOST),cray-aries-slurm,)
 
 ifeq ($(gasnet_conduit),aries)
-	gasnet_config_args += --with-aries-max-medium=65472
+	gasnet_config_args += --with-aries-max-medium=64896
 endif
 
 gasnet_makepart = $(gasnet_install)/include/$(gasnet_conduit)-conduit/$(gasnet_conduit)-seq.mak
