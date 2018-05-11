@@ -257,10 +257,11 @@ namespace {
     int worker;
     int32_t waiting_size8;
     
-    static remote_in_chunked_message*& next_of(remote_in_chunked_message *me) {
-      return *reinterpret_cast<remote_in_chunked_message**>(&me->next);
+    static tmsg::message*& next_of(tmsg::message *me) {
+      return me->next;
     }
-    static pair<int,uint32_t> key_of(remote_in_chunked_message *me) {
+    static pair<int,uint32_t> key_of(tmsg::message *me0) {
+      auto *me = static_cast<remote_in_chunked_message*>(me0);
       return {me->proc_from, me->nonce};
     }
     static size_t hash_of(pair<int,uint32_t> const &key) {
@@ -269,7 +270,7 @@ namespace {
   };
 
   deva::intrusive_map<
-      remote_in_chunked_message, pair<int,uint32_t>,
+      tmsg::message, pair<int,uint32_t>,
       remote_in_chunked_message::next_of,
       remote_in_chunked_message::key_of,
       remote_in_chunked_message::hash_of>
@@ -280,7 +281,8 @@ namespace {
 
     chunked_by_key.visit(
       /*key*/{proc_from, hdr.nonce},
-      [&](remote_in_chunked_message *m) {
+      [&](tmsg::message *m0) {
+        auto *m = static_cast<remote_in_chunked_message*>(m0);
         size_t part_size = 8*size_t(hdr.part_size8);
         size_t total_size = 8*size_t(hdr.total_size8);
         size_t offset = 8*size_t(hdr.offset8);
