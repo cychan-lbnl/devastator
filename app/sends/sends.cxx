@@ -46,8 +46,8 @@ struct message {
       DEVA_ASSERT_ALWAYS(0);
     }
     
-    for(char x: hunk)
-      DEVA_ASSERT_ALWAYS(x == 'x');
+    for(int j=0; j < (int)hunk.size(); j++)
+      DEVA_ASSERT_ALWAYS(hunk[j] == "abc"[j%3]);
 
     recv_n += 1;
     recv_sz += hunk.size();
@@ -78,7 +78,11 @@ int main() {
       //int len = 1;
       sent_n += 1;
       sent_sz += len;
-      deva::send(i % rank_n, message{rank_me(), epoch, vector<char>(len, 'x')});
+      vector<char> hunk;
+      hunk.resize(len);
+      for(int j=0; j < len; j++)
+        hunk[j] = "abc"[j%3];
+      deva::send(i % rank_n, message{rank_me(), epoch, hunk});
       deva::progress();
     }
 
