@@ -239,12 +239,18 @@ namespace {
   }
 
   struct alignas(8) am_worker_header {
+    #if DEBUG
+      uint32_t deadbeef = 0xdeadbeef;
+    #endif
     uint16_t worker:14, has_part_head:1, has_part_tail:1;
     uint16_t middle_msg_n;
     int32_t middle_size8;
   };
 
   struct alignas(8) am_worker_part_header {
+    #if DEBUG
+      uint32_t deadbeef = 0xdeadbeef;
+    #endif
     uint32_t nonce;
     int32_t total_size8;
     int32_t part_size8;
@@ -278,7 +284,8 @@ namespace {
   
   void recv_part(int proc_from, int worker, upcxx::parcel_reader &r) {
     am_worker_part_header hdr = r.pop_trivial_aligned<am_worker_part_header>();
-
+    DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
+    
     chunked_by_key.visit(
       /*key*/{proc_from, hdr.nonce},
       [&](tmsg::message *m0) {
@@ -321,10 +328,13 @@ namespace {
       proc_from = info.gex_srcrank;
     }
     
+    DEVA_ASSERT(0 <= worker_n && worker_n <= deva::worker_n);
+    
     upcxx::parcel_reader r{buf};
     
     while(worker_n--) {
       am_worker_header hdr = r.pop_trivial_aligned<am_worker_header>();
+      DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
       
       if(hdr.has_part_head)
         recv_part(proc_from, hdr.worker, r);
@@ -458,7 +468,12 @@ namespace {
                 if(sd != GEX_AM_SRCDESC_NO_OP) {
                   void *am_buf = gex_AM_SrcDescAddr(sd);
                   size_t am_len = gex_AM_SrcDescSize(sd);
-
+                  
+                  #if GASNET_CONDUIT_ARIES
+                    #warning "GASNet-Ex AM workaround in effect."
+                    am_len = std::min<size_t>(GASNETC_GNI_MAX_MEDIUM, am_len);
+                  #endif
+                  
                   upcxx::parcel_writer w{am_buf};
                   int committed_workers = 0;
                   

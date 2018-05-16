@@ -85,7 +85,7 @@ int main() {
       deva::send(i % rank_n, message{rank_me(), epoch, hunk});
       deva::progress();
     }
-
+    
     while(ack_n != sent_n)
       deva::progress();
 
