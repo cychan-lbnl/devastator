@@ -50,6 +50,7 @@ else
 endif
 ppflags += -DOPNEW_ENABLED=$(if $(opnew),1,0)
 ppflags += $(if $(opnew_debug),-DOPNEW_DEBUG=$(opnew_debug),)
+ppflags += -DOPTLEV=$(optlev)
 
 # cgflags
 cgflags = -O$(optlev) $(if $(syms),-g,)
