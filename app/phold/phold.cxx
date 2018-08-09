@@ -38,10 +38,12 @@ struct rng_state {
 };
 
 constexpr int actor_n = 1000; // 1000
+constexpr int ray_n = 2*actor_n; // 2*actor_n
+constexpr double percent_remote = .5; // .5
+constexpr double lambda = 100; //100
+constexpr uint64_t end_time = uint64_t(2000*lambda);
+
 constexpr int actor_per_rank = (actor_n + rank_n-1)/rank_n;
-constexpr double percent_remote = .5;
-constexpr double lambda = 100;
-constexpr uint64_t end_time = uint64_t(2000*lambda); // 2000
 
 thread_local rng_state state_cur[actor_per_rank];
 thread_local uint64_t check[actor_per_rank];
@@ -58,7 +60,7 @@ struct event {
     devil[1]= 6;
     devil[2]= 6;
   }
-
+  
   REFLECTED(ray, actor, devil);
 
   void sane(const char *file, int line) {
@@ -68,9 +70,10 @@ struct event {
     if(!ok) deva::assert_failed(file, line);
   }
   
-  // only member is execute, unexecute is now a lambda returned by execute
+  int subtime() const { return ray; }
+  
   auto execute(pdes::execute_context &cxt) {
-    //say() << "execute "<<actor;
+    //deva::say() << "execute "<<ray;
     sane(__FILE__,__LINE__);
     
     int a = this->actor % actor_per_rank;
@@ -81,7 +84,7 @@ struct event {
     auto check_prev = check[a];
     check[a] ^= check[a]>>31;
     check[a] *= 0xdeadbeef;
-    check[a] += ray;
+    check[a] += ray ^ 0xdeadbeef;
 
     #if 0
       uint64_t dt = lambda;
@@ -99,7 +102,6 @@ struct event {
         /*rank=*/actor_to/actor_per_rank,
         /*cd=*/actor_to%actor_per_rank,
         /*time=*/cxt.time + dt,
-        /*digest=*/cxt.digest,
         event{ray, actor_to}
       );
     }
@@ -112,8 +114,6 @@ struct event {
       check[a] = check_prev;  
     };
   }
-
-  void commit() {}
 };
 
 uint64_t checksum() {
@@ -139,7 +139,14 @@ int main() {
       int cd = actor - actor_lb;
       state_cur[cd] = rng_state{/*seed=*/actor};
       check[cd] = actor;
-      pdes::root_event(cd, actor, actor, event{actor, actor});
+    }
+    
+    for(int ray=0; ray < ray_n; ray++) {
+      int actor = ray % actor_n;
+      if(actor_lb <= actor && actor < actor_ub) {
+        int cd = actor - actor_lb;
+        pdes::root_event(cd, ray, event{ray, actor});
+      }
     }
     
     pdes::drain();
@@ -149,11 +156,14 @@ int main() {
 
     DEVA_ASSERT_ALWAYS(chkprev == 666 || chk == chkprev);
     chkprev = chk;
-    
-    if(rank_me() == 0)
-      deva::say() << "checksum = "<< chk;
+    if(deva::rank_me() == 0)
+      std::cout<<"checksum = "<<chk<<std::endl;
   };
 
-  for(int i=0; i < 10; i++)
+  for(int i=0; i < 3; i++)
     deva::run(doit);
+
+  if(deva::process_me() == 0)
+    std::cout<<"Looks good!"<<std::endl;
+  return 0;
 }

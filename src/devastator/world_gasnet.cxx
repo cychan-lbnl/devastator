@@ -24,12 +24,11 @@ using deva::remote_out_message;
 __thread int deva::rank_me_ = 0xdeadbeef;
 
 alignas(64)
+int deva::process_me_ = 0xdeadbeef;
 int deva::process_rank_lo_ = 0xdeadbeef;
 int deva::process_rank_hi_ = 0xdeadbeef;
 
 namespace {
-  int process_me;
-  
   gex_TM_t the_team;
   
   std::atomic<bool> leave_pump{false};
@@ -63,8 +62,8 @@ void deva::run(upcxx::function_ref<void()> fn) {
   if(!inited) {
     inited = true;
     init_gasnet();
-    process_rank_lo_ = process_me*worker_n;
-    process_rank_hi_ = (process_me+1)*worker_n;
+    process_rank_lo_ = deva::process_me_*worker_n;
+    process_rank_hi_ = (deva::process_me_+1)*worker_n;
   }
   
   tmsg::run([&]() {
@@ -84,7 +83,7 @@ void deva::run(upcxx::function_ref<void()> fn) {
 
       #if 0
         for(int i=0; i < process_n; i++) {
-          if(i == process_me) {
+          if(i == deva::process_me_) {
             static std::mutex mu;
             mu.lock();
             std::cerr<<"[pid "<<getpid()<<" t "<<tme<<"] watch *((uintptr_t*)"<<&opnew::my_ts.bins[29].held_pools.top<<")&1\n";
@@ -105,7 +104,7 @@ void deva::run(upcxx::function_ref<void()> fn) {
     }
 
     if(tme == 0) {
-      rank_me_ = -process_me - 1;
+      rank_me_ = -deva::process_me_ - 1;
       master_pump();
     }
     else {
@@ -140,10 +139,10 @@ namespace {
     DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
 
     DEVA_ASSERT_ALWAYS(deva::process_n == gex_TM_QuerySize(the_team));
-    process_me = gex_TM_QueryRank(the_team);
+    deva::process_me_ = gex_TM_QueryRank(the_team);
 
     if(0) {
-      int fd = open(("err."+std::to_string(process_me)).c_str(), O_CREAT|O_TRUNC|O_RDWR, 0666);
+      int fd = open(("err."+std::to_string(deva::process_me_)).c_str(), O_CREAT|O_TRUNC|O_RDWR, 0666);
       DEVA_ASSERT(fd >= 0);
       dup2(fd, 2);
     }

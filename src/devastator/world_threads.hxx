@@ -35,6 +35,10 @@ namespace deva {
     return true;
   }
   
+  constexpr int process_me() {
+    return 0;
+  }
+  
   inline void progress() {
     tmsg::progress();
   }

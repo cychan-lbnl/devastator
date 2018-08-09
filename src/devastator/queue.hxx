@@ -9,10 +9,18 @@ namespace deva {
     std::deque<T> d;
   public:
     int size() { return (int)d.size(); }
-    T at_forwards(int i) const {
+    
+    T const& at_forwards(int i) const {
       return d[i];
     }
-    T at_backwards(int i) const {
+    T& at_forwards(int i) {
+      return d[i];
+    }
+    
+    T const& at_backwards(int i) const {
+      return d[d.size()-1-i];
+    }
+    T& at_backwards(int i) {
       return d[d.size()-1-i];
     }
 
@@ -92,10 +100,21 @@ namespace deva {
   public:
     int size() const { return n_; }
 
-    T at_forwards(int i) const {
+    T const& at_forwards(int i) const {
+      DEVA_ASSERT(i <= n_);
       return buf_[(beg_ + i) & (cap_-1)];
     }
-    T at_backwards(int i) const {
+    T& at_forwards(int i) {
+      DEVA_ASSERT(i <= n_);
+      return buf_[(beg_ + i) & (cap_-1)];
+    }
+    
+    T const& at_backwards(int i) const {
+      DEVA_ASSERT(i <= n_);
+      return buf_[(beg_ + n_-1 - i) & (cap_-1)];
+    }
+    T& at_backwards(int i) {
+      DEVA_ASSERT(i <= n_);
       return buf_[(beg_ + n_-1 - i) & (cap_-1)];
     }
 

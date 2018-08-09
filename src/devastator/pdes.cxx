@@ -15,12 +15,18 @@ namespace gvt = deva::gvt;
 namespace pdes = deva::pdes;
 
 using namespace pdes;
+using namespace pdes::detail;
 using namespace std;
 
 std::ostream* pdes::chitter_io = &std::cout;
 int pdes::chitter_secs = 3;
 
-thread_local unsigned pdes::event::far_id_bump = 0;
+thread_local unsigned pdes::detail::event::far_id_bump = 0;
+thread_local cd_state *pdes::detail::the_cds;
+
+#if DEBUG
+thread_local int64_t event::detail::live_n = 0;
+#endif
 
 namespace {
   thread_local int cds_on_rank = -1;
@@ -49,55 +55,12 @@ namespace {
     void update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n);
   };
 
-  constexpr event_tdig end_of_time = {uint64_t(-1), uint64_t(-1)};
-
   inline pair<int,unsigned> far_origin_id_of(event_on_creator *e) {
     return {e->far_origin, e->far_id};
   }
   inline size_t far_origin_id_hash(const pair<int,unsigned> &xy) {
     return size_t(xy.first)*0x9e3779b97f4a7c15u + xy.second;
   }
-  
-  struct local_event {
-    event *e;
-    event_tdig tdig;
-    
-    static int& future_ix_of(local_event le) {
-      return le.e->future_ix;
-    }
-    static event_tdig tdig_of(local_event le) {
-      return le.tdig;
-    }
-  };
-
-  // causality domain (logical process)
-  struct cd_state {
-    int cd_ix;
-    deva::queue<local_event> past_events;
-    
-    deva::intrusive_min_heap<
-        local_event, event_tdig,
-        local_event::future_ix_of, local_event::tdig_of>
-      future_events;
-    
-    cd_state *anti_next; // next cd with events to annihilate
-    event *anti_least = nullptr; // least event to annihilate
-
-    int by_now_ix, by_dawn_ix;
-    
-    event_tdig was() const {
-      return past_events.back_or({nullptr,{0,0}}).tdig;
-    }
-    uint64_t now() const {
-      return future_events.least_key_or(end_of_time).first;
-    }
-    uint64_t now_after_future_insert() const {
-      return future_events.least_key().first;
-    }
-    uint64_t dawn() const {
-      return past_events.front_or({nullptr, end_of_time}).tdig.first;
-    }
-  };
   
   template<int cd_state::*ix>
   struct cd_by {
@@ -135,8 +98,8 @@ namespace {
   thread_local sim_state sim_me;
 
   void arrive_far_anti(int origin, unsigned far_id);
-  void arrive_near(int cd_ix, event *e, event_tdig tdig, int existence_delta);
-  void rollback(cd_state *cd, event_tdig new_now);
+  template<int charge>
+  void arrive_near(int cd_ix, local_event e);
   
   void global_status_state::update(uint64_t gvt, uint64_t exec_n, uint64_t comm_n) {
     unsigned r = round++;
@@ -210,9 +173,11 @@ namespace {
 void pdes::init(int cds_this_rank) {
   cds_on_rank = cds_this_rank;
   cd_state *cds = new cd_state[cds_on_rank];
+  the_cds = cds;
   sim_me.cds.reset(cds);
-
+  
   for(int i=0; i < cds_on_rank; i++) {
+    cds[i].vtbl = &the_cd_vtable<cd_ops_trivial>::the_vtable;
     cds[i].cd_ix = i;
     sim_me.cds_by_dawn.insert({&cds[i], cds[i].dawn()});
     sim_me.cds_by_now.insert({&cds[i], cds[i].now()});
@@ -222,13 +187,6 @@ void pdes::init(int cds_this_rank) {
   
   gvt::init({0, 0});
   gvt::epoch_begin(0, {0, 0});
-}
-
-void pdes::root_event(int cd_ix, event *e) {
-  e->existence = 1;
-  cd_state *cd = &sim_me.cds[cd_ix];
-  cd->future_events.insert({e, e->tdig()});
-  sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
 }
 
 pdes::statistics pdes::local_stats() {
@@ -249,20 +207,28 @@ namespace {
   };
 }
 
-void pdes::arrive_far(int origin, unsigned far_id, event *e) {
+void detail::root_event(int cd_ix, event *e) {
+  e->existence = 1;
+  e->phase = event_on_target::phase_future;
+  cd_state *cd = &sim_me.cds[cd_ix];
+  cd->future_events.insert({e, e->time, e->subtime});
+  sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+}
+
+void detail::arrive_far(int origin, unsigned far_id, event *e) {
   sim_me.from_far.visit(
     {origin, far_id},
     [&](event_on_creator *o)->event_on_creator* {
       if(o == nullptr) {
         // insert event
-        arrive_near(e->target_cd, e, e->tdig(), /*existence_delta=*/1);
+        e->local = false;
+        arrive_near<+1>(e->target_cd, local_event{e, e->time, e->subtime});
         return e;
       }
       else {
-        DEVA_ASSERT(o->vtbl1 == &anti_vtable);
-        // early annihilation (NOT present with bug)
+        DEVA_ASSERT(o->vtbl_on_creator == &anti_vtable);
         delete o;
-        e->vtbl1->destruct_and_delete(e);
+        e->vtbl_on_creator->destruct_and_delete(e);
         return nullptr;
       }
     }
@@ -275,17 +241,17 @@ namespace {
       {origin, far_id},
       [&](event_on_creator *o)->event_on_creator* {
         if(o != nullptr) {
-          DEVA_ASSERT(o->vtbl1 != &anti_vtable);
+          DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
           // late anninilation
-          auto *o1 = static_cast<event*>(o);
-          arrive_near(o1->target_cd, o1, o1->tdig(), /*existence_delta=*/-1);
-          o1->vtbl1->destruct_and_delete(o1);
+          auto *e = static_cast<event*>(o);
+          arrive_near<-1>(e->target_cd, local_event{e, e->time, e->subtime});
+          e->vtbl_on_creator->destruct_and_delete(e);
           return nullptr;
         }
         else {
           // insert anti-event
           o = new event_on_creator;
-          o->vtbl1 = &anti_vtable;
+          o->vtbl_on_creator = &anti_vtable;
           o->far_origin = origin;
           o->far_id = far_id;
           return o;
@@ -294,143 +260,308 @@ namespace {
     );
   }
 
-  void arrive_near(int cd_ix, event *e, event_tdig e_tdig, int existence_delta) {
+  template<int charge>
+  void arrive_near(int cd_ix, local_event le) {
     sim_state &sim_me = ::sim_me;
     cd_state *cd = &sim_me.cds[cd_ix];
-
-    int8_t existence0 = e->existence;
-    int8_t existence1 = e->existence + existence_delta;
-
-    if(e_tdig <= cd->was()) {
-      if(existence0 >= 0 && existence1 >= 0)
-        rollback(cd, e_tdig);
-    }
-
-    e->existence = existence1;
     
-    if(existence0 >= 0 && existence1 >= 0) {
-      if(existence1 > 0) {
-        cd->future_events.insert({e, e_tdig});
+    le.e->existence += charge;
+    
+    switch(charge) {
+    case +1:
+      if(le.e->existence == 1) {
+        le.e->phase = event_on_target::phase_future;
+        cd->future_events.insert(le);
         sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
       }
-      else {
-        cd->future_events.erase({e, e_tdig});
-        sim_me.cds_by_now.increased({cd, cd->now()});
+      break;
+      
+    case -1:
+      if(le.e->existence == 0) {
+        if(le.e->phase == event_on_target::phase_past)
+          cd->vtbl->remove_past(cd, le);
+        else {
+          cd->future_events.erase(le);
+          sim_me.cds_by_now.increased({cd, cd->now()});
+        }
       }
+      break;
     }
+  }
+}
+
+#if DEVA_PDES_CD_SPECIALIZE
+template<>
+void cd_vtable::the_insert_past<cd_ops_trivial>(cd_state *cd, local_event ins) {
+  //deva::say()<<"the_insert_past";
+  
+  event *undo_head = nullptr;
+  
+  int n = cd->past_events.size();
+  cd->past_events.push_back({});
+  
+  int j = 0;
+  while(j < n) {
+    local_event le = cd->past_events.at_backwards(j+1);
+    cd->past_events.at_backwards(j) = le;
+    
+    if(le < ins)
+      break;
+    
+    le.e->phase = event_on_target::phase_undo;
+    
+    le.e->undo_next = undo_head;
+    undo_head = le.e;
+    
+    j += 1;
   }
   
-  void rollback(cd_state *cd, event_tdig new_now) {
-    //say()<<"ROLLBACK";
-    sim_state &sim_me = ::sim_me;
+  cd->undo_least = j-1;
+  cd->past_events.at_backwards(j) = ins;
+  cd->undo_all_next = nullptr; // make cd head of "all" list
+  
+  rollback_closure(cd, undo_head);
+}
+
+template<>
+void cd_vtable::the_remove_past<cd_ops_trivial>(cd_state *cd, local_event rem) {
+  //deva::say()<<"the_remove_past";
+  
+  event *undo_head = nullptr;
+  int j = 0;
+  while(true) {
+    local_event le = cd->past_events.at_backwards(j);
     
-    // accumulates list of cd's needing rollback
-    cd_state *cds_anti_head = nullptr;
+    le.e->undo_next = undo_head;
+    undo_head = le.e;
     
-    rollback_cd: {
-      int rolled_n;
+    if(le.e == rem.e)
+      break;
+    
+    le.e->phase = event_on_target::phase_undo;
+    j += 1;
+  }
+  
+  rem.e->phase = event_on_target::phase_undo | event_on_target::phase_undo_remove;
+    
+  cd->undo_least = j;
+  cd->undo_all_next = nullptr; // make cd head of "all" list
+  
+  rollback_closure(cd, undo_head);
+}
+
+template<>
+void cd_vtable::the_close_undos_wrt_commute<cd_ops_trivial>(
+    cd_state *cd_head,
+    event **undo_fresh_head
+  ) {
+  cd_state *cd = cd_head;
+  do {
+    local_event ie = cd->undo_least_wrt_commute;
+    cd->undo_least_wrt_commute = {nullptr, end_of_time};
+    
+    for(int j=cd->undo_least + 1; true; j++) {
+      local_event je = cd->past_events.at_backwards(j);
       
-      { // walk backwards to unexecute
-        int i = 0;
-        int past_n = cd->past_events.size();
-        while(i < past_n) {
-          local_event le = cd->past_events.at_backwards(i);
-          if(le.tdig < new_now)
-            break;
-          le.e->vtbl2->unexecute(le.e);
-          i += 1;
-        }
-        rolled_n = i;
+      if(je.e == ie.e) {
+        cd->undo_least = j;
+        break;
       }
       
-      { // walk forwards to remove
-        int i = rolled_n;
-        while(i-- > 0) {
-          local_event le = cd->past_events.at_backwards(i);
-          //say()<<"le.t="<<le.tdig.first;
+      if(je.e->phase == event_on_target::phase_past) {
+        je.e->phase = event_on_target::phase_undo;
+        
+        // subscribe for send processing
+        je.e->undo_next = *undo_fresh_head;
+        *undo_fresh_head = je.e;
+      }
+    }
+    
+    cd_state *cd_next = cd->undo_next;
+    cd->undo_next = reinterpret_cast<cd_state*>(0x1);
+    cd = cd_next;
+  }
+  while(cd != nullptr);
+}
+#endif
 
-          // walk far-sent events
-          while(!le.e->sent_far.empty()) {
-            far_event_id far = le.e->sent_far.front();
-            le.e->sent_far.pop_front();
+cd_vtable* detail::close_undos_wrt_send(event *undo_head) {
+  cd_vtable *undo_fresh_head = nullptr;
+  
+  do {
+    event *e = undo_head;
+    undo_head = nullptr;
+    
+    do {
+      // walk far-sent events
+      while(!e->sent_far.empty()) {
+        far_event_id far = e->sent_far.front();
+        e->sent_far.pop_front();
 
-            int origin = deva::rank_me();
-            unsigned far_id = far.id;
-            gvt::send_remote(far.rank, far.time, [=]() {
-              arrive_far_anti(origin, far_id);
-            });
-          }
+        int origin = deva::rank_me();
+        unsigned far_id = far.id;
+        gvt::send_remote(far.rank, far.time, [=]() {
+          arrive_far_anti(origin, far_id);
+        });
+      }
+      
+      // walk near-sent events
+      event *sent = e->sent_near_head;
+      while(sent != nullptr) {
+        event *sent_next = sent->sent_near_next;
+        local_event sent_le = {sent, sent->time, sent->subtime};
+        
+        if(sent->target_rank != deva::rank_me()) { // event sent to near-remote
+          // send anti-message
+          int target_cd = sent->target_cd;
+          gvt::send_local(sent->target_rank, sent->time, [=]() {
+            arrive_near<-1>(target_cd, sent_le);
+          });
+        }
+        else { // sent event to myself
+          cd_state *cd1 = &sim_me.cds[sent->target_cd];
           
-          // walk near-sent events
-          event *sent = le.e->sent_near_head;
-          while(sent != nullptr) {
-            event *sent_next = sent->sent_near_next;
-            event_tdig sent_tdig = sent->tdig();
-            
-            if(sent->target_rank != deva::rank_me()) { // event sent to near-remote
-              // send anti-message
-              int target_cd = sent->target_cd;
-              gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive_near(target_cd, sent, sent_tdig, -1);
-              });
-            }
-            else { // event self-sent to this rank
-              cd_state *cd1 = &sim_me.cds[sent->target_cd];
-              
-              if(sent_tdig <= cd1->was()) {
-                if(cd != cd1) {
-                  // since target cd is different we remember to rollback later
-                  if(cd1->anti_least == nullptr) {
-                    cd1->anti_least = sent;
-                    // register cd1 as needing rollback
-                    cd1->anti_next = cds_anti_head;
-                    cds_anti_head = cd1;
-                  }
-                  else if(sent_tdig < cd1->anti_least->tdig())
-                    cd1->anti_least = sent;
-                }
-                
-                sent->existence = -1; // mark event for removal
-              }
-              else { // can remove now, hasn't executed
-                cd1->future_events.erase({sent, sent_tdig});
-                sim_me.cds_by_now.increased({cd1, cd1->now()});
-                sent->vtbl1->destruct_and_delete(sent);
-              }
-            }
-            
-            sent = sent_next;
-          }
-
-          if(le.e->existence == -1) {
-            DEVA_ASSERT(
-              le.e->far_next == reinterpret_cast<event_on_creator*>(0x1) &&
-              le.e->target_rank == deva::rank_me() &&
-              &sim_me.cds[le.e->target_cd] == cd
-            );
-            le.e->vtbl1->destruct_and_delete(le.e);
+          if(sent->phase == event_on_target::phase_future) {
+            // can remove now, hasn't executed
+            cd1->future_events.erase(sent_le);
+            sim_me.cds_by_now.increased({cd1, cd1->now()});
+            sent->vtbl_on_creator->destruct_and_delete(sent); // batch in vtbl and defer?
           }
           else {
-            cd->future_events.insert(le);
-            sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+            if(sent->phase == event_on_target::phase_past) {
+              sent->undo_next = undo_head;
+              undo_head = sent;
+              
+              if(sent_le < cd1->undo_least_wrt_commute)
+                cd1->undo_least_wrt_commute = sent_le;
+              
+              if(cd1->undo_next == reinterpret_cast<cd_state*>(0x1)) {
+                cd1->undo_next = cd1->vtbl->undo_head;
+                cd1->vtbl->undo_head = cd1;
+                
+                if(cd1->vtbl->undo_next == reinterpret_cast<cd_vtable*>(0x1)) {
+                  cd1->vtbl->undo_next = undo_fresh_head;
+                  undo_fresh_head = cd1->vtbl;
+                }
+              }
+              
+              sent->phase = event_on_target::phase_undo;
+            }
+            
+            sent->phase |= event_on_target::phase_undo_remove;
           }
         }
+        
+        sent = sent_next;
       }
       
-      cd->past_events.chop_back(rolled_n);
-      if(cd->past_events.size() == 0)
-        sim_me.cds_by_dawn.increased({cd, end_of_time.first});
+      e = e->undo_next;
+    }
+    while(e != nullptr);
+  }
+  while(undo_head != nullptr);
+  
+  return undo_fresh_head;
+}
+  
+void detail::rollback_closure(cd_state *cd_all_head, event *e_head) {
+  //say()<<"ROLLBACK";
+  
+  while(e_head != nullptr) {
+    // close undos by following send lists, returns list of cd_vtable's
+    // that need to be commute closed.
+    cd_vtable *vtbl_head = close_undos_wrt_send(e_head);
+    
+    // no vtables added ==> no cds added ==> no events discovered ==> done.
+    if(vtbl_head == nullptr)
+      break;
+    
+    // walk the vtables and close all cd's each contains via non-commutes-with
+    // relation. gather list of events that need to be send-closed here.
+    e_head = nullptr;
+    
+    cd_vtable *vtbl = vtbl_head;
+    do {
+      // collect all cd's in vtable into the total cd undo set.
+      cd_state *cd = vtbl->undo_head;
+      do {
+        if(cd->undo_all_next == reinterpret_cast<cd_state*>(0x1)) {
+          cd->undo_all_next = cd_all_head;
+          cd_all_head = cd;
+        }
+        cd = cd->undo_next;
+      }
+      while(cd != nullptr);
+      
+      // close undo set wrt non-commutes-with relation.
+      vtbl->close_undos_wrt_commute(vtbl->undo_head, &e_head);
+      vtbl->undo_head = nullptr;
+      
+      // next vtable
+      cd_vtable *next = vtbl->undo_next;
+      vtbl->undo_next = reinterpret_cast<cd_vtable*>(0x1);
+      vtbl = next;
+    }
+    while(vtbl != nullptr);
+  }
+  
+  // now perform the mass unexecute of all "undo" events
+  cd_state *cd = cd_all_head;
+  do {
+    // walk backwards to unexecute
+    for(int i=0; i <= cd->undo_least; i++) {
+      local_event e = cd->past_events.at_backwards(i);
+      if(e.e->phase & event_on_target::phase_undo)
+        e.e->vtbl_on_target->unexecute(e.e);
     }
     
-    // look for another `cd` that needs rollback
-    if(cds_anti_head != nullptr) {
-      cd = cds_anti_head;
-      cds_anti_head = cd->anti_next;
-      new_now = cd->anti_least->tdig();
-      cd->anti_least = nullptr;
-      goto rollback_cd;
+    // walk forwards to remove/condense
+    int r = cd->undo_least;
+    int w = cd->undo_least;
+    cd->undo_least = -1;
+    
+    bool inserted_future = false;
+    
+    while(r >= 0) {
+      local_event le = cd->past_events.at_backwards(r);
+      cd->past_events.at_backwards(w) = le;
+      
+      if(0 == (le.e->phase & event_on_target::phase_undo))
+        w -= 1;
+      else if(le.e->phase & event_on_target::phase_undo_remove) {
+        DEVA_ASSERT(&sim_me.cds[le.e->target_cd] == cd);
+        if(le.e->local)
+          le.e->vtbl_on_creator->destruct_and_delete(le.e);
+      }
+      else {
+        le.e->phase = event_on_target::phase_future;
+        cd->future_events.insert(le);
+        inserted_future = true;
+        // handled outside loop:
+        // sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+      }
+      
+      r -= 1;
     }
+    
+    if(inserted_future)
+      sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
+    
+    cd->past_events.chop_back(w - r);
+    if(cd->past_events.size() == 0)
+      sim_me.cds_by_dawn.increased({cd, end_of_time});
+    else {
+      // SLOPPY! This cd *may* have received the inserted event so we attempt to
+      // decrease its dawn position.
+      sim_me.cds_by_dawn.decreased({cd, cd->dawn()});
+    }
+    
+    // next cd
+    cd_state *next = cd->undo_all_next;
+    cd->undo_all_next = reinterpret_cast<cd_state*>(0x1);
+    cd = next;
   }
+  while(cd != nullptr);
 }
 
 void pdes::drain() {
@@ -468,7 +599,7 @@ void pdes::drain() {
         { // delete near-committed events from previous epoch
           while(remote_near_events.least_key_or(uint64_t(-1)) < gvt_old) {
             event *e = remote_near_events.pop_least();
-            e->vtbl1->destruct_and_delete(e);
+            e->vtbl_on_creator->destruct_and_delete(e);
           }
         }
         
@@ -481,11 +612,11 @@ void pdes::drain() {
             
             while(commit_n < past_n) {
               local_event le = cd->past_events.at_forwards(commit_n);
-              if(le.tdig.first >= gvt_new)
+              if(le.time >= gvt_new)
                 break;
               
               commit_n += 1;
-              le.e->vtbl2->commit(le.e);
+              le.e->vtbl_on_target->commit(le.e);
               
               if(le.e->creator_rank == deva::rank_me()) {
                 // We report as the creator of events which were sent from a
@@ -493,7 +624,7 @@ void pdes::drain() {
                 if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
                   sim_me.from_far.remove(le.e);
                 
-                le.e->vtbl2->destruct_and_delete(le.e);
+                le.e->vtbl_on_target->destruct_and_delete(le.e);
               }
             }
             
@@ -524,24 +655,31 @@ void pdes::drain() {
     
     { // execute one event
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
-      local_event le = cd->future_events.peek_least_or({nullptr, end_of_time});
+      local_event le = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
       
-      if(le.tdig.first < global_status.look_t_ub) {
+      if(le.time < global_status.look_t_ub) {
+        DEVA_ASSERT(le.e->phase == event_on_target::phase_future);
+        le.e->phase = event_on_target::phase_past;
+        
         cd->future_events.pop_least();
         sim_me.cds_by_now.increased({cd, cd->now()});
         
-        cd->past_events.push_back(le);
-        if(cd->past_events.size() == 1)
-          sim_me.cds_by_dawn.decreased({cd, cd->dawn()});
-
+        if(le > cd->past_events.back_or({nullptr, 0, 0})) {
+          cd->past_events.push_back(le);
+          if(1 == cd->past_events.size())
+            sim_me.cds_by_dawn.decreased({cd, le.time});
+        }
+        else {
+          cd->vtbl->insert_past(cd, le);
+        }
+        
         event *sent_near; {
           execute_context_impl cxt;
           cxt.cd = cd->cd_ix;
-          cxt.time = le.tdig.first;
-          cxt.digest = le.tdig.second;
+          cxt.time = le.time;
           cxt.sent_far = &le.e->sent_far;
           
-          le.e->vtbl2->execute(le.e, cxt);
+          le.e->vtbl_on_target->execute(le.e, cxt);
           
           le.e->sent_near_head = cxt.sent_near_head;
           sent_near = cxt.sent_near_head;
@@ -553,25 +691,25 @@ void pdes::drain() {
         { // walk the `sent_near` list of the event's execution
           event *sent = sent_near;
           while(sent != nullptr) {
-            event_tdig sent_tdig = sent->tdig();
+            local_event sent_le = {sent, sent->time, sent->subtime};
             int sent_cd_ix = sent->target_cd;
             
             if(sent->target_rank != deva::rank_me()) {
+              sent->local = false;
               gvt::send_local(sent->target_rank, sent->time, [=]() {
-                arrive_near(sent_cd_ix, sent, sent_tdig, +1);
+                arrive_near<+1>(sent_cd_ix, sent_le);
               });
               
               remote_near_events.insert(sent);
             }
             else {
+              sent->local = true;
               sent->existence = 1;
+              sent->phase = event_on_target::phase_future;
               
               cd_state *sent_cd = &sim_me.cds[sent_cd_ix];
-
-              if(cd != sent_cd && sent_tdig < sent_cd->was())
-                rollback(sent_cd, sent_tdig);
-
-              sent_cd->future_events.insert({sent, sent_tdig});
+              
+              sent_cd->future_events.insert(sent_le);
               sim_me.cds_by_now.decreased({sent_cd, sent_cd->now_after_future_insert()});
             }
             
@@ -585,6 +723,8 @@ void pdes::drain() {
 drain_complete:
   DEVA_ASSERT_ALWAYS(sim_me.from_far.size() == 0);
   DEVA_ASSERT_ALWAYS(remote_near_events.size() == 0);
+  DEVA_ASSERT(event::live_n == 0, "live_n="<<event::live_n);
+  
   sim_me.cds_by_dawn.clear();
   sim_me.cds_by_now.clear();
   sim_me.cds.reset();

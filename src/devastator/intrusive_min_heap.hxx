@@ -47,7 +47,11 @@ namespace deva {
 
   public:
     int size() const { return this->n_; }
-
+    
+    T const& at(int i) const {
+      return this->buf_[i];
+    }
+    
     Key least_key() const {
       return key_of(this->buf_[0]);
     }
@@ -133,6 +137,9 @@ namespace deva {
         buf_ = nullptr;
       }
     }
+    
+    template<typename Fn>
+    void increase_all_less(Key key, Fn &&fn);
   };
 
   template<typename T, typename Key, int&(&ix_of)(T), Key(&key_of)(T)>
@@ -195,6 +202,50 @@ namespace deva {
     buf[ix] = x;
     ix_of(buf[ix]) = ix;
     return changed;
+  }
+  
+  template<typename T, typename Key, int&(&ix_of)(T), Key(&key_of)(T)>
+  template<typename Fn>
+  void intrusive_min_heap<T,Key,ix_of,key_of>::increase_all_less(Key key, Fn &&fn) {
+  #if 0
+    struct foo {
+      static void recurse(intrusive_min_heap<T,Key,ix_of,key_of> *me, Key key, Fn &&fn, int i) {
+        if(i < me->n_ && key_of(me->buf_[i]) < key) {
+          me->buf_[i] = fn(me->buf_[i]);
+          foo::recurse(me, key, std::forward<Fn>(fn), 2*i + 1);
+          foo::recurse(me, key, std::forward<Fn>(fn), 2*i + 2);
+          
+          me->increased(i, me->buf_[i], key_of(me->buf_[i]));
+        }
+      }
+    };
+    
+    foo::recurse(this, key, std::forward<Fn>(fn), 0);
+  #else
+    int i = 0;
+  dive:
+    if(i < n_ && key_of(buf_[i]) < key) {
+      buf_[i] = fn(buf_[i]);
+      i = 2*i + 1;
+      goto dive;
+    }
+    goto rise;
+  
+  increased_and_rise:
+    increased(i, buf_[i], key_of(buf_[i]));
+  
+  rise:
+    if(i & 1) {
+      i += 1;
+      goto dive;
+    }
+    else if(i == 0)
+      return;
+    else {
+      i = (i-2)/2;
+      goto increased_and_rise;
+    }
+  #endif
   }
 } // namespace deva
 #endif

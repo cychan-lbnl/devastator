@@ -176,7 +176,6 @@ namespace tmsg {
       int w = 0;
       
       while(r + 4 <= hot_n) {
-        
         message *mp4[4];
         std::uint32_t mn4_min = ~std::uint32_t(0);
         

@@ -38,6 +38,7 @@ namespace deva {
   extern tmsg::channels_w<worker_n> remote_recv_chan_w;
 
   extern __thread int rank_me_;
+  extern int process_me_;
   extern int process_rank_lo_, process_rank_hi_;
   
   inline int rank_me() { return rank_me_; }
@@ -46,6 +47,8 @@ namespace deva {
   inline bool rank_is_local(int rank) {
     return process_rank_lo_ <= rank && rank < process_rank_hi_;
   }
+  
+  inline int process_me() { return process_me_; }
   
   struct alignas(8) remote_out_message: tmsg::message {
     int rank, size8;
