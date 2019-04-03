@@ -16,14 +16,16 @@ namespace deva {
       int mid = rank_me + (to_ub - rank_me)/2;
       if(mid == rank_me) break;
 
-      deva::send(mid, [=]() {
-        reduce_down_(to_ub, ans);
-      });
+      deva::send(mid, [=](T &ans) {
+          reduce_down_(to_ub, std::move(ans));
+        },
+        ans
+      );
       
       to_ub = mid;
     }
     
-    rdxn_ans = new T{ans};
+    rdxn_ans = new T(std::move(ans));
   }
   
   template<typename T, typename Op>
@@ -36,25 +38,26 @@ namespace deva {
         rdxn_incoming += 1;
       }
       rdxn_incoming += 1; // add one for self
-      rdxn_acc = new T{val};
+      rdxn_acc = new T(std::move(val));
     }
-    else {
+    else
       op(*(T*)rdxn_acc, val);
-      val = *(T*)rdxn_acc;
-    }
     
     if(0 == --rdxn_incoming) {
+      val = std::move(*(T*)rdxn_acc);
       delete (T*)rdxn_acc;
       
       if(0 == deva::rank_me()) {
-        reduce_down_(deva::rank_n, val);
+        reduce_down_(deva::rank_n, std::move(val));
       }
       else {
         int parent = deva::rank_me();
         parent &= parent-1;
-        deva::send(parent, [=]() {
-          reduce_up_(val, op);
-        });
+        deva::send(parent, [=](T &val) {
+            reduce_up_(std::move(val), op);
+          },
+          std::move(val)
+        );
       }
     }
   }
@@ -69,7 +72,7 @@ namespace deva {
     while(rdxn_ans == nullptr)
       deva::progress();
 
-    T ans = *(T*)rdxn_ans;
+    T ans = std::move(*(T*)rdxn_ans);
     delete (T*)rdxn_ans;
     return ans;
   }
