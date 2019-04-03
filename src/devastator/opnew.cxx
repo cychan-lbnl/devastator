@@ -166,7 +166,7 @@ void opnew::operator_delete_slow(void *obj) {
     if(a->owner_ts == &my_ts)
       arena_dealloc_blob(a, obj);
     else
-      arena_dealloc_remote(a, (frobj*)obj);
+      arena_dealloc_remote(a, new(obj) frobj);
   }
   else
     std::free(obj);
@@ -304,7 +304,7 @@ namespace {
         id = 0;
       }
       
-      a = (arena*)((char*)mm_block + id*uintptr_t(arena_size));
+      a = new((char*)mm_block + id*uintptr_t(arena_size)) arena;
     }
     
     a->owner_ts = &my_ts;
@@ -415,7 +415,7 @@ namespace {
     int p0 = ((char*)b - (char*)(a+1))/page_size;
     int p1 = p0 + (-a->pmap[p0] - 16*K);
 
-    pool *poo = (pool*)b;
+    pool *poo = new(b) pool;
     #if OPNEW_DEBUG
       poo->deadbeef = 0xdeadbeef;
     #endif
@@ -440,7 +440,7 @@ namespace {
     int popn = 0;
 
     // first element
-    head = reinterpret_cast<frobj*>(ou);
+    head = new(reinterpret_cast<void*>(ou)) frobj;
     head->set_links(nullptr, nullptr);
     tail = head;
     ou += obj_size;
@@ -450,7 +450,7 @@ namespace {
     frobj *tail_prev = nullptr;
     while(ou0 < ou + obj_size && ou + obj_size <= ou1) {
       if((ou & (huge_align-1)) != 0) {
-        frobj *o = reinterpret_cast<frobj*>(ou);
+        frobj *o = new(reinterpret_cast<void*>(ou)) frobj;
         tail->set_links(tail_prev, o);
         tail_prev = tail;
         tail = o;

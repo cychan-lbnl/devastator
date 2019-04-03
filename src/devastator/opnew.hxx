@@ -409,7 +409,7 @@ namespace opnew {
       
       if((known_local || a->owner_ts == &my_ts) && bin != -1) {
         bin_state *b = &my_ts.bins[bin];
-        frobj *o = (frobj*)obj;
+        frobj *o = new(obj) frobj;
         o->set_links(nullptr, b->head());
         b->head()->change_link(nullptr, o);
         b->head(o);
