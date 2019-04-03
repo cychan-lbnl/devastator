@@ -374,7 +374,7 @@ namespace tmsg {
   
   void barrier(bool do_progress=true);
   
-  void run(upcxx::function_ref<void()> fn);
+  void run(upcxx::detail::function_ref<void()> fn);
 }
 }
 #endif

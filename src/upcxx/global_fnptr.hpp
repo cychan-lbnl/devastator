@@ -17,7 +17,7 @@ namespace upcxx {
   namespace detail {
     void global_fnptr_basis();
 
-    static constexpr std::uintptr_t global_fnptr_null = std::uintptr_t(-1)>>1;
+    static constexpr std::uintptr_t global_fnptr_null = 0;//reinterpret_cast<std::uintptr_t>(global_fnptr_basis);//std::uintptr_t(-1)>>1;
     
     template<typename Fp>
     static std::uintptr_t fnptr_to_uintptr(Fp fp) {
@@ -52,9 +52,10 @@ namespace upcxx {
   public:
     using function_type = Ret(Arg...);
 
-  private:
+  public: //private!
     std::uintptr_t u_;
-
+  
+  private:
     static std::uintptr_t encode(Ret(*fp)(Arg...)) {
       return fp == nullptr
         ? detail::global_fnptr_null
@@ -82,8 +83,8 @@ namespace upcxx {
       return decode_non_null(u_)(std::forward<Arg>(a)...);
     }
 
-    constexpr operator bool() const { return u_ == detail::global_fnptr_null; }
-    constexpr bool operator!() const { return u_ != detail::global_fnptr_null; }
+    constexpr operator bool() const { return u_ != detail::global_fnptr_null; }
+    constexpr bool operator!() const { return u_ == detail::global_fnptr_null; }
 
     operator function_type*() const {
       return decode(u_);

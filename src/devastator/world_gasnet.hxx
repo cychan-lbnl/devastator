@@ -13,7 +13,7 @@
 
 #include <upcxx/bind.hpp>
 #include <upcxx/command.hpp>
-#include <upcxx/packing.hpp>
+#include <upcxx/serialization.hpp>
 
 #include <functional>
 #include <utility>
@@ -53,24 +53,43 @@ namespace deva {
   struct alignas(8) remote_out_message: tmsg::message {
     int rank, size8;
     remote_out_message *bundle_next;
+
+    template<typename Fn, typename Ub>
+    static remote_out_message* create_help(Fn fn, Ub ub, std::false_type ub_valid) {
+      typename std::aligned_storage<512,64>::type tmp;
+      upcxx::detail::serialization_writer<false> w(&tmp, 512);
+      w.template place_new<remote_out_message>();
+      upcxx::detail::command::serialize(w, ub.size, fn);
+      w.place(0,8);
+      DEVA_ASSERT(w.align() <= 8);
+      void *buf = operator new(w.size());
+      w.compact_and_invalidate(buf);
+      auto *rm = new(buf) remote_out_message;
+      rm->size8 = (w.size() - sizeof(remote_out_message))/8;
+      return rm;
+    }
+    
+    template<typename Fn, typename Ub>
+    static remote_out_message* create_help(Fn fn, Ub ub, std::true_type ub_valid) {
+      void *buf = operator new(ub.size_aligned(8));
+      upcxx::detail::serialization_writer<true> w(buf);
+      auto *rm = w.template place_new<remote_out_message>();
+      upcxx::detail::command::serialize(w, ub.size, fn);
+      DEVA_ASSERT(w.align() <= 8);
+      w.place(0,8);
+      rm->size8 = (w.size() - sizeof(remote_out_message))/8;
+      return rm;
+    }
     
     template<typename Fn>
     static remote_out_message* create(int rank, Fn fn) {
-      upcxx::parcel_size<> ub;
-      ub = ub.trivial_added<remote_out_message>();
-      ub = ub.added(upcxx::parcel_size_of<0, 8>());
-      ub = upcxx::command<>::ubound(ub, fn);
-      
-      void *buf = operator new(ub.size_aligned());
-      upcxx::parcel_writer w{buf};
-      remote_out_message *rm = w.put_trivial_aligned<remote_out_message>({});
+      auto ub = upcxx::detail::command::ubound(
+          upcxx::storage_size_of<remote_out_message>()
+            .cat(0,8),
+          fn
+        );
+      auto *rm = create_help(std::move(fn), ub, std::integral_constant<bool, ub.is_valid>());
       rm->rank = rank;
-      rm->size8 = (ub.size_aligned() - sizeof(remote_out_message))/8;
-      
-      upcxx::command<>::pack(w, ub.size, fn);
-
-      DEVA_ASSERT(w.align() <= 8);
-      
       return rm;
     }
   };
@@ -102,14 +121,14 @@ namespace deva {
 
   void barrier(bool do_progress=true);
   
-  void run(upcxx::function_ref<void()> fn);
+  void run(upcxx::detail::function_ref<void()> fn);
 
-  inline void run_and_die(upcxx::function_ref<void()> fn) {
+  inline void run_and_die(upcxx::detail::function_ref<void()> fn) {
     run(fn);
     std::exit(0);
   }
 }
 
-#define REFLECTED UPCXX_REFLECTED
+#define SERIALIZED_FIELDS UPCXX_SERIALIZED_FIELDS
 
 #endif

@@ -56,7 +56,7 @@ namespace {
   };
 }
 
-void deva::run(upcxx::function_ref<void()> fn) {
+void deva::run(upcxx::detail::function_ref<void()> fn) {
   static bool inited = false;
 
   if(!inited) {
@@ -168,13 +168,13 @@ void deva::progress() {
     [](tmsg::message *m) {
       auto *ms = static_cast<remote_in_messages*>(m);
 
-      upcxx::parcel_reader r{ms};
-      r.pop(ms->header_size, 1);
+      upcxx::detail::serialization_reader r{ms};
+      r.unplace(ms->header_size, 1);
       
       int n = ms->count;
       while(n--) {
-        r.pop(0, 8);
-        upcxx::command<>::execute(r);
+        r.unplace(0, 8);
+        upcxx::detail::command::execute(r);
       }
     }
   );
@@ -233,8 +233,8 @@ void deva::barrier(bool do_progress) {
 
 namespace {
   void am_master(gex_Token_t, void *buf, size_t buf_size) {
-    upcxx::parcel_reader r{buf};
-    upcxx::command<>::execute(r);
+    upcxx::detail::serialization_reader r(buf);
+    upcxx::detail::command::execute(r);
   }
 
   struct alignas(8) am_worker_header {
@@ -281,8 +281,8 @@ namespace {
       remote_in_chunked_message::hash_of>
     chunked_by_key;
   
-  void recv_part(int proc_from, int worker, upcxx::parcel_reader &r) {
-    am_worker_part_header hdr = r.pop_trivial_aligned<am_worker_part_header>();
+  void recv_part(int proc_from, int worker, upcxx::detail::serialization_reader &r) {
+    am_worker_part_header hdr = r.template pop_trivial<am_worker_part_header>();
     DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
     
     chunked_by_key.visit(
@@ -307,7 +307,7 @@ namespace {
           m->waiting_size8 = hdr.total_size8;
         }
         
-        std::memcpy((char*)(m+1) + offset, r.pop(part_size, 8), part_size);
+        std::memcpy((char*)(m+1) + offset, r.unplace(part_size, 8), part_size);
 
         m->waiting_size8 -= hdr.part_size8;
         
@@ -329,10 +329,10 @@ namespace {
     
     DEVA_ASSERT(0 <= worker_n && worker_n <= deva::worker_n);
     
-    upcxx::parcel_reader r{buf};
+    upcxx::detail::serialization_reader r{buf};
     
     while(worker_n--) {
-      am_worker_header hdr = r.pop_trivial_aligned<am_worker_header>();
+      am_worker_header hdr = r.pop_trivial<am_worker_header>();
       DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
       
       if(hdr.has_part_head)
@@ -341,18 +341,17 @@ namespace {
       if(hdr.middle_msg_n != 0) {
         size_t size = 8*size_t(hdr.middle_size8);
         
-        upcxx::parcel_size<> ub;
-        ub = ub.trivial_added<remote_in_messages>();
-        ub = ub.added(upcxx::parcel_size<>(size, 8));
+        auto ub = upcxx::storage_size_of<remote_in_messages>()
+                  .cat(size, 8);
         
         void *buf = operator new(ub.size);
-        upcxx::parcel_writer w{buf};
-        remote_in_messages *m = w.put_trivial_aligned<remote_in_messages>({});
+        upcxx::detail::serialization_writer</*bounded=*/true> w(buf);
 
+        auto *m = w.place_new<remote_in_messages>();
         m->header_size = sizeof(remote_in_messages);
         m->count = hdr.middle_msg_n;
-        std::memcpy(w.place(size, 8), r.pop(size, 8), size);
 
+        std::memcpy(w.place(size, 8), r.unplace(size, 8), size);
         //say()<<"rrecv send w="<<worker<<" mn="<<msg_n;
         deva::remote_recv_chan_w.send(hdr.worker, m);
       }
@@ -400,10 +399,10 @@ namespace {
             int wrkr = rm->rank % deva::worker_n;
 
             alignas(8) char buf[16<<10];
-            upcxx::parcel_writer w{buf};
-            w.put_trivial_aligned<uint16_t>(wrkr);
-            w.put_trivial_aligned<uint16_t>(1);
-            w.put_trivial_aligned<int32_t>(rm->size8);
+            upcxx::detail::serialization_writer w{buf};
+            w.put_trivial<uint16_t>(wrkr);
+            w.put_trivial<uint16_t>(1);
+            w.put_trivial<int32_t>(rm->size8);
             std::memcpy(w.place(8*rm->size8, 8), rm+1, 8*rm->size8);
             
             //say()<<"gex_AM_RequestMedium1";
@@ -473,7 +472,7 @@ namespace {
                     am_len = std::min<size_t>(GASNETC_GNI_MAX_MEDIUM, am_len);
                   #endif
                   
-                  upcxx::parcel_writer w{am_buf};
+                  upcxx::detail::serialization_writer</*bounded=*/true> w(am_buf);
                   int committed_workers = 0;
                   
                   for(int worker=0; worker < deva::worker_n; worker++) {
@@ -482,13 +481,13 @@ namespace {
                     if(rm_tail != nullptr) {
                       remote_out_message *rm = rm_tail->bundle_next;
                       
-                      upcxx::parcel_size<> laytmp = {w.size(), w.align()};
-                      laytmp = laytmp.trivial_added<am_worker_header>();
+                      upcxx::storage_size<> laytmp = {w.size(), w.align()};
+                      laytmp = laytmp.cat_size_of<am_worker_header>();
                       if(laytmp.size >= am_len) goto am_full;
                       
                       committed_workers += 1;
 
-                      auto *hdr = w.put_trivial_aligned<am_worker_header>({});
+                      auto *hdr = w.place_new<am_worker_header>();
                       hdr->worker = worker;
                       hdr->has_part_head = 0;
                       hdr->has_part_tail = 0;
@@ -498,11 +497,11 @@ namespace {
                       if(bun->of[worker].offset8 != 0) {
                         int32_t offset8 = bun->of[worker].offset8;
 
-                        laytmp = laytmp.trivial_added<am_worker_part_header>();
+                        laytmp = laytmp.cat_size_of<am_worker_part_header>();
                         if(laytmp.size >= am_len) goto am_full;
 
                         hdr->has_part_head = 1;
-                        auto *part = w.put_trivial_aligned<am_worker_part_header>({});
+                        auto *part = w.place_new<am_worker_part_header>();
                         part->nonce = bun->of[worker].nonce;
                         part->total_size8 = rm->size8;
                         part->part_size8 = std::min<int32_t>(rm->size8 - offset8, am_len/8 - w.size()/8);
@@ -511,7 +510,9 @@ namespace {
                         bun->of[worker].offset8 += part->part_size8;
                         bun->size8 -= part->part_size8;
                         
-                        std::memcpy(w.place(8*part->part_size8, 8), (char*)(rm+1) + 8*offset8, 8*part->part_size8);
+                        std::memcpy(w.place(8*part->part_size8, 8),
+                                    (char*)(rm+1) + 8*offset8,
+                                    8*part->part_size8);
 
                         if(bun->of[worker].offset8 == rm->size8) {
                           bun->of[worker].offset8 = 0;
@@ -530,18 +531,18 @@ namespace {
                       while(rm != nullptr) {
                       rm_not_null:
                         laytmp = {w.size(), w.align()};
-                        laytmp = laytmp.added(upcxx::parcel_size<>{8*size_t(rm->size8), 8});
+                        laytmp = laytmp.cat(8*size_t(rm->size8), 8);
                         
                         if(uint16_t(hdr->middle_msg_n + 1) == 0)
                           goto am_full;
                         
                         if(laytmp.size > am_len) {
                           laytmp = {w.size(), w.align()};
-                          laytmp = laytmp.trivial_added<am_worker_part_header>();
+                          laytmp = laytmp.cat_size_of<am_worker_part_header>();
                           
                           if(am_len >= laytmp.size + 64) {
                             hdr->has_part_tail = 1;
-                            auto *part = w.put_trivial_aligned<am_worker_part_header>({});
+                            auto *part = w.place_new<am_worker_part_header>();
                             part->nonce = nonce_bump++;
                             part->total_size8 = rm->size8;
                             part->part_size8 = am_len/8 - w.size()/8;
@@ -552,7 +553,9 @@ namespace {
                             bun->size8 -= part->part_size8;
                             DEVA_ASSERT(part->part_size8 < rm->size8);
                             
-                            std::memcpy(w.place(8*part->part_size8, 8), rm + 1, 8*part->part_size8);
+                            std::memcpy(w.place(8*part->part_size8, 8),
+                                        rm + 1,
+                                        8*part->part_size8);
                           }
 
                           goto am_full;

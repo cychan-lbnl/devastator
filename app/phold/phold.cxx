@@ -53,6 +53,7 @@ struct event {
   int actor;
   std::vector<int> devil;
   
+  event() = default;
   event(int ray, int actor):
     ray{ray}, actor(actor) {
     devil.resize(3);
@@ -61,7 +62,7 @@ struct event {
     devil[2]= 6;
   }
   
-  REFLECTED(ray, actor, devil);
+  SERIALIZED_FIELDS(ray, actor, devil);
 
   void sane(const char *file, int line) {
     bool ok = true;

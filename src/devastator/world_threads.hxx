@@ -47,11 +47,11 @@ namespace deva {
     tmsg::barrier(do_progress);
   }
   
-  inline void run(upcxx::function_ref<void()> fn) {
+  inline void run(upcxx::detail::function_ref<void()> fn) {
     tmsg::run(fn);
   }
 
-  inline void run_and_die(upcxx::function_ref<void()> fn) {
+  inline void run_and_die(upcxx::detail::function_ref<void()> fn) {
     run(fn);
     std::exit(0);
   }
@@ -112,6 +112,6 @@ namespace deva {
   }
 }
 
-#define REFLECTED(...) /*nothing*/
+#define SERIALIZED_FIELDS(...) /*nothing*/
 
 #endif

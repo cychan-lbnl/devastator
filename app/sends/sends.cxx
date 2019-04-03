@@ -56,7 +56,7 @@ struct message {
     });
   }
 
-  REFLECTED(origin, epoch, hunk);
+  SERIALIZED_FIELDS(origin, epoch, hunk)
 };
 
 int main() {

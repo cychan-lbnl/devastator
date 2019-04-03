@@ -5,16 +5,20 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <sstream>
 #include <tuple>
 #include <utility>
 
+#include <cstdlib> // std::aligned_alloc, posix_memalign
+
 namespace upcxx {
+namespace detail {
   //////////////////////////////////////////////////////////////////////
-  // nop_function
-  
+  // detail::nop_function
+
   template<typename Sig>
   struct nop_function;
   
@@ -38,12 +42,12 @@ namespace upcxx {
   }
   
   //////////////////////////////////////////////////////////////////////
-  // constant_function
-  
+  // detail::constant_function
+
   template<typename T>
   struct constant_function {
     T value_;
-    constant_function(T value): value_{std::move(value)} {}
+    constant_function(T value): value_(std::move(value)) {}
     
     template<typename ...Arg>
     T operator()(Arg &&...args) const {
@@ -123,47 +127,180 @@ namespace upcxx {
         return invoker_.indirect(fn_, static_cast<Arg>(arg)...);
     }
   };
+
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::memcpy_aligned
+
+  template<std::size_t align>
+  inline void memcpy_aligned(void *dst, void const *src, std::size_t sz) noexcept {
+    std::memcpy(__builtin_assume_aligned(dst, align),
+                __builtin_assume_aligned(src, align), sz);
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::launder
+
+  #if __cplusplus >= 201703L
+    template<typename T>
+    constexpr T* launder(T *p) {
+      return std::launder(p);
+    }
+  #else
+    template<typename T>
+    T* launder(T *p) noexcept {
+      asm("" : "+rm"(p) : "rm"(p) :);
+      return p;
+    }
+  #endif
   
-  //////////////////////////////////////////////////////////////////////
-  // raw_storage<T>: Like std::aligned_storage, except more convenient to work
-  // with. The typed value exists in the `value` member, but isnt implicitly
-  // constructed. Construction should be done by user with placement new like:
-  //   `new(&raw.value) T{...}`.
-  // Also, the value won't be implicilty destructed either. That too is the user's
-  // responsibility.
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::construct_default: Default constructs a T object if possible,
+  // otherwise cheat (UB!) to convince compiler such an object already existed.
+
+  namespace help {
+    template<typename T>
+    T* construct_default(void *spot, std::true_type deft_ctor) {
+      return reinterpret_cast<T*>(::new(spot) T); // extra reinterpret_cast needed for T = U[n] (compiler bug?!)
+    }
+    template<typename T>
+    T* construct_default(void *spot, std::false_type deft_ctor) {
+      return detail::template launder<T>(reinterpret_cast<T*>(spot));
+    }
+  }
   
   template<typename T>
-  union raw_storage {
+  T* construct_default(void *spot) {
+    return help::template construct_default<T>(
+      spot,
+      std::integral_constant<bool, std::is_default_constructible<T>::value>()
+    );
+  }
+  
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::construct_trivial: Constructs T objects from raw bytes. If
+  // T doesn't have the appropriate constructors, this will cheat (UB!) by
+  // copying the bytes and then *blessing* the memory as holding a valid T.
+  
+  namespace help {
+    template<typename T>
+    T* construct_trivial(void *dest, const void *src, std::true_type deft_ctor, std::true_type triv_copy) {
+      T *ans = reinterpret_cast<T*>(::new(dest) T);
+      detail::template memcpy_aligned<alignof(T)>(ans, src, sizeof(T));
+      return ans;
+    }
+    template<typename T>
+    T* construct_trivial(void *dest, const void *src, std::true_type deft_ctor, std::false_type triv_copy) {
+      ::new(dest) T;
+      detail::template memcpy_aligned<alignof(T)>(dest, src, sizeof(T));
+      return detail::template launder<T>(reinterpret_cast<T*>(dest));
+    }
+    template<typename T, bool any>
+    T* construct_trivial(void *dest, const void *src, std::false_type deft_ctor, std::integral_constant<bool,any> triv_copy) {
+      detail::template memcpy_aligned<alignof(T)>(dest, src, sizeof(T));
+      return detail::launder(reinterpret_cast<T*>(dest));
+    }
+    
+    template<typename T>
+    T* construct_trivial(void *dest, const void *src, std::size_t n, std::true_type deft_ctor, std::true_type triv_copy) {
+      T *ans = nullptr;
+      for(std::size_t i=n; i != 0;)
+        ans = ::new((T*)dest + --i) T;
+      detail::template memcpy_aligned<alignof(T)>(ans, src, n*sizeof(T));
+      return ans;
+    }
+    template<typename T>
+    T* construct_trivial(void *dest, const void *src, std::size_t n, std::true_type deft_ctor, std::false_type triv_copy) {
+      for(std::size_t i=n; i != 0;)
+        ::new((T*)dest + --i) T;
+      detail::template memcpy_aligned<alignof(T)>(dest, src, n*sizeof(T));
+      return detail::template launder<T>(reinterpret_cast<T*>(dest));
+    }
+    template<typename T, bool any>
+    T* construct_trivial(void *dest, const void *src, std::size_t n, std::false_type deft_ctor, std::integral_constant<bool,any> triv_copy) {
+      detail::template memcpy_aligned<alignof(T)>(dest, src, n*sizeof(T));
+      return detail::launder(reinterpret_cast<T*>(dest));
+    }
+  }
+  
+  template<typename T>
+  T* construct_trivial(void *dest, const void *src) {
+    return help::template construct_trivial<T>(
+        dest, src, 
+        std::integral_constant<bool, std::is_default_constructible<T>::value>(),
+        std::integral_constant<bool, std::is_trivially_copyable<T>::value>()
+      );
+  }
+  template<typename T>
+  T* construct_trivial(void *dest, const void *src, std::size_t n) {
+    return help::template construct_trivial<T>(
+        dest, src, n,
+        std::integral_constant<bool, std::is_default_constructible<T>::value>(),
+        std::integral_constant<bool, std::is_trivially_copyable<T>::value>()
+      );
+  }
+  
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::destruct
+
+  template<typename T>
+  void destruct(T &x) noexcept { x.~T(); }
+  
+  template<typename T, std::size_t n>
+  void destruct(T (&x)[n]) noexcept {
+    for(std::size_t i=0; i != n; i++)
+      destruct(x[i]);
+  }
+  
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::alloc_aligned
+
+  inline void* alloc_aligned(std::size_t size, std::size_t align) noexcept {
+  #if __cplusplus >= 201703L
+    void *p = std::aligned_alloc(align, size);
+    UPCXX_ASSERT(p != nullptr, "std::aligned_alloc returned nullptr");
+    return p;
+  #else
+    void *p;
+    int err = posix_memalign(&p, align, size);
+    if(err != 0) UPCXX_ASSERT(false, "posix_memalign failed with return="<<err);
+    return p;
+  #endif
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::raw_storage<T>: Like std::aligned_storage, except more convenient.
+  // The typed value exists in the `value()` member, but isnt implicitly
+  // constructed. Construction should be done by user with placement new like:
+  //   `::new(&my_storage) T(...)`.
+  // Also, the value won't be implicilty destructed either. That too is the user's
+  // responsibility.
+
+  template<typename T>
+  struct raw_storage {
     typename std::aligned_storage<sizeof(T), alignof(T)>::type raw;
-    T value;
-    
-    raw_storage() {};
-    ~raw_storage() {};
-    
-    // Copy/assignment happen on the flat bytes of T.
-    raw_storage(raw_storage const &that): raw{that.raw} {}
-    raw_storage& operator=(raw_storage const &that) {
-      this->raw = that.raw;
-      return *this;
-    }
 
+    T& value() noexcept {
+      return *detail::launder(reinterpret_cast<T*>(&raw));
+    }
+    
     // Invoke value's destructor.
-    void destruct() {
-      value.~T();
+    void destruct() noexcept {
+      detail::destruct(value());
     }
 
-    // Move value out into a temporary and destruct it.
-    T value_and_destruct() {
-      T ans{std::move(value)};
-      value.~T();
+    // Move value out into return value and destruct a temporary and destruct it.
+    T value_and_destruct() noexcept {
+      T &val = this->value();
+      T ans(std::move(val));
+      detail::destruct(val);
       return ans;
     }
   };
-
+  
   //////////////////////////////////////////////////////////////////////
   // trait_forall: logical conjunction of one trait applied to
   // variadically-many argument types.
-  
+
   template<template<typename...> class Test, typename ...T>
   struct trait_forall;
   template<template<typename...> class Test>
@@ -242,7 +379,7 @@ namespace upcxx {
 
   //////////////////////////////////////////////////////////////////////
 
-  namespace detail {
+  namespace help {
     template<int n, int ...s>
     struct make_index_sequence: make_index_sequence<n-1, n-1, s...> {};
 
@@ -253,7 +390,7 @@ namespace upcxx {
   }
   
   template<int n>
-  using make_index_sequence = typename detail::make_index_sequence<n>::type;
+  using make_index_sequence = typename help::make_index_sequence<n>::type;
 
   //////////////////////////////////////////////////////////////////////
   // add_lref_if_nonref: Add a lvalue-reference (&) to type T if T isn't
@@ -269,44 +406,46 @@ namespace upcxx {
   struct add_lref_if_nonref<T&&> { using type = T&&; };
   
   //////////////////////////////////////////////////////////////////////
-  
+
+  #if 0
   template<typename Tup>
   struct decay_tupled;
   template<typename ...T>
   struct decay_tupled<std::tuple<T...>> {
     typedef std::tuple<typename std::decay<T>::type...> type;
   };
+  #endif
   
   //////////////////////////////////////////////////////////////////////
   // get_or_void & tuple_element_or_void: analogs of std::get &
   // std::tuple_elemenet which return void for out-of-range indices
+
+  #if 0
+  template<int i, typename TupRef,
+           bool in_range = (
+             0 <= i &&
+             i < std::tuple_size<typename std::decay<TupRef>::type>::value
+           )>
+  struct tuple_get_or_void {
+    auto operator()(TupRef t)
+      -> decltype(std::get<i>(t)) {
+      return std::get<i>(t);
+    }
+  };
   
-  namespace detail {
-    template<int i, typename TupRef,
-             bool in_range = (
-               0 <= i &&
-               i < std::tuple_size<typename std::decay<TupRef>::type>::value
-             )>
-    struct tuple_get_or_void {
-      auto operator()(TupRef t)
-        -> decltype(std::get<i>(t)) {
-        return std::get<i>(t);
-      }
-    };
-    
-    template<int i, typename TupRef>
-    struct tuple_get_or_void<i, TupRef, /*in_range=*/false>{
-      void operator()(TupRef t) {}
-    };
-  }
+  template<int i, typename TupRef>
+  struct tuple_get_or_void<i, TupRef, /*in_range=*/false>{
+    void operator()(TupRef t) {}
+  };
   
   template<int i, typename Tup>
   auto get_or_void(Tup &&tup)
     -> decltype(
-      detail::tuple_get_or_void<i,Tup>()(std::forward<Tup>(tup))
+      tuple_get_or_void<i,Tup>()(std::forward<Tup>(tup))
     ) {
-    return detail::tuple_get_or_void<i,Tup>()(std::forward<Tup>(tup));
+    return tuple_get_or_void<i,Tup>()(std::forward<Tup>(tup));
   }
+  #endif
   
   template<int i, typename Tup,
            bool in_range = 0 <= i && i < std::tuple_size<Tup>::value>
@@ -323,7 +462,7 @@ namespace upcxx {
   // back unmodified. If the tuple itself isn't passed in with `&`
   // then this will only work if all components are `&` or `&&`.
   
-  namespace detail {
+  namespace help {
     template<typename Tup, int i,
              typename Ti = typename std::tuple_element<i, typename std::decay<Tup>::type>::type>
     struct tuple_lrefs_get;
@@ -365,12 +504,12 @@ namespace upcxx {
   template<typename Tup>
   inline auto tuple_lrefs(Tup &&tup)
     -> decltype(
-      detail::tuple_lrefs(
+      help::tuple_lrefs(
         std::forward<Tup>(tup),
         make_index_sequence<std::tuple_size<typename std::decay<Tup>::type>::value>()
       )
     ) {
-    return detail::tuple_lrefs(
+    return help::tuple_lrefs(
       std::forward<Tup>(tup),
       make_index_sequence<std::tuple_size<typename std::decay<Tup>::type>::value>()
     );
@@ -383,7 +522,7 @@ namespace upcxx {
   // passed by non-const `&`, otherwise the non-reference type is used
   // and the value is moved or copied from the input to output tuple.
   
-  namespace detail {
+  namespace help {
     template<typename Tup, int i,
              typename Ti = typename std::tuple_element<i, typename std::decay<Tup>::type>::type>
     struct tuple_rvals_get;
@@ -460,12 +599,12 @@ namespace upcxx {
   template<typename Tup>
   inline auto tuple_rvals(Tup &&tup)
     -> decltype(
-      detail::tuple_rvals(
+      help::tuple_rvals(
         std::forward<Tup>(tup),
         make_index_sequence<std::tuple_size<typename std::decay<Tup>::type>::value>()
       )
     ) {
-    return detail::tuple_rvals(
+    return help::tuple_rvals(
       std::forward<Tup>(tup),
       make_index_sequence<std::tuple_size<typename std::decay<Tup>::type>::value>()
     );
@@ -475,7 +614,7 @@ namespace upcxx {
   // apply_tupled: Apply a callable against an argument list wrapped
   // in a tuple.
   
-  namespace detail {
+  namespace help {
     template<typename Fn, typename Tup, int ...i>
     inline auto apply_tupled(
         Fn &&fn, Tup &&args, index_sequence<i...>
@@ -488,16 +627,16 @@ namespace upcxx {
   template<typename Fn, typename Tup>
   inline auto apply_tupled(Fn &&fn, Tup &&args)
     -> decltype(
-      detail::apply_tupled(
+      help::apply_tupled(
         std::forward<Fn>(fn), std::forward<Tup>(args),
         make_index_sequence<std::tuple_size<Tup>::value>()
       )
     ) {
-    return detail::apply_tupled(
+    return help::apply_tupled(
       std::forward<Fn>(fn), std::forward<Tup>(args),
       make_index_sequence<std::tuple_size<Tup>::value>()
     );
   }
-}
-
+} // namespace detail
+} // namespace upcxx
 #endif

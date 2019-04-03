@@ -1,8 +1,8 @@
 #ifndef _ddfd9ec8_a1f2_48b9_8797_fc579cedfb18
 #define _ddfd9ec8_a1f2_48b9_8797_fc579cedfb18
 
-#include <upcxx/packing.hpp>
 #include <upcxx/global_fnptr.hpp>
+#include <upcxx/serialization.hpp>
 #include <upcxx/utility.hpp>
 
 #include <tuple>
@@ -33,7 +33,7 @@ namespace upcxx {
     }
     
     template<typename Me, int ...bi, typename ...Arg>
-    static auto apply_(Me &&me, upcxx::index_sequence<bi...> bis, Arg &&...a)
+    static auto apply_(Me &&me, upcxx::detail::index_sequence<bi...> bis, Arg &&...a)
       -> decltype(
         me.fn_(
           std::declval<B&>()...,
@@ -46,7 +46,7 @@ namespace upcxx {
       );
     }
   
-    using the_b_ixs = upcxx::make_index_sequence<sizeof...(B)>;
+    using the_b_ixs = upcxx::detail::make_index_sequence<sizeof...(B)>;
     
     template<typename ...Arg>
     auto operator()(Arg &&...a) const ->
@@ -62,86 +62,53 @@ namespace upcxx {
   };
 
   // make `bound_function` packable
-  namespace detail {
-    template<typename Fn, typename ...B>
-    struct packing_skippable_dumb<bound_function<Fn,B...>> {
-      static constexpr bool is_definitely_supported =
-        packing_is_definitely_supported<Fn>::value &&
-        packing_is_definitely_supported<std::tuple<B...>>::value;
-
-      static constexpr bool is_owning = 
-        packing_is_owning<Fn>::value &&
-        packing_is_owning<std::tuple<B...>>::value;
-
-      static constexpr bool is_ubound_tight = 
-        packing_is_ubound_tight<Fn>::value &&
-        packing_is_ubound_tight<std::tuple<B...>>::value;
-      
-      template<typename Ub, bool skippable>
-      static auto ubound(Ub ub, const bound_function<Fn,B...> &fn, std::integral_constant<bool,skippable>)
-        -> decltype(
-          packing<std::tuple<B...>>::ubound(
-            packing<Fn>::ubound(
-              ub, fn.fn_, std::false_type()
-            ),
-            fn.b_, std::false_type()
-          )
-        ) {
-        return packing<std::tuple<B...>>::ubound(
-          packing<Fn>::ubound(
-            ub, fn.fn_, /*skippable=*/std::false_type()
-          ),
-          fn.b_, /*skippable=*/std::false_type()
-        );
-      }
-      
-      template<bool skippable>
-      static void pack(parcel_writer &w, const bound_function<Fn,B...> &fn, std::integral_constant<bool,skippable>) {
-        packing<Fn>::pack(w, fn.fn_, std::false_type());
-        packing<std::tuple<B...>>::pack(w, fn.b_, std::false_type());
-      }
-
-      static void skip(parcel_reader &r) {
-        packing<Fn>::skip(r);
-        packing<std::tuple<B...>>::skip(r);
-      }
-
-      using unpacked_t = bound_function<Fn, unpacked_of_t<B>...>;
-      
-      template<bool skippable>
-      static void unpack(parcel_reader &r, void *into, std::integral_constant<bool,skippable>) {
-        raw_storage<Fn> fn;
-        packing<Fn>::unpack(r, &fn, /*skippable=*/std::false_type());
-
-        raw_storage<std::tuple<B...>> b;
-        packing<std::tuple<B...>>::unpack(r, &b, /*skippable=*/std::false_type());
-        
-        ::new(into) bound_function<Fn,B...>(
-          fn.value_and_destruct(),
-          b.value_and_destruct()
-        );
-      }
-    };
-  }
-
   template<typename Fn, typename ...B>
-  struct packing_screen_trivial<bound_function<Fn,B...>>:
-    upcxx::trait_forall<packing_is_trivial, Fn, B...> {
-  };
-  
-  template<typename Fn, typename ...B>
-  struct is_definitely_trivially_serializable<bound_function<Fn,B...>>:
-    upcxx::trait_forall<is_definitely_trivially_serializable, Fn, B...> {
-  };
+  struct serialization<bound_function<Fn,B...>> {
+    static constexpr bool is_definitely_serializable =
+      serialization_complete<Fn>::is_definitely_serializable &&
+      serialization_complete<std::tuple<B...>>::is_definitely_serializable;
 
-  template<typename Fn, typename ...B>
-  struct packing_is_definitely_supported<bound_function<Fn,B...>>:
-    upcxx::trait_forall<packing_is_definitely_supported, Fn, B...> {
-  };
-  
-  template<typename Fn, typename ...B>
-  struct packing_screened<bound_function<Fn,B...>>:
-    detail::packing_skippable_smart<bound_function<Fn,B...>> {
+    static constexpr bool references_buffer = 
+      serialization_complete<Fn>::references_buffer ||
+      serialization_complete<std::tuple<B...>>::references_buffer;
+
+    template<typename Ub>
+    static auto ubound(Ub ub, const bound_function<Fn,B...> &fn)
+      -> decltype(
+        ub.cat_ubound_of(fn.fn_)
+          .cat_ubound_of(fn.b_)
+      ) {
+      return ub.cat_ubound_of(fn.fn_)
+               .cat_ubound_of(fn.b_);
+    }
+    
+    template<typename W>
+    static void serialize(W &w, const bound_function<Fn,B...> &fn) {
+      w.push(fn.fn_);
+      w.push(fn.b_);
+    }
+
+    template<typename R>
+    static void skip(R &r) {
+      r.template skip<Fn>();
+      r.template skip<std::tuple<B...>>();
+    }
+
+    using deserialized_type = bound_function<deserialized_type_of_t<Fn>, deserialized_type_of_t<B>...>;
+    
+    template<typename R>
+    static deserialized_type* deserialize(R &r, void *spot) {
+      detail::raw_storage<deserialized_type_of_t<Fn>> fn;
+      r.template pop_into<Fn>(&fn);
+
+      detail::raw_storage<deserialized_type_of_t<std::tuple<B...>>> b;
+      r.template pop_into<std::tuple<B...>>(&b);
+
+      return ::new(spot) deserialized_type(
+        fn.value_and_destruct(),
+        b.value_and_destruct()
+      );
+    }
   };
 }
 

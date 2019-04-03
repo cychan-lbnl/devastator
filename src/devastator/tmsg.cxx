@@ -63,7 +63,7 @@ namespace {
   pthread_cond_t wake;
   unsigned run_epoch = 0;
   bool shutdown = false;
-  upcxx::function_ref<void()> run_fn;
+  upcxx::detail::function_ref<void()> run_fn;
   
   void* tmain(void *me1) {
     int me = reinterpret_cast<std::intptr_t>(me1);
@@ -121,7 +121,7 @@ namespace {
   }
 }
 
-void tmsg::run(upcxx::function_ref<void()> fn) {
+void tmsg::run(upcxx::detail::function_ref<void()> fn) {
   static bool inited = false;
 
   run_fn = fn;
