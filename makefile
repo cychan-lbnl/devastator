@@ -131,7 +131,8 @@ devastator/world_gasnet.srcs = \
 
 devastator/world.deps = \
   $(devastator/world_$(world).deps) \
-  $(devastator/src)/reduce.hxx
+  $(devastator/src)/reduce.hxx \
+  $(devastator/src)/utility.hxx
 
 devastator/world.srcs = \
   $(devastator/world_$(world).srcs) \

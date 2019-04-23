@@ -10,6 +10,7 @@
 
 #define THREAD_N (WORKER_N)+1
 #include <devastator/tmsg.hxx>
+#include <devastator/utility.hxx>
 
 #include <upcxx/bind.hpp>
 #include <upcxx/command.hpp>
@@ -117,6 +118,19 @@ namespace deva {
       send_remote(rank, std::move(bound));
   }
 
+  template<typename Fn, typename ...Arg>
+  void send(int rank, ctrue3_t local, Fn fn, Arg ...arg) {
+    send_local(rank, std::move(fn), std::move(arg)...);
+  }
+  template<typename Fn, typename ...Arg>
+  void send(int rank, cfalse3_t local, Fn fn, Arg ...arg) {
+    send_remote(rank, std::move(fn), std::move(arg)...);
+  }
+  template<typename Fn, typename ...Arg>
+  void send(int rank, cmaybe3_t local, Fn fn, Arg ...arg) {
+    send(rank, std::move(fn), std::move(arg)...);
+  }
+  
   void progress();
 
   void barrier(bool do_progress=true);

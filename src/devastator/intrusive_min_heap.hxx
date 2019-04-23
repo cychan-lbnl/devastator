@@ -25,9 +25,9 @@ namespace deva {
       if(buf_) delete[] buf_;
     }
     
-  private:
-    void resize(int cap1);
+    void resize(int cap);
 
+  private:
     void push_back(T x) {
       if(n_ + 1 > cap_)
         resize(cap_ == 0 ? 1 : 2*cap_);
@@ -47,7 +47,7 @@ namespace deva {
 
   public:
     int size() const { return this->n_; }
-    
+
     T const& at(int i) const {
       return this->buf_[i];
     }
@@ -95,8 +95,6 @@ namespace deva {
         else
           this->increased(ix, tmp1, key_of(tmp1));
       }
-
-      ix_of(x) = -1;
     }
 
     void increased(T x) {

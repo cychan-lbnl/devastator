@@ -4,6 +4,8 @@
 namespace deva {
 #if 0
   #include <deque>
+
+  #error "needs: at_forwards_or(), at_backwards_or()"
   template<typename T>
   class queue {
     std::deque<T> d;
@@ -79,7 +81,7 @@ namespace deva {
   public:
     queue() = default;
     queue(queue const&) = delete;
-    queue(queue &&that) {
+    queue(queue &&that) noexcept {
       this->n_ = that.n_;
       this->cap_ = that.cap_;
       this->beg_ = that.beg_;
@@ -101,21 +103,33 @@ namespace deva {
     int size() const { return n_; }
 
     T const& at_forwards(int i) const {
-      DEVA_ASSERT(i <= n_);
+      DEVA_ASSERT(i < n_);
       return buf_[(beg_ + i) & (cap_-1)];
     }
     T& at_forwards(int i) {
-      DEVA_ASSERT(i <= n_);
+      DEVA_ASSERT(i < n_);
       return buf_[(beg_ + i) & (cap_-1)];
+    }
+
+    T at_forwards_or(int i, T otherwise) const {
+      return i < n_
+        ? buf_[(beg_ + i) & (cap_-1)]
+        : otherwise;
     }
     
     T const& at_backwards(int i) const {
-      DEVA_ASSERT(i <= n_);
+      DEVA_ASSERT(i < n_);
       return buf_[(beg_ + n_-1 - i) & (cap_-1)];
     }
     T& at_backwards(int i) {
-      DEVA_ASSERT(i <= n_);
+      DEVA_ASSERT(i < n_);
       return buf_[(beg_ + n_-1 - i) & (cap_-1)];
+    }
+
+    T at_backwards_or(int i, T otherwise) const {
+      return i < n_
+        ? buf_[(beg_ + n_-1 - i) & (cap_-1)]
+        : otherwise;
     }
 
     T front_or(T otherwise) const {

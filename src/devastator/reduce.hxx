@@ -41,7 +41,7 @@ namespace deva {
       rdxn_acc = new T(std::move(val));
     }
     else
-      op(*(T*)rdxn_acc, val);
+      op(*(T*)rdxn_acc, std::move(val));
     
     if(0 == --rdxn_incoming) {
       val = std::move(*(T*)rdxn_acc);

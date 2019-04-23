@@ -30,21 +30,30 @@ namespace pdes {
   
   void init(int cds_this_rank);
   
-  /* init_cd: sets the behavior of the cd. `CdOps` must be a type like:
-   *   struct CdOps {
-   *     static bool commutes(event_view a, event_view b);
-   *   };
-   * 
-   * A cd that hasn't been init'd with this call receives the default behaviors.
-   * (where `commutes` always return false).
+  /* drain: Collective wrt all arguments. Advances the simulation by processing
+   * all events with a timestamp strictly less than `t_end`. If `rewindable=true`
+   * then `pdes::rewind(true|false)` must be called afterwards to indicate
+   * whether or not to rewind to the state as it was upon entering drain. If
+   * `rewindable=false`, then all events will be reaped immediately after being
+   * committed.
    */
-  template<class CdOps>
-  void init_cd(int cd_id);
-  
-  void drain();
+  uint64_t drain(std::uint64_t t_end = ~std::uint64_t(0), bool rewindable=false);
 
+  /* rewind: Collective wrt all arguments. After a call to `pdes::drain(rewindable=true)`,
+   * this must be called to either:
+   *  do_rewind=false: invoke `reap` for all events committed last drain.
+   *  do_rewind=true: revert state via unexecute's as it was upon entering last drain.
+   */
+  void rewind(bool do_rewind);
+
+  /* finalize: Destroy all unprocessed events and reset pdes state to requiring
+   * `pdes::init()` to be called again (if desired).
+   */
+  void finalize();
+
+  // root_event: Insert an event into a CD on this rank.
   template<typename Event>
-  void root_event(int cd_ix, std::uint64_t time, Event e);
+  void root_event(int cd, std::uint64_t time, Event e);
 
   struct statistics {
     std::uint64_t executed_n = 0;
@@ -112,12 +121,26 @@ namespace pdes {
     
     void root_event(int cd_ix, event *e);
     void arrive_far(int far_origin, unsigned far_id, event *e);
-    
+
+    struct fridged_event {
+      fridged_event *next;
+      virtual void unexecute_and_delete() = 0;
+      virtual void reap_and_delete() = 0;
+    };
+
     struct event_vtable {
-      void(*destruct_and_delete)(event *me);
+      //void(*destruct_and_delete)(event *head, event* event::*next_of);
+      void(*destruct_and_delete)(event*);
       void(*execute)(event *me, execute_context &cxt);
       void(*unexecute)(event *me);
       void(*commit)(event *me);
+      fridged_event*(*refrigerate)(event *me, bool root);
+      void(*reap)(event *me);
+      #if 0
+      event_vtable *all_next;
+      event *del_head;
+      event *anni_cold_head, *anni_hot_head;
+      #endif
     };
 
     struct alignas(64) event_on_creator {
@@ -130,36 +153,34 @@ namespace pdes {
       };
       int target_cd;
       unsigned far_id;
-      int remote_near_ix = -1;
-      event *sent_near_next = nullptr;
+      int sent_near_ix = -1;
       event_on_creator *far_next = reinterpret_cast<event_on_creator*>(0x1); // 0x1 == not from far
-
+      union {
+        event *sent_near_next = nullptr;
+        event *anni_near_next; // annihilated list next pointer
+        event *del_next;
+      };
+      
       static event_on_creator*& far_next_of(event_on_creator *me) {
         return me->far_next;
       }
     };
     
-    struct alignas(64) event_on_target {
+    struct /*alignas(64)*/ event_on_target {
       event_vtable const *vtbl_on_target;
       event *sent_near_head = nullptr;
       std::forward_list<far_event_id> sent_far;
-      int creator_rank; // rank which allocated this object (not necessarily sender of event)
-      std::int8_t existence = 0; // -1,0,+1
-      
-      static constexpr int
-        phase_future = 0, // event is in `cd_state::future_events` minheap
-        phase_past = 1, // event is in `cd_state::past_events` queue
-        phase_undo = 2, // event will be undone
-        phase_undo_commute_done = 4, // event has been commute-tested with all successors
-        phase_undo_remove = 8; // event needs to be deleted after unexecute
-      std::uint8_t phase;
-      
-      bool local;
-      
-      union {
-        int future_ix;
-        event *undo_next;
-      };
+      std::int16_t created_here:1, // bool
+                   rewind_root:1, // bool
+                   existence:2, // -1,0,+1
+                   future_not_past:1, // bool
+                   remove_after_undo:1; // bool
+      int future_ix;
+
+      event_on_target():
+        existence(0),
+        remove_after_undo(false) {
+      }
     };
 
     struct event: event_on_creator, event_on_target {
@@ -172,7 +193,6 @@ namespace pdes {
       event(event_vtable const *vtbl) {
         this->vtbl_on_creator = vtbl;
         this->vtbl_on_target = vtbl;
-        this->creator_rank = deva::rank_me();
         
         #if DEBUG
           live_n++;
@@ -187,8 +207,8 @@ namespace pdes {
         return e->time;
       }
 
-      static int& remote_near_ix_of(event *e) {
-        return e->remote_near_ix;
+      static int& sent_near_ix_of(event *e) {
+        return e->sent_near_ix;
       }
     };
 
@@ -239,8 +259,8 @@ namespace pdes {
         ),
         /*HasOpParens*/void
       > {
-      void operator()(event_impl<E> *me) const {
-        me->exec_ret.unexecute(me->user);
+      void operator()(E &e, ExecRet &r) const {
+        r.unexecute(e);
       }
     };
     template<typename E, typename ExecRet>
@@ -251,26 +271,84 @@ namespace pdes {
           void()
         )
       > {
-      void operator()(event_impl<E> *me) const {
-        me->exec_ret.operator()(me->user);
+      void operator()(E &e, ExecRet &r) const {
+        r(e);
       }
     };
     
     template<typename E, typename ExecRet,
              typename HasCommit = void>
     struct event_commit_dispatch {
-      void operator()(event_impl<E>*) const {}
+      void operator()(E&, ExecRet&) const {}
     };
     
     template<typename E, typename ExecRet>
     struct event_commit_dispatch<E, ExecRet,
         /*HasCommit*/decltype(
-          std::declval<ExecRet>().unexecute(std::declval<E&>()),
+          std::declval<ExecRet>().commit(std::declval<E&>()),
           void()
         )
       > {
-      void operator()(event_impl<E> *me) const {
-        me->exec_ret.commit(me->user);
+      void operator()(E &e, ExecRet &r) const {
+        r.commit(e);
+      }
+    };
+
+    template<typename E, typename ExecRet,
+             typename HasReap = void>
+    struct event_reap_dispatch {
+      void operator()(E&, ExecRet&) const {}
+    };
+    
+    template<typename E, typename ExecRet>
+    struct event_reap_dispatch<E, ExecRet,
+        /*HasReap*/decltype(
+          std::declval<ExecRet>().reap(std::declval<E&>()),
+          void()
+        )
+      > {
+      void operator()(E &e, ExecRet &r) const {
+        r.reap(e);
+      }
+    };
+
+    template<typename E, typename ExecRet>
+    struct fridged_nonroot_impl final: fridged_event {
+      E e;
+      ExecRet r;
+      
+      fridged_nonroot_impl(E e, ExecRet r):
+        e(std::move(e)),
+        r(std::move(r)) {
+      }
+
+      void unexecute_and_delete() {
+        event_unexecute_dispatch<E,ExecRet>()(e, r);
+        delete this;
+      }
+      
+      void reap_and_delete() {
+        event_reap_dispatch<E,ExecRet>()(e, r);
+        delete this;
+      }
+    };
+
+    template<typename E, typename ExecRet>
+    struct fridged_root_impl final: fridged_event {
+      event_impl<E> *e;
+      
+      fridged_root_impl(event_impl<E> *e): e(e) {}
+      
+      void unexecute_and_delete() {
+        event_unexecute_dispatch<E,ExecRet>()(e->user, e->exec_ret);
+        e->exec_ret.~ExecRet();
+        delete this;
+      }
+      
+      void reap_and_delete() {
+        event_reap_dispatch<E,ExecRet>()(e->user, e->exec_ret);
+        e->exec_ret.~ExecRet();
+        delete this;
       }
     };
     
@@ -285,21 +363,44 @@ namespace pdes {
       E user;
       union { ExecRet exec_ret; };
       
-      static void destruct_and_delete(event *me) {
-        delete static_cast<event_impl<E>*>(me);
+      static void destruct_and_delete(event *me1) {
+        auto *me = static_cast<event_impl<E>*>(me1);
+        delete me;
       }
+      
       static void execute(event *me1, execute_context &cxt) {
         auto *me = static_cast<event_impl<E>*>(me1);
-        new(&me->exec_ret) ExecRet{me->user.execute(cxt)};
+        ::new(&me->exec_ret) ExecRet{me->user.execute(cxt)};
       }
+      
       static void unexecute(event *me1) {
         auto *me = static_cast<event_impl<E>*>(me1);
-        event_unexecute_dispatch<E, ExecRet>()(me);
+        event_unexecute_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
       }
+      
       static void commit(event *me1) {
         auto *me = static_cast<event_impl<E>*>(me1);
-        event_commit_dispatch<E, ExecRet>()(me);
+        event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
+      }
+      
+      static fridged_event* refrigerate(event *me1, bool root) {
+        auto *me = static_cast<event_impl<E>*>(me1);
+        
+        fridged_event *ans;
+        if(root)
+          ans = new fridged_root_impl<E,ExecRet>(me);
+        else {
+          ans = new fridged_nonroot_impl<E,ExecRet>(std::move(me->user), std::move(me->exec_ret));
+          me->exec_ret.~ExecRet();
+        }
+        
+        return ans;
+      }
+      
+      static void reap(event *me1) {
+        auto *me = static_cast<event_impl<E>*>(me1);
+        event_reap_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
       }
       
@@ -307,7 +408,9 @@ namespace pdes {
         &event_impl<E>::destruct_and_delete,
         &event_impl<E>::execute,
         &event_impl<E>::unexecute,
-        &event_impl<E>::commit
+        &event_impl<E>::commit,
+        &event_impl<E>::refrigerate,
+        &event_impl<E>::reap
       };
       
       event_impl(E user):
@@ -346,7 +449,7 @@ namespace pdes {
       int origin = deva::rank_me();
       unsigned far_id = detail::event::far_id_bump++;
       
-      gvt::send_remote(rank, time,
+      gvt::send(rank, /*local=*/deva::cfalse3, time,
         [=](Event &user) {
           auto *e = new detail::event_impl<Event>{std::move(user)};
           e->far_origin = origin;
@@ -373,7 +476,7 @@ namespace pdes {
     e->target_cd = cd_ix;
     e->time = time;
     e->subtime = detail::event_subtime<Event>()(e->user);
-    root_event(cd_ix, e);
+    detail::root_event(cd_ix, e);
   }
   
   //////////////////////////////////////////////////////////////////////////////
@@ -436,205 +539,6 @@ namespace pdes {
         return b <= a;
       }
     };
-    
-    struct cd_state;
-    
-    struct cd_vtable {
-      // readonly
-      void(*insert_past)(cd_state*, local_event);
-      void(*remove_past)(cd_state*, local_event);
-      void(*close_undos_wrt_commute)(cd_state *head, event **undo_wrt_send);
-      
-      // thread_local mutable
-      cd_vtable *undo_next;// = reinterpret_cast<cd_vtable*>(0x1);
-      cd_state *undo_head;// = nullptr;
-      
-      template<class CdOps>
-      static void the_insert_past(cd_state*, local_event);
-      template<class CdOps>
-      static void the_remove_past(cd_state*, local_event);
-      template<class CdOps>
-      static void the_close_undos_wrt_commute(cd_state *head, event **undo_wrt_send);
-    };
-    
-    struct cd_ops_trivial {
-      static bool commutes(event_view, event_view) {
-        return false;
-      }
-    };
-    
-    template<class CdOps>
-    struct the_cd_vtable {
-      static thread_local cd_vtable the_vtable;
-    };
-    
-    template<class CdOps>
-    thread_local cd_vtable the_cd_vtable<CdOps>::the_vtable = {
-      cd_vtable::the_insert_past<CdOps>,
-      cd_vtable::the_remove_past<CdOps>,
-      cd_vtable::the_close_undos_wrt_commute<CdOps>,
-      /*undo_next*/reinterpret_cast<cd_vtable*>(0x1),
-      /*undo_head*/nullptr
-    };
-    
-    struct cd_state {
-      cd_vtable *vtbl;
-      
-      deva::queue<local_event> past_events;
-      
-      deva::intrusive_min_heap<
-          local_event, local_event,
-          local_event::future_ix_of, local_event::identity>
-        future_events;
-      
-      int cd_ix;
-      int by_now_ix, by_dawn_ix;
-      
-      int undo_least = -1;
-      local_event undo_least_wrt_commute = {nullptr, end_of_time, end_of_time};
-      cd_state *undo_all_next = reinterpret_cast<cd_state*>(0x1);
-      cd_state *undo_next = reinterpret_cast<cd_state*>(0x1);
-      
-      uint64_t now() const {
-        return future_events.least_key_or({nullptr, end_of_time, end_of_time}).time;
-      }
-      uint64_t now_after_future_insert() const {
-        return future_events.least_key().time;
-      }
-      uint64_t dawn() const {
-        return past_events.front_or({nullptr, end_of_time, end_of_time}).time;
-      }
-    };
-    
-    extern thread_local cd_state *the_cds;
-  }
-  
-  //////////////////////////////////////////////////////////////////////////////
-  
-  template<class CdOps>
-  void init_cd(int cd) {
-    detail::the_cds[cd].vtbl = &detail::the_cd_vtable<CdOps>::the_vtable;
-  }
-  
-  //////////////////////////////////////////////////////////////////////////////
-  
-  namespace detail {
-    cd_vtable* close_undos_wrt_send(event *undo_head);
-    void rollback_closure(cd_state *cd_all_head, event *e_head);
-    
-    #if DEVA_PDES_CD_SPECIALIZE
-    template<>
-    void cd_vtable::the_insert_past<cd_ops_trivial>(cd_state *cd, local_event ins);
-    
-    template<>
-    void cd_vtable::the_remove_past<cd_ops_trivial>(cd_state *cd, local_event rem);
-    
-    template<>
-    void cd_vtable::the_close_undos_wrt_commute<cd_ops_trivial>(cd_state *cd_head, event **undo_fresh_head);
-    #endif
-    
-    template<class CdOps>
-    void cd_vtable::the_insert_past(cd_state *cd, local_event ins) {
-      event *undo_head = nullptr;
-      
-      int n = cd->past_events.size();
-      cd->past_events.push_back({});
-      
-      int i_next = -1;
-      int j = 0;
-      while(j < n) {
-        local_event le = cd->past_events.at_backwards(j+1);
-        cd->past_events.at_backwards(j) = le;
-        
-        if(le < ins)
-          break;
-        
-        if(!CdOps::commutes(event_view(ins.e, ins.time),
-                            event_view(le.e, le.time))
-          ) {
-          le.e->phase = event_on_target::phase_undo;
-          
-          le.e->undo_next = undo_head;
-          undo_head = le.e;
-          
-          i_next = j;
-          cd->undo_least = j;
-        }
-        
-        j += 1;
-      }
-      
-      cd->past_events.at_backwards(j) = ins;
-      
-      if(i_next != -1) {
-        cd->undo_all_next = nullptr; // make cd head of "all" list
-        cd->undo_next = nullptr;
-        cd->undo_least_wrt_commute = cd->past_events.at_backwards(i_next);
-        the_close_undos_wrt_commute<CdOps>(cd, &undo_head);
-        rollback_closure(cd, undo_head);
-      }
-    }
-    
-    template<class CdOps>
-    void cd_vtable::the_remove_past(cd_state *cd, local_event rem) {
-      event *undo_head = nullptr;
-      
-      rem.e->phase = event_on_target::phase_undo | event_on_target::phase_undo_remove;
-      
-      rem.e->undo_next = undo_head;
-      undo_head = rem.e;
-      
-      cd->undo_all_next = nullptr; // make cd head of "all" list
-      cd->undo_next = nullptr;
-      cd->undo_least_wrt_commute = rem;
-      the_close_undos_wrt_commute<CdOps>(cd, &undo_head);
-      rollback_closure(cd, undo_head);
-    }
-    
-    template<class CdOps>
-    void cd_vtable::the_close_undos_wrt_commute(cd_state *cd_head, event **undo_fresh_head) {
-      cd_state *cd = cd_head;
-      do {
-        local_event ie = cd->undo_least_wrt_commute;
-        cd->undo_least_wrt_commute = {nullptr, end_of_time, end_of_time};
-        
-        while(true) {
-          int i_next = -1;
-          ie.e->phase |= event_on_target::phase_undo_commute_done;
-          
-          for(int j=0; true; j++) {
-            local_event je = cd->past_events.at_backwards(j);
-            if(je.e == ie.e) {
-              if(j > cd->undo_least)
-                cd->undo_least = j;
-              break;
-            }
-            
-            if(je.e->phase == event_on_target::phase_past &&
-               !CdOps::commutes(event_view(ie.e, ie.time),
-                                event_view(je.e, je.time))
-              ) {
-              je.e->phase = event_on_target::phase_undo;
-              
-              // subscribe for send processing
-              je.e->undo_next = *undo_fresh_head;
-              *undo_fresh_head = je.e;
-            }
-            
-            if(event_on_target::phase_undo == (je.e->phase & (event_on_target::phase_undo | event_on_target::phase_undo_commute_done)))
-              i_next = j;
-          }
-          
-          if(i_next == -1) break;
-          ie = cd->past_events.at_backwards(i_next);
-        }
-        
-        cd_state *cd_next = cd->undo_next;
-        cd->undo_next = reinterpret_cast<cd_state*>(0x1);
-        cd = cd_next;
-      }
-      while(cd != nullptr);
-    }
   }
 } // namespace pdes
 } // namespace deva

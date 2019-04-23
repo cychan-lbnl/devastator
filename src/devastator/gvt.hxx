@@ -19,15 +19,14 @@ namespace deva {
       }
     };
     
-    void init(reducibles rxs0);
+    void init(std::uint64_t gvt, reducibles rxs0);
     
+    template<bool3 local, typename Fn, typename ...Arg>
+    void send(int rank, cbool3<local>, std::uint64_t t, Fn fn, Arg ...arg);
+
     template<typename Fn, typename ...Arg>
     void send(int rank, std::uint64_t t, Fn fn, Arg ...arg);
-    template<typename Fn, typename ...Arg>
-    void send_local(int rank, std::uint64_t t, Fn fn, Arg ...arg);
-    template<typename Fn, typename ...Arg>
-    void send_remote(int rank, std::uint64_t t, Fn fn, Arg ...arg);
-
+    
     void advance();
 
     void epoch_begin(std::uint64_t lvt, reducibles rxs);
@@ -60,58 +59,19 @@ namespace deva {
   }
 
   template<typename Fn, typename ...Arg>
-  void gvt::send(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
-    DEVA_ASSERT(gvt::epoch_gvt_ <= t);
-    
-    unsigned r = gvt::round_ + 1;
-    gvt::round_lsend_[1] += 1;
-    gvt::round_lvt_[1] = std::min(gvt::round_lvt_[1], t);
-    
-    deva::send(rank,
-      [=](Fn &fn, Arg &...arg) {
-        int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
-        DEVA_ASSERT(0 <= i && i < 3);
-        DEVA_ASSERT(gvt::epoch_gvt_ <= t);
-        
-        gvt::round_lrecv_[i] += 1;
-        
-        fn(arg...);
-      },
-      std::move(fn), std::move(arg)...
-    );
+  void send(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
+    gvt::template send<maybe3>(rank, t, std::move(fn), std::move(arg)...);
   }
-
-  template<typename Fn, typename ...Arg>
-  void gvt::send_local(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
+  
+  template<bool3 local, typename Fn, typename ...Arg>
+  void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn fn, Arg ...arg) {
     DEVA_ASSERT(gvt::epoch_gvt_ <= t);
     
     unsigned r = gvt::round_ + 1;
     gvt::round_lsend_[1] += 1;
     gvt::round_lvt_[1] = std::min(gvt::round_lvt_[1], t);
     
-    deva::send_local(rank,
-      [=](Fn &fn, Arg &...arg) {
-        int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
-        DEVA_ASSERT(0 <= i && i < 3);
-        DEVA_ASSERT(gvt::epoch_gvt_ <= t);
-        
-        gvt::round_lrecv_[i] += 1;
-        
-        fn(arg...);
-      },
-      std::move(fn), std::move(arg)...
-    );
-  }
-
-  template<typename Fn, typename ...Arg>
-  void gvt::send_remote(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
-    DEVA_ASSERT(gvt::epoch_gvt_ <= t);
-    
-    unsigned r = gvt::round_ + 1;
-    gvt::round_lsend_[1] += 1;
-    gvt::round_lvt_[1] = std::min(gvt::round_lvt_[1], t);
-    
-    deva::send_remote(rank,
+    deva::send(rank, local1,
       [=](Fn &fn, Arg &...arg) {
         int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
         DEVA_ASSERT(0 <= i && i < 3);

@@ -36,14 +36,14 @@ namespace {
   void rdxn_down(int to_ub, uint64_t gvt, gvt::reducibles rxs);
 }
 
-void deva::gvt::init(gvt::reducibles rxs0) {
+void deva::gvt::init(uint64_t gvt0, gvt::reducibles rxs0) {
   gvt::epoch_ended_ = true;
-  gvt::epoch_gvt_ = 0;
+  gvt::epoch_gvt_ = gvt0;
   gvt::epoch_rxs_ = rxs0;
 
   gvt::round_ = 0;
-  gvt::round_lvt_[0] = 0;
-  gvt::round_lvt_[1] = 0;
+  gvt::round_lvt_[0] = gvt0;
+  gvt::round_lvt_[1] = gvt0;
   gvt::round_lsend_[0] = 0;
   gvt::round_lsend_[1] = 0;
   gvt::round_lrecv_[0] = 0;

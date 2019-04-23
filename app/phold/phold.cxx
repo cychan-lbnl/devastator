@@ -37,7 +37,7 @@ struct rng_state {
   }
 };
 
-constexpr int actor_n = 1000; // 1000
+constexpr int actor_n = 100; // 1000
 constexpr int ray_n = 2*actor_n; // 2*actor_n
 constexpr double percent_remote = .5; // .5
 constexpr double lambda = 100; //100
@@ -149,9 +149,31 @@ int main() {
         pdes::root_event(cd, ray, event{ray, actor});
       }
     }
-    
-    pdes::drain();
 
+    #if 1
+    uint64_t t0 = 0;
+    uint64_t dt = end_time/3;
+    while(true) {
+      uint64_t t1 = t0 + dt;
+      deva::say()<<"drain("<<t1<<")";
+      pdes::drain(/*end=*/t1, /*rewindable=*/true);
+      deva::say()<<"rewind(true)";
+      pdes::rewind(true);
+      deva::say()<<"drain("<<t1<<")";
+      if(1 == -pdes::drain(t1, true)) {
+        pdes::rewind(false);
+        break;
+      }
+      deva::say()<<"rewind(false)";
+      pdes::rewind(false);
+      t0 = t1;
+    }
+    #else
+    pdes::drain();
+    #endif
+
+    pdes::finalize();
+    
     uint64_t chk = checksum();
     thread_local uint64_t chkprev = 666;
 

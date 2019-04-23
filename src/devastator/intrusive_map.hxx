@@ -42,8 +42,7 @@ namespace deva {
     template<typename F>
     void for_each(F &&f);
     
-    template<typename F>
-    void clear(F &&f);
+    void clear();
 
   private:
     static int bucket_of(int hbit, const Key &key) {
@@ -233,10 +232,7 @@ namespace deva {
            T*&(&next_of)(T*),
            Key(&key_of)(T*),
            std::size_t(&hash_of)(Key const&)>
-  template<typename F>
-  void intrusive_map<T,Key,next_of,key_of,hash_of>::clear(F &&f) {
-    this->for_each(std::forward<F>(f));
-    
+  void intrusive_map<T,Key,next_of,key_of,hash_of>::clear() {
     if(hbit_ != 0)
       delete[] bkts_;
     

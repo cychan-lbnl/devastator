@@ -7,6 +7,7 @@
 
 #define THREAD_N RANK_N
 #include <devastator/tmsg.hxx>
+#include <devastator/utility.hxx>
 
 #include <functional>
 #include <tuple>
@@ -98,6 +99,10 @@ namespace deva {
   
   template<typename Fn, typename ...Arg>
   void send(int rank, Fn fn, Arg ...arg) {
+    tmsg::send(rank, deva::bind(std::move(fn), std::move(arg)...));
+  }
+  template<bool3 local, typename Fn, typename ...Arg>
+  void send(int rank, cbool3<local>, Fn fn, Arg ...arg) {
     tmsg::send(rank, deva::bind(std::move(fn), std::move(arg)...));
   }
 
