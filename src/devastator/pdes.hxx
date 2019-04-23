@@ -33,15 +33,13 @@ namespace pdes {
   /* drain: Collective wrt all arguments. Advances the simulation by processing
    * all events with a timestamp strictly less than `t_end`. If `rewindable=true`
    * then `pdes::rewind(true|false)` must be called afterwards to indicate
-   * whether or not to rewind to the state as it was upon entering drain. If
-   * `rewindable=false`, then all events will be reaped immediately after being
-   * committed.
+   * whether or not to rewind to the state as it was upon entering drain.
    */
   uint64_t drain(std::uint64_t t_end = ~std::uint64_t(0), bool rewindable=false);
 
   /* rewind: Collective wrt all arguments. After a call to `pdes::drain(rewindable=true)`,
    * this must be called to either:
-   *  do_rewind=false: invoke `reap` for all events committed last drain.
+   *  do_rewind=false: no-op.
    *  do_rewind=true: revert state via unexecute's as it was upon entering last drain.
    */
   void rewind(bool do_rewind);
@@ -125,7 +123,7 @@ namespace pdes {
     struct fridged_event {
       fridged_event *next;
       virtual void unexecute_and_delete() = 0;
-      virtual void reap_and_delete() = 0;
+      virtual void just_delete() = 0;
     };
 
     struct event_vtable {
@@ -135,7 +133,6 @@ namespace pdes {
       void(*unexecute)(event *me);
       void(*commit)(event *me);
       fridged_event*(*refrigerate)(event *me, bool root);
-      void(*reap)(event *me);
       #if 0
       event_vtable *all_next;
       event *del_head;
@@ -294,24 +291,6 @@ namespace pdes {
       }
     };
 
-    template<typename E, typename ExecRet,
-             typename HasReap = void>
-    struct event_reap_dispatch {
-      void operator()(E&, ExecRet&) const {}
-    };
-    
-    template<typename E, typename ExecRet>
-    struct event_reap_dispatch<E, ExecRet,
-        /*HasReap*/decltype(
-          std::declval<ExecRet>().reap(std::declval<E&>()),
-          void()
-        )
-      > {
-      void operator()(E &e, ExecRet &r) const {
-        r.reap(e);
-      }
-    };
-
     template<typename E, typename ExecRet>
     struct fridged_nonroot_impl final: fridged_event {
       E e;
@@ -327,8 +306,7 @@ namespace pdes {
         delete this;
       }
       
-      void reap_and_delete() {
-        event_reap_dispatch<E,ExecRet>()(e, r);
+      void just_delete() {
         delete this;
       }
     };
@@ -345,8 +323,7 @@ namespace pdes {
         delete this;
       }
       
-      void reap_and_delete() {
-        event_reap_dispatch<E,ExecRet>()(e->user, e->exec_ret);
+      void just_delete() {
         e->exec_ret.~ExecRet();
         delete this;
       }
@@ -398,19 +375,12 @@ namespace pdes {
         return ans;
       }
       
-      static void reap(event *me1) {
-        auto *me = static_cast<event_impl<E>*>(me1);
-        event_reap_dispatch<E, ExecRet>()(me->user, me->exec_ret);
-        me->exec_ret.~ExecRet();
-      }
-      
       static constexpr event_vtable the_vtable = {
         &event_impl<E>::destruct_and_delete,
         &event_impl<E>::execute,
         &event_impl<E>::unexecute,
         &event_impl<E>::commit,
-        &event_impl<E>::refrigerate,
-        &event_impl<E>::reap
+        &event_impl<E>::refrigerate
       };
       
       event_impl(E user):

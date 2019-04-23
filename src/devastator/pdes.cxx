@@ -257,8 +257,7 @@ namespace {
     /*execute*/nullptr,
     /*unexecute*/nullptr,
     /*commit*/nullptr,
-    /*refrigerate*/nullptr,
-    /*reap*/nullptr
+    /*refrigerate*/nullptr
   };
 }
 
@@ -636,9 +635,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
               commit_n += 1;
               le.e->vtbl_on_target->commit(le.e);
               
-              if(!rewindable)
-                le.e->vtbl_on_target->reap(le.e);
-              else {
+              if(rewindable) {
                 fridged_event *f = le.e->vtbl_on_target->refrigerate(le.e, le.e->rewind_root);
                 f->next = cd->fridge_head;
                 cd->fridge_head = f;
@@ -778,7 +775,7 @@ void pdes::finalize() {
     cd->fridge_head = nullptr;
     while(f != nullptr) {
       fridged_event *f_next = f->next;
-      f->reap_and_delete();
+      f->just_delete();
       f = f_next;
     }
 
@@ -886,12 +883,12 @@ void pdes::rewind(bool do_rewind) {
     for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
 
-      { // reap fridge
+      { // delete fridge
         fridged_event *f = cd->fridge_head;
         cd->fridge_head = nullptr;
         while(f != nullptr) {
           fridged_event *f_next = f->next;
-          f->reap_and_delete();
+          f->just_delete();
           f = f_next;
         }
       }
