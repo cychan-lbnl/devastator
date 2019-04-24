@@ -132,7 +132,7 @@ namespace pdes {
       void(*execute)(event *me, execute_context &cxt);
       void(*unexecute)(event *me);
       void(*commit)(event *me);
-      fridged_event*(*refrigerate)(event *me, bool root);
+      fridged_event*(*commit_and_refrigerate)(event *me, bool root);
       #if 0
       event_vtable *all_next;
       event *del_head;
@@ -359,10 +359,13 @@ namespace pdes {
       static void commit(event *me1) {
         auto *me = static_cast<event_impl<E>*>(me1);
         event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
+        me->exec_ret.~ExecRet();
       }
       
-      static fridged_event* refrigerate(event *me1, bool root) {
+      static fridged_event* commit_and_refrigerate(event *me1, bool root) {
         auto *me = static_cast<event_impl<E>*>(me1);
+
+        event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         
         fridged_event *ans;
         if(root)
@@ -380,7 +383,7 @@ namespace pdes {
         &event_impl<E>::execute,
         &event_impl<E>::unexecute,
         &event_impl<E>::commit,
-        &event_impl<E>::refrigerate
+        &event_impl<E>::commit_and_refrigerate
       };
       
       event_impl(E user):

@@ -633,14 +633,14 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                 break;
               
               commit_n += 1;
-              le.e->vtbl_on_target->commit(le.e);
-              
               if(rewindable) {
-                fridged_event *f = le.e->vtbl_on_target->refrigerate(le.e, le.e->rewind_root);
+                fridged_event *f = le.e->vtbl_on_target->commit_and_refrigerate(le.e, le.e->rewind_root);
                 f->next = cd->fridge_head;
                 cd->fridge_head = f;
               }
-
+              else
+                le.e->vtbl_on_target->commit(le.e);
+              
               if(le.e->created_here && !le.e->rewind_root) {
                 if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
                   sim_me.from_far.remove(le.e);
