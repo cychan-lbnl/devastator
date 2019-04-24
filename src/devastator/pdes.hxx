@@ -130,9 +130,9 @@ namespace pdes {
       //void(*destruct_and_delete)(event *head, event* event::*next_of);
       void(*destruct_and_delete)(event*);
       void(*execute)(event *me, execute_context &cxt);
-      void(*unexecute)(event *me);
-      void(*commit)(event *me);
-      fridged_event*(*commit_and_refrigerate)(event *me, bool root);
+      void(*unexecute)(event *me, bool should_delete);
+      void(*commit)(event *me, bool should_delete);
+      fridged_event*(*commit_and_refrigerate)(event *me, bool root, bool delete_if_non_root);
       #if 0
       event_vtable *all_next;
       event *del_head;
@@ -350,21 +350,27 @@ namespace pdes {
         ::new(&me->exec_ret) ExecRet{me->user.execute(cxt)};
       }
       
-      static void unexecute(event *me1) {
+      static void unexecute(event *me1, bool should_delete) {
         auto *me = static_cast<event_impl<E>*>(me1);
         event_unexecute_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
+
+        if(should_delete)
+          delete me;
       }
       
-      static void commit(event *me1) {
+      static void commit(event *me1, bool should_delete) {
         auto *me = static_cast<event_impl<E>*>(me1);
         event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
+        
+        if(should_delete)
+          delete me;
       }
       
-      static fridged_event* commit_and_refrigerate(event *me1, bool root) {
+      static fridged_event* commit_and_refrigerate(event *me1, bool root, bool delete_if_non_root) {
         auto *me = static_cast<event_impl<E>*>(me1);
-
+        
         event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
         
         fridged_event *ans;
@@ -373,6 +379,9 @@ namespace pdes {
         else {
           ans = new fridged_nonroot_impl<E,ExecRet>(std::move(me->user), std::move(me->exec_ret));
           me->exec_ret.~ExecRet();
+          
+          if(delete_if_non_root)
+            delete me;
         }
         
         return ans;

@@ -392,6 +392,8 @@ namespace {
     undos_all.push_back(cd);
     cd->undo_n_hi = undo_n;
 
+    event *del_head = nullptr; // list of deferred deletes
+
     // increase cd->undo_n_{lo|hi} until fixed-point 
     // and send anti-messages
     do {
@@ -435,14 +437,14 @@ namespace {
           }
           else { // sent event to myself
             cd_state *cd1 = &sim_me.cds[sent->target_cd];
-            // add to cold annihilation list since its created locally
-            sent->anni_near_next = sim_me.anni_near_cold_head;
-            sim_me.anni_near_cold_head = sent;
-            
+
             if(sent->future_not_past) {
               // can remove now, hasn't executed
               cd1->future_events.erase(sent_le);
               sim_me.cds_by_now.increased({cd1, cd1->now()});
+              // add to deferred delete list
+              sent->sent_near_next = del_head;
+              del_head = sent;
             }
             else {
               sent->remove_after_undo = true;
@@ -488,15 +490,17 @@ namespace {
       
       for(int i=0; i < n; i++) {
         local_event le = cd->past_events.at_backwards(i);
-        le.e->vtbl_on_target->unexecute(le.e);
-
-        if(!le.e->remove_after_undo) {
+        bool should_delete = le.e->remove_after_undo;
+        
+        if(!should_delete) {
           le.e->future_not_past = true;
           cd->future_events.insert(le);
           inserted_future = true;
           // handled outside loop:
           // sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
         }
+        
+        le.e->vtbl_on_target->unexecute(le.e, should_delete);
       }
 
       cd->undo_n_hi = 0;
@@ -508,6 +512,13 @@ namespace {
 
       if(cd->past_events.size() == 0)
         sim_me.cds_by_dawn.increased({cd, end_of_time});
+    }
+
+    // reap deferred deletes
+    while(del_head != nullptr) {
+      event *next = del_head->sent_near_next;
+      del_head->vtbl_on_creator->destruct_and_delete(del_head);
+      del_head = next;
     }
   }
 }
@@ -631,21 +642,22 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
               local_event le = cd->past_events.at_forwards(commit_n);
               if(le.time >= gvt_new)
                 break;
+
+              bool should_delete = le.e->created_here && !le.e->rewind_root;
+              
+              if(should_delete) {
+                if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
+                  sim_me.from_far.remove(le.e);
+              }
               
               commit_n += 1;
               if(rewindable) {
-                fridged_event *f = le.e->vtbl_on_target->commit_and_refrigerate(le.e, le.e->rewind_root);
+                fridged_event *f = le.e->vtbl_on_target->commit_and_refrigerate(le.e, le.e->rewind_root, should_delete);
                 f->next = cd->fridge_head;
                 cd->fridge_head = f;
               }
               else
-                le.e->vtbl_on_target->commit(le.e);
-              
-              if(le.e->created_here && !le.e->rewind_root) {
-                if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
-                  sim_me.from_far.remove(le.e);
-                le.e->vtbl_on_target->destruct_and_delete(le.e);
-              }
+                le.e->vtbl_on_target->commit(le.e, should_delete);
             }
             
             if(commit_n == 0)
