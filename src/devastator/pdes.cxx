@@ -490,9 +490,10 @@ namespace {
       
       for(int i=0; i < n; i++) {
         local_event le = cd->past_events.at_backwards(i);
-        bool should_delete = le.e->remove_after_undo;
+        bool do_remove = le.e->remove_after_undo;
+        bool do_delete = do_remove && le.e->created_here;
         
-        if(!should_delete) {
+        if(!do_remove) {
           le.e->future_not_past = true;
           cd->future_events.insert(le);
           inserted_future = true;
@@ -500,7 +501,7 @@ namespace {
           // sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
         }
         
-        le.e->vtbl_on_target->unexecute(le.e, should_delete);
+        le.e->vtbl_on_target->unexecute(le.e, do_delete);
       }
 
       cd->undo_n_hi = 0;
