@@ -29,6 +29,9 @@ namespace pdes {
   extern std::ostream *chitter_io;
   
   void init(int cds_this_rank);
+
+  template<typename T>
+  void register_state(int cd, T *address);
   
   /* drain: Collective wrt all arguments. Advances the simulation by processing
    * all events with a timestamp strictly less than `t_end`. If `rewindable=true`
@@ -119,25 +122,12 @@ namespace pdes {
     
     void root_event(int cd_ix, event *e);
     void arrive_far(int far_origin, unsigned far_id, event *e);
-
-    struct fridged_event {
-      fridged_event *next;
-      virtual void unexecute_and_delete() = 0;
-      virtual void just_delete() = 0;
-    };
-
+    
     struct event_vtable {
-      //void(*destruct_and_delete)(event *head, event* event::*next_of);
       void(*destruct_and_delete)(event*);
       void(*execute)(event *me, execute_context &cxt);
       void(*unexecute)(event *me, bool should_delete);
       void(*commit)(event *me, bool should_delete);
-      fridged_event*(*commit_and_refrigerate)(event *me, bool root, bool delete_if_non_root);
-      #if 0
-      event_vtable *all_next;
-      event *del_head;
-      event *anni_cold_head, *anni_hot_head;
-      #endif
     };
 
     struct alignas(64) event_on_creator {
@@ -290,44 +280,6 @@ namespace pdes {
         r.commit(e);
       }
     };
-
-    template<typename E, typename ExecRet>
-    struct fridged_nonroot_impl final: fridged_event {
-      E e;
-      ExecRet r;
-      
-      fridged_nonroot_impl(E e, ExecRet r):
-        e(std::move(e)),
-        r(std::move(r)) {
-      }
-
-      void unexecute_and_delete() {
-        event_unexecute_dispatch<E,ExecRet>()(e, r);
-        delete this;
-      }
-      
-      void just_delete() {
-        delete this;
-      }
-    };
-
-    template<typename E, typename ExecRet>
-    struct fridged_root_impl final: fridged_event {
-      event_impl<E> *e;
-      
-      fridged_root_impl(event_impl<E> *e): e(e) {}
-      
-      void unexecute_and_delete() {
-        event_unexecute_dispatch<E,ExecRet>()(e->user, e->exec_ret);
-        e->exec_ret.~ExecRet();
-        delete this;
-      }
-      
-      void just_delete() {
-        e->exec_ret.~ExecRet();
-        delete this;
-      }
-    };
     
     template<typename E>
     struct event_impl final: event {
@@ -368,31 +320,11 @@ namespace pdes {
           delete me;
       }
       
-      static fridged_event* commit_and_refrigerate(event *me1, bool root, bool delete_if_non_root) {
-        auto *me = static_cast<event_impl<E>*>(me1);
-        
-        event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
-        
-        fridged_event *ans;
-        if(root)
-          ans = new fridged_root_impl<E,ExecRet>(me);
-        else {
-          ans = new fridged_nonroot_impl<E,ExecRet>(std::move(me->user), std::move(me->exec_ret));
-          me->exec_ret.~ExecRet();
-          
-          if(delete_if_non_root)
-            delete me;
-        }
-        
-        return ans;
-      }
-      
       static constexpr event_vtable the_vtable = {
         &event_impl<E>::destruct_and_delete,
         &event_impl<E>::execute,
         &event_impl<E>::unexecute,
-        &event_impl<E>::commit,
-        &event_impl<E>::commit_and_refrigerate
+        &event_impl<E>::commit
       };
       
       event_impl(E user):
@@ -449,6 +381,44 @@ namespace pdes {
     }
   }
   
+  //////////////////////////////////////////////////////////////////////////////
+
+  namespace detail {
+    struct fridge {
+      fridge *next;
+      virtual ~fridge() = default;
+      virtual void capture() = 0;
+      virtual void restore() = 0;
+      virtual void discard() = 0;
+    };
+
+    template<typename T>
+    struct fridge_impl final: fridge {
+      T *user;
+      union { T backup; };
+      
+      fridge_impl(T *user): user(user) {}
+
+      void capture() {
+        ::new(&backup) T(const_cast<T const&>(*user));
+      }
+      void restore() {
+        *user = std::move(backup);
+        backup.~T();
+      }
+      void discard() {
+        backup.~T();
+      }
+    };
+
+    void register_state(int cd, fridge *fr);
+  }
+  
+  template<typename T>
+  void register_state(int cd, T *address) {
+    detail::register_state(cd, new detail::fridge_impl<T>(address));
+  }
+
   //////////////////////////////////////////////////////////////////////////////
   
   template<typename Event>

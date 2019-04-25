@@ -37,7 +37,7 @@ struct rng_state {
   }
 };
 
-constexpr int actor_n = 100; // 1000
+constexpr int actor_n = 1000; // 1000
 constexpr int ray_n = 2*actor_n; // 2*actor_n
 constexpr double percent_remote = .5; // .5
 constexpr double lambda = 100; //100
@@ -140,6 +140,9 @@ int main() {
       int cd = actor - actor_lb;
       state_cur[cd] = rng_state{/*seed=*/actor};
       check[cd] = actor;
+
+      pdes::register_state(cd, &state_cur[cd]);
+      pdes::register_state(cd, &check[cd]);
     }
     
     for(int ray=0; ray < ray_n; ray++) {

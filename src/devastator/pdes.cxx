@@ -72,8 +72,8 @@ namespace {
     int cd_ix;
     int by_now_ix, by_dawn_ix;
     int undo_n_hi=0, undo_n_lo=0;
-    fridged_event *fridge_head = nullptr;
-    
+    fridge *fridge_head = nullptr;
+
     uint64_t now() const {
       return future_events.least_key_or({nullptr, end_of_time, end_of_time}).time;
     }
@@ -129,6 +129,7 @@ namespace {
     event *anni_near_cold_head = nullptr;
     event *anni_near_hot_head = nullptr;
 
+    bool has_rewind = false;
     std::vector<event*> rewind_roots; // roots targeted at us
     std::vector<event*> rewind_created_near; // roots we created but sent away near
   };
@@ -256,9 +257,14 @@ namespace {
     /*destruct_and_delete*/nullptr,
     /*execute*/nullptr,
     /*unexecute*/nullptr,
-    /*commit*/nullptr,
-    /*refrigerate*/nullptr
+    /*commit*/nullptr
   };
+}
+
+void detail::register_state(int cd_ix, fridge *fr) {
+  cd_state *cd = &sim_me.cds[cd_ix];
+  fr->next = cd->fridge_head;
+  cd->fridge_head = fr;
 }
 
 void detail::root_event(int cd_ix, event *e) {
@@ -531,11 +537,13 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   //////////////////////////////////////////////////////////////////////////////
 
   DEVA_ASSERT_ALWAYS(
-    sim_me.rewind_roots.empty() && sim_me.rewind_created_near.empty(),
+    !sim_me.has_rewind && sim_me.rewind_roots.empty() && sim_me.rewind_created_near.empty(),
     "Lingering rewind state must be rewound via pdes::rewind(true|false) before calling pdes::drain()."
   );
-  
+
   if(rewindable) {
+    sim_me.has_rewind = true;
+    
     for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
       
@@ -547,6 +555,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         le.e->rewind_root = true; // prevents deleting rewind roots
         sim_me.rewind_roots.push_back(le.e);
       }
+
+      for(fridge *f=cd->fridge_head; f != nullptr; f = f->next)
+        f->capture();
     }
     
     { // also prevents deleting rewind roots
@@ -652,13 +663,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
               }
               
               commit_n += 1;
-              if(rewindable) {
-                fridged_event *f = le.e->vtbl_on_target->commit_and_refrigerate(le.e, le.e->rewind_root, should_delete);
-                f->next = cd->fridge_head;
-                cd->fridge_head = f;
-              }
-              else
-                le.e->vtbl_on_target->commit(le.e, should_delete);
+              le.e->vtbl_on_target->commit(le.e, should_delete);
             }
             
             if(commit_n == 0)
@@ -784,14 +789,15 @@ void pdes::finalize() {
     cd_state *cd = &sim_me.cds[cd_ix];
     DEVA_ASSERT(cd->past_events.size() == 0);
     
-    fridged_event *f = cd->fridge_head;
-    cd->fridge_head = nullptr;
+    fridge *f = cd->fridge_head;
     while(f != nullptr) {
-      fridged_event *f_next = f->next;
-      f->just_delete();
-      f = f_next;
+      fridge *f1 = f->next;
+      if(sim_me.has_rewind)
+        f->discard();
+      delete f;
+      f = f1;
     }
-
+    
     { // delete locally created non-roots that were sent here
       int n = cd->future_events.size();
       for(int i=0; i < n; i++) {
@@ -824,6 +830,7 @@ void pdes::finalize() {
     e->vtbl_on_creator->destruct_and_delete(e);
   sim_me.rewind_created_near.clear();
   sim_me.rewind_roots.clear();
+  sim_me.has_rewind = false;
   
   sim_me.cds_by_dawn.clear();
   sim_me.cds_by_now.clear();
@@ -834,6 +841,9 @@ void pdes::finalize() {
 }
 
 void pdes::rewind(bool do_rewind) {
+  DEVA_ASSERT(sim_me.has_rewind);
+  sim_me.has_rewind = false;
+  
   deva::barrier();
 
   auto &sim_me = ::sim_me;
@@ -842,13 +852,11 @@ void pdes::rewind(bool do_rewind) {
     for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
 
-      { // unexecute fridge
-        fridged_event *f = cd->fridge_head;
-        cd->fridge_head = nullptr;
+      { // restore user state from fridge
+        fridge *f = cd->fridge_head;
         while(f != nullptr) {
-          fridged_event *f_next = f->next;
-          f->unexecute_and_delete();
-          f = f_next;
+          f->restore();
+          f = f->next;
         }
       }
       
@@ -896,13 +904,11 @@ void pdes::rewind(bool do_rewind) {
     for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
 
-      { // delete fridge
-        fridged_event *f = cd->fridge_head;
-        cd->fridge_head = nullptr;
+      { // discard fridged user state
+        fridge *f = cd->fridge_head;
         while(f != nullptr) {
-          fridged_event *f_next = f->next;
-          f->just_delete();
-          f = f_next;
+          f->discard();
+          f = f->next;
         }
       }
     }
