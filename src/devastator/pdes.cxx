@@ -309,6 +309,7 @@ namespace {
           // late anninilation
           auto *e = static_cast<event*>(o);
           local_event le = {e, e->time, e->subtime};
+          cd_state *cd = &sim_me.cds[e->target_cd];
           if(e->future_not_past) {
             cd->future_events.erase(le);
             sim_me.cds_by_now.increased({cd, cd->now()});
