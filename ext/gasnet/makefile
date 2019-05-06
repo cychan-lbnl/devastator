@@ -1,4 +1,4 @@
-gasnet_src = GASNet-EX-collaborator-snapshot
+gasnet_src = GASNet-stable
 gasnet_tgz = $(gasnet_src).tar.gz
 gasnet_url = http://mantis.lbl.gov/nightly/unlisted/$(gasnet_tgz)
 
