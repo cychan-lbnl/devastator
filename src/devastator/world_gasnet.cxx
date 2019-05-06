@@ -124,8 +124,10 @@ namespace {
     #if GASNET_CONDUIT_SMP
       setenv("GASNET_PSHM_NODES", std::to_string(deva::process_n).c_str(), 1);
     #elif GASNET_CONDUIT_ARIES
-      // Everyone carves out 1GB and shares it evenly across peers
-      setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string((1<<30)/deva::process_n).c_str(), 1);
+      { // Everyone carves out some GBs and shares them evenly across peers
+        size_t space = std::max<size_t>(512<<20, size_t((512<<20)*(std::log(deva::process_n)/std::log(2))));
+        setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string(space/deva::process_n).c_str(), 1);
+      }
     #endif
     
     int ok;
