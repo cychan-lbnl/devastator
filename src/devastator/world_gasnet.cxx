@@ -5,6 +5,7 @@
 #include <gasnet.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <thread>
@@ -127,6 +128,7 @@ namespace {
       { // Everyone carves out some GBs and shares them evenly across peers
         size_t space = std::max<size_t>(512<<20, size_t((512<<20)*(std::log(deva::process_n)/std::log(2))));
         setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string(space/deva::process_n).c_str(), 1);
+        setenv("GASNET_GNI_AM_RVOUS_CUTOVER", "0"); // disable the scalable algo since we know we have the space
       }
     #endif
     
