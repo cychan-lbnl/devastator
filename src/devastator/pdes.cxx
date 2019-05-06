@@ -309,7 +309,7 @@ namespace {
           // late anninilation
           auto *e = static_cast<event*>(o);
           arrive_near<-1>(e->target_cd, local_event{e, e->time, e->subtime});
-          e->vtbl_on_creator->destruct_and_delete(e);
+          //e->vtbl_on_creator->destruct_and_delete(e); // handled by unexecute() in arrive_near<-1> above.
           return nullptr;
         }
         else {
