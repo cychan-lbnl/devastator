@@ -128,7 +128,7 @@ namespace {
       { // Everyone carves out some GBs and shares them evenly across peers
         size_t space = std::max<size_t>(512<<20, size_t((512<<20)*(std::log(deva::process_n)/std::log(2))));
         setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string(space/deva::process_n).c_str(), 1);
-        setenv("GASNET_GNI_AM_RVOUS_CUTOVER", "0"); // disable the scalable algo since we know we have the space
+        setenv("GASNET_GNI_AM_RVOUS_CUTOVER", "0", 1); // disable the scalable algo since we know we have the space
       }
     #endif
     
@@ -471,7 +471,7 @@ namespace {
                   void *am_buf = gex_AM_SrcDescAddr(sd);
                   size_t am_len = gex_AM_SrcDescSize(sd);
                   
-                  #if GASNET_CONDUIT_ARIES
+                  #if 0 && GASNET_CONDUIT_ARIES // no longer needed
                     #warning "GASNet-Ex AM workaround in effect."
                     am_len = std::min<size_t>(GASNETC_GNI_MAX_MEDIUM, am_len);
                   #endif
