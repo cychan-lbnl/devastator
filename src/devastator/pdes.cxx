@@ -308,8 +308,14 @@ namespace {
           DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
           // late anninilation
           auto *e = static_cast<event*>(o);
-          arrive_near<-1>(e->target_cd, local_event{e, e->time, e->subtime});
-          //e->vtbl_on_creator->destruct_and_delete(e); // handled by unexecute() in arrive_near<-1> above.
+          local_event le = {e, e->time, e->subtime};
+          if(e->future_not_past) {
+            cd->future_events.erase(le);
+            sim_me.cds_by_now.increased({cd, cd->now()});
+            e->vtbl_on_creator->destruct_and_delete(e);
+          }
+          else
+            remove_past(cd, le);
           return nullptr;
         }
         else {
