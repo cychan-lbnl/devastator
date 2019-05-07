@@ -29,7 +29,7 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
   std::stringstream ss;
 
   ss << std::string(50, '/') << '\n';
-  ss << "ASSERT FAILED at "<<file<<':'<<line<<'\n';
+  ss << "ASSERT FAILED rank="<<deva::rank_me()<<" at="<<file<<':'<<line<<'\n';
   if(msg != nullptr && '\0' != msg[0])
     ss << '\n' << msg << '\n';
   

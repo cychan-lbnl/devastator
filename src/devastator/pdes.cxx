@@ -283,6 +283,7 @@ void detail::arrive_far(int origin, unsigned far_id, event *e) {
     {origin, far_id},
     [&](event_on_creator *o)->event_on_creator* {
       if(o == nullptr) {
+        //deva::say()<<"far insert origin="<<origin<<" id="<<far_id<<" o="<<(event_on_creator*)e;
         // insert event
         e->created_here = true;
         e->rewind_root = false;
@@ -290,6 +291,7 @@ void detail::arrive_far(int origin, unsigned far_id, event *e) {
         return e;
       }
       else {
+        //deva::say()<<"far anni-+ origin="<<origin<<" id="<<far_id<<" o="<<(void*)o;
         DEVA_ASSERT(o->vtbl_on_creator == &anti_vtable);
         delete o;
         e->vtbl_on_creator->destruct_and_delete(e);
@@ -305,6 +307,7 @@ namespace {
       {origin, far_id},
       [&](event_on_creator *o)->event_on_creator* {
         if(o != nullptr) {
+          //deva::say()<<"far anni+- id="<<far_id<<" o="<<o;
           DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
           // late anninilation
           auto *e = static_cast<event*>(o);
@@ -325,6 +328,7 @@ namespace {
           o->vtbl_on_creator = &anti_vtable;
           o->far_origin = origin;
           o->far_id = far_id;
+          //deva::say()<<"far anti origin="<<origin<<" id="<<far_id<<" o="<<o;
           return o;
         }
       }
@@ -575,19 +579,6 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
       }
       sim_me.sent_near.clear();
     }
-
-    // rewind roots definitely won't be annihilated so we can remove from from_far
-    for(auto *es: std::initializer_list<std::vector<event*>*>{
-        &sim_me.rewind_roots, // requires we check for `created_here`
-        &sim_me.rewind_created_near
-      }) {
-      for(event *e: *es) {
-        if(e->created_here && e->far_next != reinterpret_cast<event_on_creator*>(0x1)) {
-          sim_me.from_far.remove(e);
-          e->far_next = reinterpret_cast<event_on_creator*>(0x1);
-        }
-      }
-    }
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -611,7 +602,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     uint64_t gvt0 = deva::reduce_min(lvt);
 
     gvt::init(gvt0, {0, 0});
-    gvt::epoch_begin(lvt, {0, 0});
+    gvt::coll_begin(lvt, {0, 0});
 
     look_t_ub = global_status.calc_look_t_ub(gvt0, t_end);
   }
@@ -625,80 +616,84 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
 
       gvt::advance();
       
-      if(gvt::epoch_ended()) {
-        uint64_t gvt_new = gvt::epoch_gvt();
+      if(gvt::coll_ended()) {
+        rxs_acc.reduce_with(gvt::coll_reducibles());
         
-        rxs_acc.reduce_with(gvt::epoch_reducibles());
-        
-        { // delete locally created events from previous epoch
-          while(sim_me.sent_near.least_key_or(uint64_t(-1)) < gvt_old) {
-            event *e = sim_me.sent_near.pop_least();
-            e->vtbl_on_creator->destruct_and_delete(e);
-          }
+        if(gvt::epoch_ended()) {
+          uint64_t gvt_new = gvt::epoch_gvt();
           
-          // and delete annihilated events from previous epoch
-          event *e = sim_me.anni_near_cold_head;
-          // hot moved to cold list
-          sim_me.anni_near_cold_head = sim_me.anni_near_hot_head;
-          // hot list now empty
-          sim_me.anni_near_hot_head = nullptr;
-          
-          while(e != nullptr) {
-            event *e_next = e->anni_near_next;
-            e->vtbl_on_creator->destruct_and_delete(e);
-            e = e_next;
-          }
-        }
-        
-        if(gvt_new != gvt_old) {
-          // commmit events that have fallen behind new gvt
-          while(true) {
-            cd_state *cd = sim_me.cds_by_dawn.peek_least().cd;
-            int past_n = cd->past_events.size();
-            int commit_n = 0;
-            
-            while(commit_n < past_n) {
-              local_event le = cd->past_events.at_forwards(commit_n);
-              if(le.time >= gvt_new)
-                break;
-
-              bool should_delete = le.e->created_here && !le.e->rewind_root;
-              
-              if(should_delete) {
-                if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1))
-                  sim_me.from_far.remove(le.e);
-              }
-              
-              commit_n += 1;
-              le.e->vtbl_on_target->commit(le.e, should_delete);
+          { // delete locally created events from previous epoch
+            while(sim_me.sent_near.least_key_or(uint64_t(-1)) < gvt_old) {
+              event *e = sim_me.sent_near.pop_least();
+              e->vtbl_on_creator->destruct_and_delete(e);
             }
             
-            if(commit_n == 0)
-              break;
+            // and delete annihilated events from previous epoch
+            event *e = sim_me.anni_near_cold_head;
+            // hot moved to cold list
+            sim_me.anni_near_cold_head = sim_me.anni_near_hot_head;
+            // hot list now empty
+            sim_me.anni_near_hot_head = nullptr;
             
-            committed_n += commit_n;
-            total_committed_n += commit_n;
-            cd->past_events.chop_front(commit_n);
-            sim_me.cds_by_dawn.increased({cd, cd->dawn()});
+            while(e != nullptr) {
+              event *e_next = e->anni_near_next;
+              e->vtbl_on_creator->destruct_and_delete(e);
+              e = e_next;
+            }
           }
-          
-          // update global status
-          global_status.update(rxs_acc.sum1, rxs_acc.sum2);
-          rxs_acc = {0,0};
-          look_t_ub = global_status.calc_look_t_ub(gvt_new, t_end);
-        }
-        else if(t_end <= gvt_old) {
-          //say()<<"drain done gvt="<<gvt_old;
-          gvt_returned = gvt_old;
-          
-          if(gvt_old == uint64_t(-1))
-            goto drain_completed;
-          else
-            goto drain_paused;
+
+          if(gvt_new != gvt_old) {
+            // commmit events that have fallen behind new gvt
+            while(true) {
+              cd_state *cd = sim_me.cds_by_dawn.peek_least().cd;
+              int past_n = cd->past_events.size();
+              int commit_n = 0;
+              
+              while(commit_n < past_n) {
+                local_event le = cd->past_events.at_forwards(commit_n);
+                if(le.time >= gvt_new)
+                  break;
+
+                bool should_delete = le.e->created_here && !le.e->rewind_root;
+                
+                if(should_delete) {
+                  if(le.e->far_next != reinterpret_cast<event_on_creator*>(0x1)) {
+                    //deva::say()<<"committed from_far remove origin="<<le.e->far_origin<<" id="<<le.e->far_id;
+                    sim_me.from_far.remove(le.e);
+                  }
+                }
+                
+                commit_n += 1;
+                le.e->vtbl_on_target->commit(le.e, should_delete);
+              }
+              
+              if(commit_n == 0)
+                break;
+              
+              committed_n += commit_n;
+              total_committed_n += commit_n;
+              cd->past_events.chop_front(commit_n);
+              sim_me.cds_by_dawn.increased({cd, cd->dawn()});
+            }
+            
+            // update global status
+            global_status.update(rxs_acc.sum1, rxs_acc.sum2);
+            rxs_acc = {0,0};
+            look_t_ub = global_status.calc_look_t_ub(gvt_new, t_end);
+          }
+          else if(t_end <= gvt_old) {
+            //say()<<"drain done gvt="<<gvt_old;
+            gvt_returned = gvt_old;
+            
+            if(gvt_old == uint64_t(-1))
+              goto drain_completed;
+            else
+              goto drain_paused;
+          }
         }
         
-        // begin new epoch
-        gvt::epoch_begin(lvt, {executed_n, committed_n});
+        // begin new collective
+        gvt::coll_begin(lvt, {executed_n, committed_n});
         executed_n = 0;
         committed_n = 0;
       }
@@ -778,10 +773,29 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   }
 
 drain_completed:
+  for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
+    cd_state *cd = &sim_me.cds[cd_ix];
+    DEVA_ASSERT_ALWAYS(cd->future_events.size() == 0);
+  }
+  
   DEVA_ASSERT_ALWAYS(sim_me.from_far.size() == 0);
   DEVA_ASSERT_ALWAYS(sim_me.sent_near.size() == 0, "sim_me.sent_near.size() = "<<sim_me.sent_near.size()<<", expected 0");
   
 drain_paused:
+  for(int cd_ix=0; cd_ix < cds_on_rank; cd_ix++) {
+    cd_state *cd = &sim_me.cds[cd_ix];
+    DEVA_ASSERT_ALWAYS(cd->past_events.size() == 0);
+  }
+  
+  sim_me.from_far.for_each([&](event_on_creator *o) {
+    DEVA_ASSERT_ALWAYS(o->vtbl_on_creator != &anti_vtable, "Lingering from-far anti-message: rank="<<o->far_origin<<" id="<<o->far_id<<" o="<<o);
+
+    // since we're quiesced we can pretend that events which came from afar didn't
+    // since no anti-messages are in the pipes
+    o->far_next = reinterpret_cast<event_on_creator*>(0x1);
+  });
+  sim_me.from_far.clear();
+
   DEVA_ASSERT_ALWAYS(sim_me.anni_near_cold_head == nullptr);
   DEVA_ASSERT_ALWAYS(sim_me.anni_near_hot_head == nullptr);
   local_stats_.executed_n = total_executed_n;
@@ -825,7 +839,6 @@ void pdes::finalize() {
       e->vtbl_on_creator->destruct_and_delete(e);
     }
     sim_me.sent_near.clear();
-    sim_me.from_far.clear();
   }
 
   // delete locally created roots
@@ -887,15 +900,17 @@ void pdes::rewind(bool do_rewind) {
         e->vtbl_on_creator->destruct_and_delete(e);
       }
       sim_me.sent_near.clear();
-      sim_me.from_far.clear();
     }
 
     // move the rewind roots into future
     for(event *e: sim_me.rewind_roots) {
       cd_state *cd = &sim_me.cds[e->target_cd];
       e->rewind_root = false;
-      e->future_not_past = true;
-      cd->future_events.insert(local_event{e, e->time, e->subtime});
+      if(!e->future_not_past) {
+        e->future_not_past = true;
+        e->sent_far.clear();
+        cd->future_events.insert(local_event{e, e->time, e->subtime});
+      }
     }
     for(event *e: sim_me.rewind_created_near)
       sim_me.sent_near.insert(e);

@@ -29,33 +29,37 @@ namespace deva {
     
     void advance();
 
-    void epoch_begin(std::uint64_t lvt, reducibles rxs);
+    void coll_begin(std::uint64_t lvt, reducibles rxs);
+    bool coll_ended();
+    reducibles coll_reducibles();
+
     bool epoch_ended();
     std::uint64_t epoch_gvt();
-    reducibles epoch_reducibles();
   }
 
   namespace gvt {
-    extern __thread bool epoch_ended_;
+    extern __thread bool coll_ended_, epoch_ended_;
+    extern __thread reducibles coll_rxs_;
     extern __thread std::uint64_t epoch_gvt_;
-    extern __thread reducibles epoch_rxs_;
     
-    extern __thread unsigned round_;
-    extern __thread std::uint64_t round_lvt_[2];
-    extern __thread std::uint64_t round_lsend_[2];
-    extern __thread std::uint64_t round_lrecv_[3];
+    extern __thread unsigned epoch_;
+    extern __thread std::uint64_t epoch_lvt_[2];
+    extern __thread std::uint64_t epoch_lsend_[2];
+    extern __thread std::uint64_t epoch_lrecv_[3];
+  }
+
+  inline bool gvt::coll_ended() {
+    return gvt::coll_ended_;
+  }
+  inline gvt::reducibles gvt::coll_reducibles() {
+    return gvt::coll_rxs_;
   }
 
   inline bool gvt::epoch_ended() {
     return gvt::epoch_ended_;
   }
-
   inline std::uint64_t gvt::epoch_gvt() {
     return gvt::epoch_gvt_;
-  }
-
-  inline gvt::reducibles gvt::epoch_reducibles() {
-    return gvt::epoch_rxs_;
   }
 
   template<typename Fn, typename ...Arg>
@@ -67,17 +71,17 @@ namespace deva {
   void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn fn, Arg ...arg) {
     DEVA_ASSERT(gvt::epoch_gvt_ <= t);
     
-    unsigned r = gvt::round_ + 1;
-    gvt::round_lsend_[1] += 1;
-    gvt::round_lvt_[1] = std::min(gvt::round_lvt_[1], t);
+    unsigned e = gvt::epoch_ + 1;
+    gvt::epoch_lsend_[1] += 1;
+    gvt::epoch_lvt_[1] = std::min(gvt::epoch_lvt_[1], t);
     
     deva::send(rank, local1,
       [=](Fn &fn, Arg &...arg) {
-        int i = r >= gvt::round_ ? int(r - gvt::round_) : -int(gvt::round_ - r);
+        int i = e >= gvt::epoch_ ? int(e - gvt::epoch_) : -int(gvt::epoch_ - e);
         DEVA_ASSERT(0 <= i && i < 3);
         DEVA_ASSERT(gvt::epoch_gvt_ <= t);
         
-        gvt::round_lrecv_[i] += 1;
+        gvt::epoch_lrecv_[i] += 1;
         
         fn(arg...);
       },

@@ -16,7 +16,7 @@ gasnet_install := $(devastator)/$(gasnet_install)
 gasnet_config_args := --prefix=$(gasnet_install_abs)
 gasnet_config_args += $(if $(gasnet_debug),--enable-debug,)
 gasnet_config_args += --disable-parsync --disable-par
-gasnet_config_args += --disable-mpi --disable-udp
+gasnet_config_args += --disable-mpi
 
 gasnet_conduit ?= $(if $(NERSC_HOST),aries,smp)
 gasnet_cross ?= $(if $(NERSC_HOST),cray-aries-slurm,)

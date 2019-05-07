@@ -6,14 +6,14 @@ namespace gvt = deva::gvt;
 
 namespace deva {
   namespace gvt {
-    __thread bool epoch_ended_;
+    __thread bool coll_ended_, epoch_ended_;
+    __thread reducibles coll_rxs_;
     __thread uint64_t epoch_gvt_;
-    __thread reducibles epoch_rxs_;
     
-    __thread unsigned round_;
-    __thread uint64_t round_lvt_[2];
-    __thread uint64_t round_lsend_[2];
-    __thread uint64_t round_lrecv_[3];
+    __thread unsigned epoch_;
+    __thread uint64_t epoch_lvt_[2];
+    __thread uint64_t epoch_lsend_[2];
+    __thread uint64_t epoch_lrecv_[3];
   }
 }
 
@@ -37,18 +37,19 @@ namespace {
 }
 
 void deva::gvt::init(uint64_t gvt0, gvt::reducibles rxs0) {
+  gvt::coll_ended_ = true;
+  gvt::coll_rxs_ = rxs0;
   gvt::epoch_ended_ = true;
   gvt::epoch_gvt_ = gvt0;
-  gvt::epoch_rxs_ = rxs0;
-
-  gvt::round_ = 0;
-  gvt::round_lvt_[0] = gvt0;
-  gvt::round_lvt_[1] = gvt0;
-  gvt::round_lsend_[0] = 0;
-  gvt::round_lsend_[1] = 0;
-  gvt::round_lrecv_[0] = 0;
-  gvt::round_lrecv_[1] = 0;
-  gvt::round_lrecv_[2] = 0;
+  
+  gvt::epoch_ = 0;
+  gvt::epoch_lvt_[0] = gvt0;
+  gvt::epoch_lvt_[1] = gvt0;
+  gvt::epoch_lsend_[0] = 0;
+  gvt::epoch_lsend_[1] = 0;
+  gvt::epoch_lrecv_[0] = 0;
+  gvt::epoch_lrecv_[1] = 0;
+  gvt::epoch_lrecv_[2] = 0;
   
   rdxn_status = rdxn_status_e::non_quiesced;
   rdxn_incoming = 0;
@@ -60,35 +61,37 @@ void deva::gvt::init(uint64_t gvt0, gvt::reducibles rxs0) {
 }
 
 void deva::gvt::advance() {
-  gvt::epoch_ended_ = rdxn_status != rdxn_status_e::reducing;
+  gvt::coll_ended_ = rdxn_status != rdxn_status_e::reducing;
+  gvt::coll_rxs_ = rdxn_rxs_ans;
+  gvt::epoch_ended_ = rdxn_status == rdxn_status_e::quiesced;
   gvt::epoch_gvt_ = rdxn_gvt_ans;
-  gvt::epoch_rxs_ = rdxn_rxs_ans;
 }
 
-void deva::gvt::epoch_begin(std::uint64_t lvt, gvt::reducibles rxs) {
+void deva::gvt::coll_begin(std::uint64_t lvt, gvt::reducibles rxs) {
   DEVA_ASSERT(rdxn_status != rdxn_status_e::reducing);
 
   if(rdxn_status == rdxn_status_e::quiesced) {
-    gvt::round_ += 1;
+    gvt::epoch_ += 1;
     
-    gvt::round_lvt_[0] = std::min(lvt, gvt::round_lvt_[1]);
-    gvt::round_lvt_[1] = ~uint64_t(0);
+    gvt::epoch_lvt_[0] = std::min(lvt, gvt::epoch_lvt_[1]);
+    gvt::epoch_lvt_[1] = ~uint64_t(0);
     
-    gvt::round_lsend_[0] = gvt::round_lsend_[1];
-    gvt::round_lsend_[1] = 0;
+    gvt::epoch_lsend_[0] = gvt::epoch_lsend_[1];
+    gvt::epoch_lsend_[1] = 0;
     
-    gvt::round_lrecv_[0] = gvt::round_lrecv_[1];
-    gvt::round_lrecv_[1] = gvt::round_lrecv_[2];
-    gvt::round_lrecv_[2] = 0;
+    gvt::epoch_lrecv_[0] = gvt::epoch_lrecv_[1];
+    gvt::epoch_lrecv_[1] = gvt::epoch_lrecv_[2];
+    gvt::epoch_lrecv_[2] = 0;
   }
   
+  gvt::coll_ended_ = false;
   gvt::epoch_ended_ = false;
   rdxn_status = rdxn_status_e::reducing;
   
   rdxn_up(
-    gvt::round_lvt_[0],
-    gvt::round_lsend_[0],
-    gvt::round_lrecv_[0],
+    gvt::epoch_lvt_[0],
+    gvt::epoch_lsend_[0],
+    gvt::epoch_lrecv_[0],
     rxs
   );
 }
