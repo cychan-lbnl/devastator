@@ -618,17 +618,17 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
       
       if(gvt::coll_ended()) {
         rxs_acc.reduce_with(gvt::coll_reducibles());
+
+        // delete near-sent events which were committed in previous collective round
+        while(sim_me.sent_near.least_key_or(uint64_t(-1)) < gvt_old) {
+          event *e = sim_me.sent_near.pop_least();
+          e->vtbl_on_creator->destruct_and_delete(e);
+        }
         
-        if(gvt::epoch_ended()) {
+        if(gvt::coll_was_epoch()) {
           uint64_t gvt_new = gvt::epoch_gvt();
           
-          { // delete locally created events from previous epoch
-            while(sim_me.sent_near.least_key_or(uint64_t(-1)) < gvt_old) {
-              event *e = sim_me.sent_near.pop_least();
-              e->vtbl_on_creator->destruct_and_delete(e);
-            }
-            
-            // and delete annihilated events from previous epoch
+          { // and delete annihilated events from previous epoch
             event *e = sim_me.anni_near_cold_head;
             // hot moved to cold list
             sim_me.anni_near_cold_head = sim_me.anni_near_hot_head;

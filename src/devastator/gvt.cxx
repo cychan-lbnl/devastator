@@ -6,9 +6,9 @@ namespace gvt = deva::gvt;
 
 namespace deva {
   namespace gvt {
-    __thread bool coll_ended_, epoch_ended_;
-    __thread reducibles coll_rxs_;
-    __thread uint64_t epoch_gvt_;
+    __thread coll_status_e coll_status_[2];
+    __thread reducibles coll_rxs_[2];
+    __thread uint64_t epoch_gvt_[2];
     
     __thread unsigned epoch_;
     __thread uint64_t epoch_lvt_[2];
@@ -18,82 +18,60 @@ namespace deva {
 }
 
 namespace {
-  enum class rdxn_status_e  {
-    reducing,
-    quiesced,
-    non_quiesced,
-  };
-  
-  __thread rdxn_status_e rdxn_status;
   __thread int rdxn_incoming;
   __thread uint64_t rdxn_gsend, rdxn_grecv;
   __thread uint64_t rdxn_gvt_acc;
   __thread gvt::reducibles rdxn_rxs_acc;
-  __thread uint64_t rdxn_gvt_ans;
-  __thread gvt::reducibles rdxn_rxs_ans;
   
   void rdxn_up(uint64_t lvt, uint64_t lsend, uint64_t lrecv, gvt::reducibles rxs);
   void rdxn_down(int to_ub, uint64_t gvt, gvt::reducibles rxs);
 }
 
 void deva::gvt::init(uint64_t gvt0, gvt::reducibles rxs0) {
-  gvt::coll_ended_ = true;
-  gvt::coll_rxs_ = rxs0;
-  gvt::epoch_ended_ = true;
-  gvt::epoch_gvt_ = gvt0;
+  coll_status_[0] = coll_status_e::non_quiesced;
+  coll_status_[1] = coll_status_e::non_quiesced;
+  coll_rxs_[0] = rxs0;
+  coll_rxs_[1] = rxs0;
+  epoch_gvt_[0] = gvt0;
+  epoch_gvt_[1] = gvt0;
   
-  gvt::epoch_ = 0;
-  gvt::epoch_lvt_[0] = gvt0;
-  gvt::epoch_lvt_[1] = gvt0;
-  gvt::epoch_lsend_[0] = 0;
-  gvt::epoch_lsend_[1] = 0;
-  gvt::epoch_lrecv_[0] = 0;
-  gvt::epoch_lrecv_[1] = 0;
-  gvt::epoch_lrecv_[2] = 0;
+  epoch_ = 0;
+  epoch_lvt_[0] = gvt0;
+  epoch_lvt_[1] = gvt0;
+  epoch_lsend_[0] = 0;
+  epoch_lsend_[1] = 0;
+  epoch_lrecv_[0] = 0;
+  epoch_lrecv_[1] = 0;
+  epoch_lrecv_[2] = 0;
   
-  rdxn_status = rdxn_status_e::non_quiesced;
   rdxn_incoming = 0;
   rdxn_gvt_acc = 0;
-  rdxn_gvt_ans = 0;
-  rdxn_rxs_ans = rxs0;
   
   deva::barrier();
 }
 
-void deva::gvt::advance() {
-  gvt::coll_ended_ = rdxn_status != rdxn_status_e::reducing;
-  gvt::coll_rxs_ = rdxn_rxs_ans;
-  gvt::epoch_ended_ = rdxn_status == rdxn_status_e::quiesced;
-  gvt::epoch_gvt_ = rdxn_gvt_ans;
-}
-
 void deva::gvt::coll_begin(std::uint64_t lvt, gvt::reducibles rxs) {
-  DEVA_ASSERT(rdxn_status != rdxn_status_e::reducing);
-
-  if(rdxn_status == rdxn_status_e::quiesced) {
-    gvt::epoch_ += 1;
+  DEVA_ASSERT(coll_status_[0] != coll_status_e::reducing &&
+              coll_status_[0] == coll_status_[1]);
+  
+  if(coll_status_[0] == coll_status_e::quiesced) {
+    epoch_ += 1;
     
-    gvt::epoch_lvt_[0] = std::min(lvt, gvt::epoch_lvt_[1]);
-    gvt::epoch_lvt_[1] = ~uint64_t(0);
+    epoch_lvt_[0] = std::min(lvt, gvt::epoch_lvt_[1]);
+    epoch_lvt_[1] = ~uint64_t(0);
     
-    gvt::epoch_lsend_[0] = gvt::epoch_lsend_[1];
-    gvt::epoch_lsend_[1] = 0;
+    epoch_lsend_[0] = gvt::epoch_lsend_[1];
+    epoch_lsend_[1] = 0;
     
-    gvt::epoch_lrecv_[0] = gvt::epoch_lrecv_[1];
-    gvt::epoch_lrecv_[1] = gvt::epoch_lrecv_[2];
-    gvt::epoch_lrecv_[2] = 0;
+    epoch_lrecv_[0] = gvt::epoch_lrecv_[1];
+    epoch_lrecv_[1] = gvt::epoch_lrecv_[2];
+    epoch_lrecv_[2] = 0;
   }
   
-  gvt::coll_ended_ = false;
-  gvt::epoch_ended_ = false;
-  rdxn_status = rdxn_status_e::reducing;
+  coll_status_[0] = coll_status_e::reducing;
+  coll_status_[1] = coll_status_e::reducing;
   
-  rdxn_up(
-    gvt::epoch_lvt_[0],
-    gvt::epoch_lsend_[0],
-    gvt::epoch_lrecv_[0],
-    rxs
-  );
+  rdxn_up(epoch_lvt_[0], epoch_lsend_[0], epoch_lrecv_[0], rxs);
 }
 
 namespace {
@@ -162,12 +140,11 @@ namespace {
       to_ub = mid;
     }
     
-    //say()<<"epoch bump rxs={"<<grxs.sum1<<" "<<grxs.sum2<<"}";
-    rdxn_status = quiesced ? rdxn_status_e::quiesced : rdxn_status_e::non_quiesced;
-    rdxn_rxs_ans = grxs;
+    gvt::coll_status_[1] = quiesced ? gvt::coll_status_e::quiesced : gvt::coll_status_e::non_quiesced;
+    gvt::coll_rxs_[1] = grxs;
     if(quiesced) {
-      DEVA_ASSERT(gvt::epoch_gvt_ <= gvt);
-      rdxn_gvt_ans = gvt;
+      DEVA_ASSERT(gvt::epoch_gvt_[1] <= gvt);
+      gvt::epoch_gvt_[1] = gvt;
     }
   }
 }
