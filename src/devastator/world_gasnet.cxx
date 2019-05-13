@@ -128,7 +128,10 @@ namespace {
       { // Everyone carves out some GBs and shares them evenly across peers
         size_t space = std::max<size_t>(512<<20, size_t((512<<20)*(std::log(deva::process_n)/std::log(2))));
         setenv("GASNET_NETWORKDEPTH_SPACE", std::to_string(space/deva::process_n).c_str(), 1);
-        setenv("GASNET_GNI_AM_RVOUS_CUTOVER", "0", 1); // disable the scalable algo since we know we have the space
+
+        // disable this disable since the default (16k) is insanely high given our
+        // preference towards fat processes.
+        //setenv("GASNET_GNI_AM_RVOUS_CUTOVER", "0", /*overwrite=*/0); // disable the scalable algo since we know we have the space
       }
     #endif
     
@@ -182,15 +185,17 @@ void deva::progress() {
       }
     }
   );
-  
-  static thread_local int consecutive_nothings = 0;
 
-  if(did_something)
-    consecutive_nothings = 0;
-  else if(++consecutive_nothings == 10) {
-    consecutive_nothings = 0;
-    sched_yield();
-  }
+  #if GASNET_CONDUIT_SMP || GASNET_CONDUIT_UDP
+    static thread_local int consecutive_nothings = 0;
+
+    if(did_something)
+      consecutive_nothings = 0;
+    else if(++consecutive_nothings == 10) {
+      consecutive_nothings = 0;
+      sched_yield();
+    }
+  #endif
 }
 
 namespace {
