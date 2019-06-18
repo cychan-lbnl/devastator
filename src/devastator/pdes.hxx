@@ -291,7 +291,7 @@ namespace pdes {
       using ExecRet = typename std::remove_const<decltype(std::declval<E>().execute(std::declval<execute_context&>()))>::type;
       E user;
       union { ExecRet exec_ret; };
-      
+
       static void destruct_and_delete(event *me1) {
         auto *me = static_cast<event_impl<E>*>(me1);
         delete me;
@@ -331,6 +331,8 @@ namespace pdes {
         event(&the_vtable),
         user(std::move(user)) {
       }
+
+      ~event_impl() {}
     };
 
     template<typename E>
