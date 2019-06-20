@@ -13,13 +13,6 @@
 #include <tuple>
 
 namespace deva {
-  inline constexpr int log2up(int x) {
-    return x <= 0 ? -1 :
-           x == 1 ? 0 :
-           x == 3 ? 2 :
-           1 + log2up((x/2) | (x%2));
-  }
-  
   constexpr int rank_n = tmsg::thread_n;
   constexpr int process_n = 1;
   constexpr int worker_n = rank_n;
@@ -40,12 +33,10 @@ namespace deva {
     return 0;
   }
   
-  inline void progress() {
-    tmsg::progress();
-  }
+  void progress(bool spinning=false, bool deaf=false);
 
-  inline void barrier(bool do_progress=true) {
-    tmsg::barrier(do_progress);
+  inline void barrier(bool quiesced=false) {
+    tmsg::barrier(quiesced);
   }
   
   inline void run(upcxx::detail::function_ref<void()> fn) {

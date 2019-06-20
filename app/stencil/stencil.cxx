@@ -33,8 +33,8 @@ struct load_event {
   int subtime() const { return 0; }
 
   struct reverse {
-    void unexecute(load_event&) { execute_n -= 1;}
-    void commit(load_event&) { commit_n += 1; }
+    void unexecute(pdes::event_context&, load_event&) { execute_n -= 1;}
+    void commit(pdes::event_context&, load_event&) { commit_n += 1; }
   };
 
   reverse execute(pdes::execute_context &cxt);
@@ -67,7 +67,7 @@ struct accum_event {
     }
     
     // return the unexecute lambda
-    return [=](accum_event &me) {
+    return [=](pdes::event_context&, accum_event &me) {
       int c = me.cell_dst % cell_per_rank;
       
       cells[c] -= me.val;
@@ -90,25 +90,6 @@ load_event::reverse load_event::execute(pdes::execute_context &cxt) {
   return reverse{};
 }
 
-struct cell_cd {
-  static bool commutes(pdes::event_view a, pdes::event_view b) {
-    //return false;
-    bool ans;
-    
-    // a & b commute iff they are both loads or both accums.
-    #if 1
-      ans = a.type_id() == b.type_id();
-    #else // equivalent
-      ans =
-        (!!a.try_cast<load_event>() & !!b.try_cast<load_event>()) |
-        (!!a.try_cast<accum_event>() & !!b.try_cast<accum_event>());
-    #endif
-    
-    //if(ans) deva::say()<<"COMMUTES";
-    return ans;
-  }
-};
-
 int main() {
   auto doit = []() {
     cells.reset(new unsigned[cell_per_rank](/*0...*/));
@@ -121,9 +102,6 @@ int main() {
     
     for(int cell=lb; cell < ub; cell++) {
       int cd = cell - lb;
-      #if 1
-        pdes::init_cd<cell_cd>(cd);
-      #endif
       pdes::root_event(cd, 0, accum_event{(unsigned)cell, cell});
     }
     

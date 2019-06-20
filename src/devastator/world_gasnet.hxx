@@ -63,10 +63,11 @@ namespace deva {
       upcxx::detail::command::serialize(w, ub.size, fn);
       w.place(0,8);
       DEVA_ASSERT(w.align() <= 8);
-      void *buf = operator new(w.size());
+      std::size_t w_size = w.size();
+      void *buf = operator new(w_size);
       w.compact_and_invalidate(buf);
       auto *rm = new(buf) remote_out_message;
-      rm->size8 = (w.size() - sizeof(remote_out_message))/8;
+      rm->size8 = (w_size - sizeof(remote_out_message))/8;
       return rm;
     }
     
@@ -90,6 +91,7 @@ namespace deva {
           fn
         );
       auto *rm = create_help(std::move(fn), ub, std::integral_constant<bool, ub.is_valid>());
+      DEVA_ASSERT(rm->size8 > 0);
       rm->rank = rank;
       return rm;
     }
@@ -131,9 +133,9 @@ namespace deva {
     send(rank, std::move(fn), std::move(arg)...);
   }
   
-  void progress();
+  void progress(bool spinning=false, bool deaf=false);
 
-  void barrier(bool do_progress=true);
+  void barrier(bool quiesced=false);
   
   void run(upcxx::detail::function_ref<void()> fn);
 

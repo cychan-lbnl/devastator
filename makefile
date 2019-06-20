@@ -105,6 +105,7 @@ devastator/tmsg.deps = \
   $(devastator/src)/opnew.hxx \
   $(devastator/src)/opnew_fwd.hxx \
   $(devastator/src)/tmsg.hxx \
+  $(devastator/src)/utility.hxx \
   $(upcxx)/utility.hpp
 
 devastator/tmsg.srcs = \
@@ -116,6 +117,7 @@ devastator/world_threads.deps = \
   $(devastator/tmsg.deps)
 
 devastator/world_threads.srcs = \
+  $(devastator/src)/world_threads.cxx \
   $(devastator/tmsg.srcs)
 
 devastator/world_gasnet.deps = \

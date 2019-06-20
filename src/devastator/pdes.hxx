@@ -15,12 +15,13 @@
 
 namespace deva {
 namespace pdes {
-  struct execute_context {
-    int cd;
-    std::uint64_t time, subtime;
-    
+  struct event_context {
+    std::int32_t cd;
+    std::uint64_t time;
+  };
+  struct execute_context: event_context {
     template<typename Event>
-    void send(int rank, int cd, std::uint64_t time, Event e);
+    void send(std::int32_t rank, std::int32_t cd, std::uint64_t time, Event e);
   };
 
   // Set these to determine how frequently and where drain should print global
@@ -28,10 +29,10 @@ namespace pdes {
   extern int chitter_secs; // non-positive disables chitter io
   extern std::ostream *chitter_io;
   
-  void init(int cds_this_rank);
+  void init(std::int32_t cds_this_rank);
 
   template<typename T>
-  void register_state(int cd, T *address);
+  void register_state(std::int32_t cd, T *address);
   
   /* drain: Collective wrt all arguments. Advances the simulation by processing
    * all events with a timestamp strictly less than `t_end`. If `rewindable=true`
@@ -54,7 +55,7 @@ namespace pdes {
 
   // root_event: Insert an event into a CD on this rank.
   template<typename Event>
-  void root_event(int cd, std::uint64_t time, Event e);
+  void root_event(std::int32_t cd, std::uint64_t time, Event e);
 
   struct statistics {
     std::uint64_t executed_n = 0;
@@ -79,68 +80,42 @@ namespace pdes {
   // internal
   
   namespace detail {
-    struct event;
-    
     constexpr std::uint64_t end_of_time = std::uint64_t(-1);
-  }
-  
-  //////////////////////////////////////////////////////////////////////////////
-  // public
-  
-  class event_view {
-    detail::event *e_;
-    std::uint64_t time_;
-  
-  public:
-    constexpr event_view(detail::event *e, std::uint64_t time):
-      e_(e),
-      time_(time) {
-    }
-  
-  public:
-    constexpr std::uint64_t time() const { return time_; }
     
-    template<typename Event>
-    Event* try_cast() const;
-    
-    void* type_id() const;
-  };
-  
-  //////////////////////////////////////////////////////////////////////
-  // internal
-  
-  namespace detail {
     struct far_event_id {
-      int rank;
-      unsigned id;
+      std::int32_t rank;
+      std::uint32_t id;
       std::uint64_t time;
     };
 
     struct event_on_creator;
     struct event_on_target;
     struct event;
+
+    extern __thread std::uint32_t far_id_bump;
     
-    void root_event(int cd_ix, event *e);
-    void arrive_far(int far_origin, unsigned far_id, event *e);
+    void root_event(std::int32_t cd_ix, event *e);
+    std::uint64_t next_seq_id(std::int32_t cd_ix);
+    void arrive_far(std::int32_t origin, std::uint32_t far_id, event *e);
     
     struct event_vtable {
       void(*destruct_and_delete)(event*);
       void(*execute)(event *me, execute_context &cxt);
-      void(*unexecute)(event *me, bool should_delete);
-      void(*commit)(event *me, bool should_delete);
+      void(*unexecute)(event *me, event_context cxt, bool should_delete);
+      void(*commit)(event *me, event_context cxt, bool should_delete);
     };
 
     struct alignas(64) event_on_creator {
       event_vtable const *vtbl_on_creator;
       std::uint64_t time;
-      std::uint64_t subtime;
+      std::uint64_t seq_id;
       union {
-        int target_rank;
-        int far_origin;
+        std::int32_t target_rank;
+        std::int32_t far_origin;
       };
-      int target_cd;
-      unsigned far_id;
-      int sent_near_ix = -1;
+      std::int32_t target_cd;
+      std::uint32_t far_id;
+      std::int32_t sent_near_ix = -1;
       event_on_creator *far_next = reinterpret_cast<event_on_creator*>(0x1); // 0x1 == not from far
       union {
         event *sent_near_next = nullptr;
@@ -162,8 +137,8 @@ namespace pdes {
                    existence:2, // -1,0,+1
                    future_not_past:1, // bool
                    remove_after_undo:1; // bool
-      int future_ix;
-
+      std::int32_t future_ix;
+      
       event_on_target():
         existence(0),
         remove_after_undo(false) {
@@ -171,10 +146,8 @@ namespace pdes {
     };
 
     struct event: event_on_creator, event_on_target {
-      static thread_local unsigned far_id_bump;
-      
       #if DEBUG
-        static thread_local int64_t live_n;
+        static thread_local std::int64_t live_n;
       #endif
       
       event(event_vtable const *vtbl) {
@@ -194,7 +167,7 @@ namespace pdes {
         return e->time;
       }
 
-      static int& sent_near_ix_of(event *e) {
+      static std::int32_t& sent_near_ix_of(event *e) {
         return e->sent_near_ix;
       }
     };
@@ -202,24 +175,6 @@ namespace pdes {
     struct execute_context_impl: execute_context {
       event *sent_near_head = nullptr;
       std::forward_list<far_event_id> *sent_far;
-    };
-    
-    template<typename E, typename=void>
-    struct event_subtime {
-      std::uint64_t operator()(E&) const {
-        return std::uint64_t(-1);
-      }
-    };
-    template<typename E>
-    struct event_subtime<E,
-        decltype(
-          std::declval<E&>().subtime(),
-          void()
-        )
-      > {
-      std::uint64_t operator()(E &e) const {
-        return e.subtime();
-      }
     };
     
     template<typename E, typename=void>
@@ -241,43 +196,52 @@ namespace pdes {
     template<typename E, typename ExecRet>
     struct event_unexecute_dispatch<E, ExecRet,
         /*HasUnexecute*/decltype(
-          std::declval<ExecRet>().unexecute(std::declval<E&>()),
+          std::declval<ExecRet>().unexecute(
+            std::declval<event_context&>(),
+            std::declval<E&>()
+          ),
           void()
         ),
         /*HasOpParens*/void
       > {
-      void operator()(E &e, ExecRet &r) const {
-        r.unexecute(e);
+      void operator()(event_context &cxt, E &user, ExecRet &exec_ret) const {
+        exec_ret.unexecute(cxt, user);
       }
     };
     template<typename E, typename ExecRet>
     struct event_unexecute_dispatch<E, ExecRet,
         /*HasUnexecute*/void, 
         /*HasOpParens*/decltype(
-          std::declval<ExecRet>().operator()(std::declval<E&>()),
+          std::declval<ExecRet>().operator()(
+            std::declval<event_context&>(),
+            std::declval<E&>()
+          ),
           void()
         )
       > {
-      void operator()(E &e, ExecRet &r) const {
-        r(e);
+      void operator()(event_context &cxt, E &user, ExecRet &exec_ret) const {
+        exec_ret(cxt, user);
       }
     };
     
     template<typename E, typename ExecRet,
              typename HasCommit = void>
     struct event_commit_dispatch {
-      void operator()(E&, ExecRet&) const {}
+      void operator()(event_context&, E&, ExecRet&) const {}
     };
     
     template<typename E, typename ExecRet>
     struct event_commit_dispatch<E, ExecRet,
         /*HasCommit*/decltype(
-          std::declval<ExecRet>().commit(std::declval<E&>()),
+          std::declval<ExecRet>().commit(
+            std::declval<event_context&>(),
+            std::declval<E&>()
+          ),
           void()
         )
       > {
-      void operator()(E &e, ExecRet &r) const {
-        r.commit(e);
+      void operator()(event_context &cxt, E &user, ExecRet &exec_ret) const {
+        exec_ret.commit(cxt, user);
       }
     };
     
@@ -302,18 +266,18 @@ namespace pdes {
         ::new(&me->exec_ret) ExecRet{me->user.execute(cxt)};
       }
       
-      static void unexecute(event *me1, bool should_delete) {
+      static void unexecute(event *me1, event_context cxt, bool should_delete) {
         auto *me = static_cast<event_impl<E>*>(me1);
-        event_unexecute_dispatch<E, ExecRet>()(me->user, me->exec_ret);
+        event_unexecute_dispatch<E, ExecRet>()(cxt, me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
 
         if(should_delete)
           delete me;
       }
       
-      static void commit(event *me1, bool should_delete) {
+      static void commit(event *me1, event_context cxt, bool should_delete) {
         auto *me = static_cast<event_impl<E>*>(me1);
-        event_commit_dispatch<E, ExecRet>()(me->user, me->exec_ret);
+        event_commit_dispatch<E, ExecRet>()(cxt, me->user, me->exec_ret);
         me->exec_ret.~ExecRet();
         
         if(should_delete)
@@ -343,27 +307,27 @@ namespace pdes {
   
   template<typename Event>
   void execute_context::send(
-      int rank, int cd,
+      int32_t rank, int32_t cd,
       std::uint64_t time,
       Event user
     ) {
     auto *me = static_cast<detail::execute_context_impl*>(this);
     
-    DEVA_ASSERT(me->time <= time);
+    DEVA_ASSERT(me->time < time, "Sent events must have a strictly greater timestamp.");
     
     if(deva::rank_is_local(rank)) {
       auto *e = new detail::event_impl<Event>{std::move(user)};
       e->target_rank = rank;
       e->target_cd = cd;
       e->time = time;
-      e->subtime = detail::event_subtime<Event>()(e->user);
       
       e->sent_near_next = me->sent_near_head;
       me->sent_near_head = e;
     }
     else {
-      int origin = deva::rank_me();
-      unsigned far_id = detail::event::far_id_bump++;
+      std::int32_t origin = deva::rank_me();
+      std::uint64_t seq_id = detail::next_seq_id(this->cd);
+      std::uint32_t far_id = detail::far_id_bump++;
       
       gvt::send(rank, /*local=*/deva::cfalse3, time,
         [=](Event &user) {
@@ -372,7 +336,7 @@ namespace pdes {
           e->far_id = far_id;
           e->target_cd = cd;
           e->time = time;
-          e->subtime = detail::event_subtime<Event>()(e->user);
+          e->seq_id = seq_id;
           
           detail::arrive_far(origin, far_id, e);
         },
@@ -429,21 +393,7 @@ namespace pdes {
     e->target_rank = deva::rank_me();
     e->target_cd = cd_ix;
     e->time = time;
-    e->subtime = detail::event_subtime<Event>()(e->user);
     detail::root_event(cd_ix, e);
-  }
-  
-  //////////////////////////////////////////////////////////////////////////////
-  
-  inline void* event_view::type_id() const {
-    return (void*)e_->vtbl_on_target;
-  }
-  
-  template<typename Event>
-  Event* event_view::try_cast() const {
-    return e_->vtbl_on_target == &detail::event_impl<Event>::the_vtable
-      ? &static_cast<detail::event_impl<Event>*>(e_)->user
-      : nullptr;
   }
   
   //////////////////////////////////////////////////////////////////////////////
@@ -451,45 +401,45 @@ namespace pdes {
   namespace detail {
     // Wraps an event pointer and stores its time & subtime redundantly so consumers don't
     // have to reach in to the creator's cache line to see that info.
-    struct local_event {
+    struct stamped_event {
       event *e;
-      std::uint64_t time, subtime;
+      std::uint64_t time;
+      std::uint64_t seq_id;
       
-      static int& future_ix_of(local_event le) {
-        return le.e->future_ix;
+      static std::int32_t& future_ix_of(stamped_event se) {
+        return se.e->future_ix;
       }
-      static local_event identity(local_event e) {
+      static stamped_event identity(stamped_event e) {
         return e;
       }
-      
-      constexpr friend bool operator==(local_event a, local_event b) {
-        return (a.time == b.time) &
-               (a.subtime == b.subtime) &
-               (a.e == b.e);
+
+      constexpr bool definitely_ordered_wrt(stamped_event that) const {
+        return this->time != that.time || this->seq_id != that.seq_id;
       }
-      constexpr friend bool operator!=(local_event a, local_event b) {
+      
+      constexpr friend bool operator==(stamped_event a, stamped_event b) {
+        return (a.time == b.time) &
+               (a.seq_id == b.seq_id);
+      }
+      constexpr friend bool operator!=(stamped_event a, stamped_event b) {
         return !(a == b);
       }
-      constexpr friend bool operator<(local_event a, local_event b) {
-        bool ans = reinterpret_cast<std::uintptr_t>(a.e) < reinterpret_cast<std::uintptr_t>(b.e);
-        ans &= a.subtime == b.subtime;
-        ans |= a.subtime < b.subtime;
+      constexpr friend bool operator<(stamped_event a, stamped_event b) {
+        bool ans = a.seq_id < b.seq_id;
         ans &= a.time == b.time;
         ans |= a.time < b.time;
         return ans;
       }
-      constexpr friend bool operator>(local_event a, local_event b) {
+      constexpr friend bool operator>(stamped_event a, stamped_event b) {
         return b < a;
       }
-      constexpr friend bool operator<=(local_event a, local_event b) {
-        bool ans = reinterpret_cast<std::uintptr_t>(a.e) <= reinterpret_cast<std::uintptr_t>(b.e);
-        ans &= a.subtime == b.subtime;
-        ans |= a.subtime < b.subtime;
+      constexpr friend bool operator<=(stamped_event a, stamped_event b) {
+        bool ans = a.seq_id <= b.seq_id;
         ans &= a.time == b.time;
         ans |= a.time < b.time;
         return ans;
       }
-      constexpr friend bool operator>=(local_event a, local_event b) {
+      constexpr friend bool operator>=(stamped_event a, stamped_event b) {
         return b <= a;
       }
     };

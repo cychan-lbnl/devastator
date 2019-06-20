@@ -763,7 +763,7 @@ namespace upcxx {
       }
 
       static constexpr bool references_buffer = serialization_complete<Ti>::references_buffer
-                                             && serialization_fields_each<TupRefs, i+1, n>::references_buffer;
+                                             || serialization_fields_each<TupRefs, i+1, n>::references_buffer;
 
       template<typename Reader>
       static void deserialize(Reader &r, TupRefs refs) {

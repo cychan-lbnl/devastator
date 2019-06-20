@@ -1,5 +1,9 @@
 #include <devastator/reduce.hxx>
 
-thread_local int deva::rdxn_incoming = 0;
-thread_local void *deva::rdxn_acc;
-thread_local void *deva::rdxn_ans;
+__thread int deva::detail::reduce_incoming = 0;
+__thread void *deva::detail::reduce_acc;
+__thread void *deva::detail::reduce_ans;
+
+__thread int deva::detail::scan_reduce_received = 0;
+__thread void *deva::detail::scan_reduce_accs;
+__thread void *deva::detail::scan_reduce_ans;

@@ -89,7 +89,7 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
             mu.lock();
             std::cerr<<"[pid "<<getpid()<<" t "<<tme<<"] watch *((uintptr_t*)"<<&opnew::my_ts.bins[29].held_pools.top<<")&1\n";
             mu.unlock();
-            tmsg::barrier(false);
+            tmsg::barrier(/*quiesced=*/true);
             if(tme == 0)
               gasnett_freezeForDebuggerErr();
           }
@@ -97,11 +97,11 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
             gasnet_barrier_notify(0,0);
             gasnet_barrier_wait(0,0);
           }
-          tmsg::barrier(false);
+          tmsg::barrier(/*quiesced=*/true);
         }
       #endif
       
-      tmsg::barrier(/*do_progress=*/false);
+      tmsg::barrier(/*quiesced=*/true);
     }
 
     if(tme == 0) {
@@ -112,7 +112,7 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
       rank_me_ = process_rank_lo_ + tme-1;
       fn();
       
-      deva::barrier(/*do_progress=*/false);
+      deva::barrier(/*quiesced=*/true);
       
       if(tme == 1)
         leave_pump.store(true, std::memory_order_release);
@@ -166,78 +166,75 @@ namespace {
   }
 }
 
-void deva::progress() {
-  bool did_something = tmsg::progress_noyield();
-
+void deva::progress(bool spinning, bool deaf) {
+  bool did_something = tmsg::progress(deaf);
+  
   int wme = tmsg::thread_me() - 1;
   did_something |= remote_send_chan_w[wme].cleanup();
-  did_something |= remote_recv_chan_r[wme].receive(
-    [](tmsg::message *m) {
-      auto *ms = static_cast<remote_in_messages*>(m);
+  
+  if(!deaf) {
+    did_something |= remote_recv_chan_r[wme].receive(
+      [](tmsg::message *m) {
+        auto *ms = static_cast<remote_in_messages*>(m);
 
-      upcxx::detail::serialization_reader r{ms};
-      r.unplace(ms->header_size, 1);
-      
-      int n = ms->count;
-      while(n--) {
-        r.unplace(0, 8);
-        upcxx::detail::command::execute(r);
+        upcxx::detail::serialization_reader r{ms};
+        r.unplace(ms->header_size, 1);
+        
+        int n = ms->count;
+        while(n--) {
+          r.unplace(0, 8);
+          upcxx::detail::command::execute(r);
+        }
       }
-    }
-  );
-
+    );
+  }
+  
   #if GASNET_CONDUIT_SMP || GASNET_CONDUIT_UDP
-    static thread_local int consecutive_nothings = 0;
-
-    if(did_something)
-      consecutive_nothings = 0;
-    else if(++consecutive_nothings == 10) {
-      consecutive_nothings = 0;
+    static thread_local int nothings = 0;
+    
+    if(!spinning || did_something)
+      nothings = 0;
+    else if(++nothings == 10) {
+      nothings = 0;
       sched_yield();
     }
   #endif
 }
 
 namespace {
-  std::atomic<unsigned> barrier_done{0};
+  tmsg::barrier_state_global<tmsg::thread_n-1> wbar_g_;
+  thread_local tmsg::barrier_state_local<tmsg::thread_n-1> wbar_l_;
+  std::atomic<uint64_t> bigbar_epoch_{0};
   
-  void barrier_defer_try(unsigned done_value) {
+  void barrier_defer_try(uint64_t e) {
     tmsg::send(0, [=]() {
       if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS))
-        barrier_done.store(done_value, std::memory_order_release);
+        bigbar_epoch_.store(e, std::memory_order_release);
       else
-        barrier_defer_try(done_value);
+        barrier_defer_try(e);
     });
   }
 }
 
-void deva::barrier(bool do_progress) {
-  static std::atomic<int> c[2]{{0}, {0}};
-  static thread_local unsigned epoch = 0;
+void deva::barrier(bool quiesced) {
+  int wme = tmsg::thread_me() - 1;
   
-  int bump = epoch & 2 ? -1 : 1;
-  int end = epoch & 2 ? 0 : worker_n;
-  
-  if(c[epoch & 1].fetch_add(bump) + bump != end) {
-    while(c[epoch & 1].load(std::memory_order_acquire) != end)
-      deva::progress();
-  }
-  else {
-    unsigned epoch1 = epoch + 1;
+  wbar_l_.begin(wbar_g_, wme);
+
+  while(!wbar_l_.try_end(wbar_g_, wme))
+    deva::progress(/*spinning=*/true, /*deaf=*/quiesced);
+
+  uint64_t e = wbar_l_.epoch64();
+
+  if(wme == 0) {
     tmsg::send(0, [=]() {
       gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
-      barrier_defer_try(epoch1);
+      barrier_defer_try(e);
     });
   }
 
-  while(barrier_done.load(std::memory_order_acquire) != epoch+1) {
-    if(do_progress)
-      deva::progress();
-    else
-      sched_yield();
-  }
-
-  epoch += 1;
+  while(bigbar_epoch_.load(std::memory_order_relaxed) != e)
+    deva::progress(/*spinning=*/true, /*deaf=*/quiesced);
 }
 
 namespace {
@@ -393,7 +390,7 @@ namespace {
     while(!leave_pump.load(std::memory_order_relaxed)) {
       gasnet_AMPoll();
       
-      bool did_something = tmsg::progress_noyield();
+      bool did_something = tmsg::progress();
       
       did_something |= deva::remote_recv_chan_w.cleanup();
 
@@ -560,7 +557,7 @@ namespace {
                             bun->of[worker].offset8 = part->part_size8;
                             bun->of[worker].nonce = part->nonce;
                             bun->size8 -= part->part_size8;
-                            DEVA_ASSERT(part->part_size8 < rm->size8);
+                            DEVA_ASSERT(part->part_size8 < rm->size8, "part->part_size8="<<part->part_size8<<" rm->size8="<<rm->size8);
                             
                             std::memcpy(w.place(8*part->part_size8, 8),
                                         rm + 1,

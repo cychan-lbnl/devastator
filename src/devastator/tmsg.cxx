@@ -11,50 +11,80 @@ namespace opnew = deva::opnew;
 namespace tmsg = deva::tmsg;
 
 __thread int tmsg::thread_me_ = -1;
+__thread int tmsg::epoch_mod3_ = 0;
+__thread tmsg::barrier_state_local<tmsg::thread_n> tmsg::barrier_l_;
+__thread tmsg::barrier_state_local<tmsg::thread_n> tmsg::epoch_barrier_l_;
 
 tmsg::active_channels_r<tmsg::thread_n> tmsg::ams_r[thread_n];
 tmsg::active_channels_w<tmsg::thread_n> tmsg::ams_w[thread_n];
 
-bool tmsg::progress_noyield() {
+tmsg::epoch_transition* tmsg::epoch_transition::all_head = nullptr;
+
+namespace {
+  tmsg::barrier_state_global<tmsg::thread_n> barrier_g_;
+  tmsg::barrier_state_global<tmsg::thread_n> epoch_barrier_g_;
+}
+
+void tmsg::progress_epoch() {
+  if(epoch_barrier_l_.try_end(epoch_barrier_g_, thread_me_)) {
+    // previous epoch values
+    std::uint64_t e64 = epoch_barrier_l_.epoch64()-1; // incremented by successful advance()
+    int e3 = epoch_mod3_;
+    
+    epoch_mod3_ += 1;
+    if(epoch_mod3_ == 3)
+      epoch_mod3_ = 0;
+    
+    for(epoch_transition *et = epoch_transition::all_head; et != nullptr; et = et->all_next)
+      et->transition(e64, e3);
+
+    epoch_barrier_l_.begin(epoch_barrier_g_, thread_me_);
+  }
+}
+
+bool tmsg::progress(bool deaf) {
+  int const me = thread_me_;
+  
+  tmsg::progress_epoch();
+  
   opnew::progress();
 
-  bool did_something;
-  did_something =  ams_w[thread_me_].cleanup();
-  did_something |= ams_r[thread_me_].receive();
-
+  bool did_something = ams_w[me].cleanup();
+  if(!deaf)
+    did_something |= ams_r[me].receive();
+  
   return did_something;
 }
 
-void tmsg::progress() {
-  bool did_something = progress_noyield();
-  
-  static thread_local int consecutive_nothings = 0;
+void tmsg::barrier(bool quiesced) {
+  barrier_l_.begin(barrier_g_, thread_me_);
 
-  if(did_something)
-    consecutive_nothings = 0;
-  else if(++consecutive_nothings == 10) {
-    consecutive_nothings = 0;
-    sched_yield();
-  }
-}
-
-void tmsg::barrier(bool do_progress) {
-  static std::atomic<int> c[2]{{0}, {0}};
-  static thread_local unsigned epoch = 0;
-
-  int end = epoch & 2 ? 0 : tmsg::thread_n;
-  int bump = epoch & 2 ? -1 : 1;
-  
-  if((c[epoch & 1] += bump) != end) {
-    while(c[epoch & 1].load(std::memory_order_acquire) != end) {
-      if(do_progress)
-        tmsg::progress();
-      else
-        sched_yield();
+  int spun = 0;
+  while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
+    tmsg::progress(/*deaf=*/quiesced);
+    
+    if(++spun == 100) {
+      spun = 0;
+      sched_yield();
     }
   }
-  
-  epoch += 1;
+
+  if(quiesced) {
+    DEVA_ASSERT_ALWAYS(ams_r[thread_me_].quiet());
+    
+    barrier_l_.begin(barrier_g_, thread_me_);
+    
+    while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
+      tmsg::progress(/*deaf=*/quiesced);
+      
+      if(++spun == 100) {
+        spun = 0;
+        sched_yield();
+      }
+    }
+
+    DEVA_ASSERT_ALWAYS(ams_w[thread_me_].quiet());
+  }
 }
 
 namespace {
@@ -78,13 +108,15 @@ namespace {
       
       for(int r=0; r < tmsg::thread_n; r++)
         tmsg::ams_w[me].connect(r, tmsg::ams_r[r]);
+
+      tmsg::epoch_barrier_l_.begin(epoch_barrier_g_, me);
     }
 
     bool running;
     unsigned run_epoch_prev = 0;
     do {
       run_fn();
-      tmsg::barrier(/*do_progress=*/false);
+      tmsg::barrier(/*quiesced=*/true);
 
       if(me == 0)
         running = false;

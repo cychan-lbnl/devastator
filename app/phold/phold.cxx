@@ -108,7 +108,7 @@ struct event {
     }
     
     // return the unexecute lambda
-    return [=](event &me) {
+    return [=](pdes::event_context&, event &me) {
       //say() << "unexecute "<<me.actor;
       int a = me.actor % actor_per_rank;
       state_cur[a] = state_prev;
