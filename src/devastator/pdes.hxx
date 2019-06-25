@@ -11,13 +11,11 @@
 #include <iostream>
 #include <utility>
 
-#define DEVA_PDES_CD_SPECIALIZE 1
-
 namespace deva {
 namespace pdes {
   struct event_context {
     std::int32_t cd;
-    std::uint64_t time;
+    std::uint64_t time, subtime;
   };
   struct execute_context: event_context {
     template<typename Event>
@@ -60,14 +58,16 @@ namespace pdes {
   struct statistics {
     std::uint64_t executed_n = 0;
     std::uint64_t committed_n = 0;
+    bool deterministic = true;
     
     statistics& operator+=(statistics x) {
       this->executed_n += x.executed_n;
       this->committed_n += x.committed_n;
+      this->deterministic &= x.deterministic;
       return *this;
     }
   };
-  
+
   // The non-reduced statistics for this rank pertaining to the last invocation
   // of `drain()`.
   statistics local_stats();
@@ -108,7 +108,7 @@ namespace pdes {
     struct alignas(64) event_on_creator {
       event_vtable const *vtbl_on_creator;
       std::uint64_t time;
-      std::uint64_t seq_id;
+      std::uint64_t subtime;
       union {
         std::int32_t target_rank;
         std::int32_t far_origin;
@@ -145,22 +145,22 @@ namespace pdes {
       }
     };
 
+    #if DEBUG
+    extern __thread std::int64_t live_event_balance; // num(construct) - num(destructed)
+    #endif
+
     struct event: event_on_creator, event_on_target {
-      #if DEBUG
-        static thread_local std::int64_t live_n;
-      #endif
-      
       event(event_vtable const *vtbl) {
         this->vtbl_on_creator = vtbl;
         this->vtbl_on_target = vtbl;
         
         #if DEBUG
-          live_n++;
+          live_event_balance += 1;
         #endif
       }
       
       #if DEBUG
-        ~event() { live_n--; }
+        ~event() { live_event_balance -= 1; }
       #endif
 
       static std::uint64_t time_of(event *e) {
@@ -183,6 +183,21 @@ namespace pdes {
     template<typename E>
     struct event_has_commit<E, decltype(std::declval<E&>().commit(), void())>:
       std::true_type {
+    };
+
+    template<typename E, typename HasSubtime=void>
+    struct event_subtime {
+      std::uint64_t operator()(std::int32_t cd, E &user) const {
+        return detail::next_seq_id(cd);
+      }
+    };
+    template<typename E>
+    struct event_subtime<E,
+        /*HasSubtime*/decltype(std::declval<E>().subtime(), void())
+      > {
+      std::uint64_t operator()(std::int32_t cd, E &user) {
+        return user.subtime();
+      }
     };
     
     template<typename E>
@@ -312,21 +327,27 @@ namespace pdes {
       Event user
     ) {
     auto *me = static_cast<detail::execute_context_impl*>(this);
+    std::uint64_t subtime = detail::event_subtime<Event>()(this->cd, user);
     
-    DEVA_ASSERT(me->time < time, "Sent events must have a strictly greater timestamp.");
+    DEVA_ASSERT(
+      std::make_pair(me->time, me->subtime) <= std::make_pair(time, subtime),
+      "Sent events must have a greater-or-equal (time,subtime) combo. If equal,"
+      "then determinacy of committed events is forfeit. In the case of "
+      "non-user-provided subtime, this restriction implies that time components "
+      "must be strictly increasing."
+    );
     
     if(deva::rank_is_local(rank)) {
       auto *e = new detail::event_impl<Event>{std::move(user)};
       e->target_rank = rank;
       e->target_cd = cd;
       e->time = time;
-      
+      e->subtime = subtime;
       e->sent_near_next = me->sent_near_head;
       me->sent_near_head = e;
     }
     else {
       std::int32_t origin = deva::rank_me();
-      std::uint64_t seq_id = detail::next_seq_id(this->cd);
       std::uint32_t far_id = detail::far_id_bump++;
       
       gvt::send(rank, /*local=*/deva::cfalse3, time,
@@ -336,7 +357,7 @@ namespace pdes {
           e->far_id = far_id;
           e->target_cd = cd;
           e->time = time;
-          e->seq_id = seq_id;
+          e->subtime = subtime;
           
           detail::arrive_far(origin, far_id, e);
         },
@@ -393,6 +414,7 @@ namespace pdes {
     e->target_rank = deva::rank_me();
     e->target_cd = cd_ix;
     e->time = time;
+    e->subtime = detail::event_subtime<Event>()(cd_ix, e->user);
     detail::root_event(cd_ix, e);
   }
   
@@ -404,7 +426,7 @@ namespace pdes {
     struct stamped_event {
       event *e;
       std::uint64_t time;
-      std::uint64_t seq_id;
+      std::uint64_t subtime;
       
       static std::int32_t& future_ix_of(stamped_event se) {
         return se.e->future_ix;
@@ -414,18 +436,18 @@ namespace pdes {
       }
 
       constexpr bool definitely_ordered_wrt(stamped_event that) const {
-        return this->time != that.time || this->seq_id != that.seq_id;
+        return this->time != that.time || this->subtime != that.subtime;
       }
       
       constexpr friend bool operator==(stamped_event a, stamped_event b) {
         return (a.time == b.time) &
-               (a.seq_id == b.seq_id);
+               (a.subtime == b.subtime);
       }
       constexpr friend bool operator!=(stamped_event a, stamped_event b) {
         return !(a == b);
       }
       constexpr friend bool operator<(stamped_event a, stamped_event b) {
-        bool ans = a.seq_id < b.seq_id;
+        bool ans = a.subtime < b.subtime;
         ans &= a.time == b.time;
         ans |= a.time < b.time;
         return ans;
@@ -434,7 +456,7 @@ namespace pdes {
         return b < a;
       }
       constexpr friend bool operator<=(stamped_event a, stamped_event b) {
-        bool ans = a.seq_id <= b.seq_id;
+        bool ans = a.subtime <= b.subtime;
         ans &= a.time == b.time;
         ans |= a.time < b.time;
         return ans;

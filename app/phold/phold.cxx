@@ -41,7 +41,7 @@ constexpr int actor_n = 1000; // 1000
 constexpr int ray_n = 2*actor_n; // 2*actor_n
 constexpr double percent_remote = .5; // .5
 constexpr double lambda = 100; //100
-constexpr uint64_t end_time = uint64_t(2000*lambda);
+constexpr uint64_t end_time = uint64_t(100*lambda);
 
 constexpr int actor_per_rank = (actor_n + rank_n-1)/rank_n;
 
@@ -70,14 +70,35 @@ struct event {
     ok &= (devil[0]==6 && devil[1]==6 && devil[2]==6);
     if(!ok) deva::assert_failed(file, line);
   }
+
+  // no subtime() means use magic determinacy bits
+  //uint64_t subtime() const { return ray; }
+  //uint64_t subtime() const { return 0; } // if non-determinism detected will fail checksum test
+
+  struct reverse {
+    int a;
+    rng_state state_prev;
+    uint64_t check_prev;
+    
+    void unexecute(pdes::event_context&, event &me) {
+      //say() << "unexecute "<<me.actor;
+      int a = me.actor % actor_per_rank;
+      state_cur[a] = state_prev;
+      check[a] = check_prev;  
+    }
+
+    void commit(pdes::event_context&cxt, event&me) {
+      // nop
+    }
+  };
   
-  int subtime() const { return ray; }
-  
-  auto execute(pdes::execute_context &cxt) {
+  reverse execute(pdes::execute_context &cxt) {
     //deva::say() << "execute "<<ray;
     sane(__FILE__,__LINE__);
     
     int a = this->actor % actor_per_rank;
+
+    //deva::say()<<"ray="<<ray<<" time="<<cxt.time;
     
     rng_state &rng = state_cur[a];
     rng_state state_prev = rng;
@@ -90,8 +111,10 @@ struct event {
     #if 0
       uint64_t dt = lambda;
     #else
-      uint64_t dt = 1 + (uint64_t)(-lambda * std::log(1.0 - double(rng())/double(-1ull)));
+      uint64_t dt = (uint64_t)(-lambda * std::log(1.0 - double(rng())/double(-1ull)));
     #endif
+    dt += 1;
+    
     int actor_to;
     if(rng() < uint64_t(percent_remote*double(-1ull)))
       actor_to = int(rng() % actor_n);
@@ -108,12 +131,7 @@ struct event {
     }
     
     // return the unexecute lambda
-    return [=](pdes::event_context&, event &me) {
-      //say() << "unexecute "<<me.actor;
-      int a = me.actor % actor_per_rank;
-      state_cur[a] = state_prev;
-      check[a] = check_prev;  
-    };
+    return reverse{a,state_prev,check_prev};
   }
 };
 
@@ -130,7 +148,9 @@ uint64_t checksum() {
 }
 
 int main() {
-  auto doit = []() {
+  int iter = 0;
+  
+  auto doit = [&]() {
     pdes::init(actor_per_rank);
     
     int actor_lb = rank_me()*actor_per_rank;
@@ -153,29 +173,37 @@ int main() {
       }
     }
 
-    #if 1
-    uint64_t t0 = 0;
-    uint64_t dt = end_time/3;
-    while(true) {
-      uint64_t t1 = t0 + dt;
-      deva::say()<<"drain("<<t1<<")";
-      pdes::drain(/*end=*/t1, /*rewindable=*/true);
-      deva::say()<<"rewind(true)";
-      pdes::rewind(true);
-      deva::say()<<"drain("<<t1<<")";
-      if(1 == -pdes::drain(t1, true)) {
+    if(iter % 2 == 0) {
+      uint64_t t0 = 0;
+      uint64_t dt = end_time/3;
+      while(true) {
+        uint64_t t1 = t0 + dt;
+        //deva::say()<<"drain("<<t1<<")";
+        pdes::drain(/*end=*/t1, /*rewindable=*/true);
+        //deva::say()<<"rewind(true)";
+        pdes::rewind(true);
+        //deva::say()<<"drain("<<t1<<")";
+        if(1 == -pdes::drain(t1, true)) {
+          pdes::rewind(false);
+          break;
+        }
+        //deva::say()<<"rewind(false)";
         pdes::rewind(false);
-        break;
+        t0 = t1;
       }
-      deva::say()<<"rewind(false)";
-      pdes::rewind(false);
-      t0 = t1;
     }
-    #else
-    pdes::drain();
-    #endif
+    else
+      pdes::drain();
 
     pdes::finalize();
+
+    pdes::statistics stats = deva::reduce_sum(pdes::local_stats());
+    if(deva::rank_me()==0) {
+      std::cout<<"rewind enabled = "<<(iter%2 == 0)<<'\n'
+               <<"  events = "<<stats.executed_n<<'\n'
+               <<"  commits = "<<stats.committed_n<<'\n'
+               <<"  deterministic = "<<stats.deterministic<<'\n';
+    }
     
     uint64_t chk = checksum();
     thread_local uint64_t chkprev = 666;
@@ -183,12 +211,12 @@ int main() {
     DEVA_ASSERT_ALWAYS(chkprev == 666 || chk == chkprev);
     chkprev = chk;
     if(deva::rank_me() == 0)
-      std::cout<<"checksum = "<<chk<<std::endl;
+      std::cout<<"  checksum = "<<chk<<std::endl;
   };
 
-  for(int i=0; i < 3; i++)
+  for(iter=0; iter < 4; iter++)
     deva::run(doit);
-
+  
   if(deva::process_me() == 0)
     std::cout<<"Looks good!"<<std::endl;
   return 0;
