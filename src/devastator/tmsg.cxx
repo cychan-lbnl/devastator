@@ -70,21 +70,20 @@ void tmsg::barrier(bool quiesced) {
   }
 
   if(quiesced) {
-    DEVA_ASSERT_ALWAYS(ams_r[thread_me_].quiet());
+    DEVA_ASSERT_ALWAYS(ams_r[thread_me_].quiet(), "You haven't properly quiesced communication, i.e. there were sends in flight!");
     
     barrier_l_.begin(barrier_g_, thread_me_);
-    
-    while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
+
+    do {
       tmsg::progress(/*deaf=*/quiesced);
       
       if(++spun == 100) {
         spun = 0;
         sched_yield();
       }
-    }
-
-    #warning "John's self-note: This assert appears to fail on Max's machine. Understand why!"
-    //DEVA_ASSERT_ALWAYS(ams_w[thread_me_].quiet());
+    } while(!barrier_l_.try_end(barrier_g_, thread_me_));
+    
+    DEVA_ASSERT_ALWAYS(ams_w[thread_me_].quiet(), "You haven't properly quiesced communication, i.e. there were sends in flight!");
   }
 }
 

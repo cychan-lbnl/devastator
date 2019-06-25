@@ -68,8 +68,8 @@ namespace pdes {
     }
   };
 
-  // The non-reduced statistics for this rank pertaining to the last invocation
-  // of `drain()`.
+  // The non-reduced statistics for this rank pertaining to all invocations of
+  // `drain()` since the last `init()`.
   statistics local_stats();
   
   // Use and reduce `local_stats` yourself please.
