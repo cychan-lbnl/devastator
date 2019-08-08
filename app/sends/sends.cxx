@@ -41,6 +41,7 @@ struct message {
   vector<char> hunk;
 
   void operator()() {
+    //deva::say()<<"OK";
     if(::epoch != this->epoch) {
       deva::say()<<this->epoch<<" landed on "<<::epoch;
       DEVA_ASSERT_ALWAYS(0);

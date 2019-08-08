@@ -523,7 +523,7 @@ namespace tmsg {
   bool progress(bool deaf=false);
   void progress_epoch();
   
-  void barrier(bool quiesced=false);
+  void barrier(bool deaf=false);
 
   void run(upcxx::detail::function_ref<void()> fn);
 

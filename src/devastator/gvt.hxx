@@ -26,6 +26,9 @@ namespace deva {
 
     template<typename Fn, typename ...Arg>
     void send(int rank, std::uint64_t t, Fn fn, Arg ...arg);
+
+    template<typename ProcFn>
+    void bcast_procs(std::uint64_t t_lb, std::int32_t credit_n, ProcFn const &proc_fn);
     
     void advance();
 
@@ -77,7 +80,7 @@ namespace deva {
   }
 
   template<typename Fn, typename ...Arg>
-  void send(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
+  void gvt::send(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
     gvt::template send<maybe3>(rank, t, std::move(fn), std::move(arg)...);
   }
   
@@ -100,6 +103,35 @@ namespace deva {
         fn(arg...);
       },
       std::move(fn), std::move(arg)...
+    );
+  }
+
+  template<typename ProcFn>
+  void gvt::bcast_procs(std::uint64_t t_lb, std::int32_t credits, ProcFn const &proc_fn) {
+    DEVA_ASSERT(epoch_gvt_[0] <= t);
+    
+    unsigned e = epoch_ + 1;
+    epoch_lsend_[1] += credits;
+    epoch_lvt_[1] = std::min(epoch_lvt_[1], t_lb);
+
+    deva::bcast_procs(
+      deva::bind(
+        [=](ProcFn const &proc_fn1) {
+          proc_fn1(/*run_at_rank*/[&](int rank, auto fn) {
+            deva::send_local(rank,
+              [=, fn1(std::move(fn))]() {
+                int i = e >= epoch_ ? int(e - epoch_) : -int(epoch_ - e);
+                DEVA_ASSERT(0 <= i && i < 3);
+                DEVA_ASSERT(epoch_gvt_[0] <= t_lb);
+                
+                std::int32_t credits = fn1();
+                epoch_lrecv_[i] += credits;
+              }
+            );
+          });
+        },
+        proc_fn
+      )
     );
   }
 } // namespace deva

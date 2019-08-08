@@ -65,12 +65,12 @@ namespace upcxx {
   template<typename Fn, typename ...B>
   struct serialization<bound_function<Fn,B...>> {
     static constexpr bool is_definitely_serializable =
-      serialization_complete<Fn>::is_definitely_serializable &&
-      serialization_complete<std::tuple<B...>>::is_definitely_serializable;
+      serialization_traits<Fn>::is_definitely_serializable &&
+      serialization_traits<std::tuple<B...>>::is_definitely_serializable;
 
     static constexpr bool references_buffer = 
-      serialization_complete<Fn>::references_buffer ||
-      serialization_complete<std::tuple<B...>>::references_buffer;
+      serialization_traits<Fn>::references_buffer ||
+      serialization_traits<std::tuple<B...>>::references_buffer;
 
     template<typename Ub>
     static auto ubound(Ub ub, const bound_function<Fn,B...> &fn)
@@ -131,12 +131,20 @@ namespace upcxx {
     >;
   
   template<typename Fn, typename ...B>
-  auto bind(Fn &&fn, B &&...b)
-    -> bound_function_of<Fn,B...> {
-    return bound_function_of<Fn,B...>(
+  Fn&& bind(Fn &&fn) {
+    return std::forward<Fn>(fn);
+  }
+
+  template<typename Fn, typename B0, typename ...Bs>
+  auto bind(Fn &&fn, B0 &&b0, Bs &&...bs)
+    -> bound_function_of<Fn&&,B0&&,Bs&&...> {
+    return bound_function_of<Fn&&,B0&&,Bs&&...>(
       detail::globalize_fnptr(std::forward<Fn>(fn)),
-      std::tuple<typename std::decay<B>::type...>(
-        std::forward<B>(b)...
+      std::tuple<
+          typename std::decay<B0>::type,
+          typename std::decay<Bs>::type...
+        >(
+        std::forward<B0>(b0), std::forward<Bs>(bs)...
       )
     );
   }

@@ -29,9 +29,9 @@ namespace deva {
     return true;
   }
   
-  constexpr int process_me() {
-    return 0;
-  }
+  constexpr int process_me() { return 0; }
+  constexpr int process_rank_lo(int proc = process_me()) { return 0; }
+  constexpr int process_rank_hi(int proc = process_me()) { return rank_n; }
   
   void progress(bool spinning=false, bool deaf=false);
 
@@ -105,6 +105,11 @@ namespace deva {
   template<typename Fn, typename ...Arg>
   void send_remote(int rank, Fn fn, Arg ...arg) {
     DEVA_ASSERT(0);
+  }
+
+  template<typename ProcFn>
+  void bcast_procs(ProcFn const &proc_fn) {
+    proc_fn();
   }
 }
 

@@ -56,34 +56,17 @@ bool tmsg::progress(bool deaf) {
   return did_something;
 }
 
-void tmsg::barrier(bool quiesced) {
+void tmsg::barrier(bool deaf) {
   barrier_l_.begin(barrier_g_, thread_me_);
 
   int spun = 0;
   while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
-    tmsg::progress(/*deaf=*/quiesced);
+    tmsg::progress(deaf);
     
     if(++spun == 100) {
       spun = 0;
       sched_yield();
     }
-  }
-
-  if(quiesced) {
-    DEVA_ASSERT_ALWAYS(ams_r[thread_me_].quiet(), "You haven't properly quiesced communication, i.e. there were sends in flight!");
-    
-    barrier_l_.begin(barrier_g_, thread_me_);
-
-    do {
-      tmsg::progress(/*deaf=*/quiesced);
-      
-      if(++spun == 100) {
-        spun = 0;
-        sched_yield();
-      }
-    } while(!barrier_l_.try_end(barrier_g_, thread_me_));
-    
-    DEVA_ASSERT_ALWAYS(ams_w[thread_me_].quiet(), "You haven't properly quiesced communication, i.e. there were sends in flight!");
   }
 }
 
@@ -116,7 +99,7 @@ namespace {
     unsigned run_epoch_prev = 0;
     do {
       run_fn();
-      tmsg::barrier(/*quiesced=*/true);
+      tmsg::barrier(/*deaf=*/true);
 
       if(me == 0)
         running = false;

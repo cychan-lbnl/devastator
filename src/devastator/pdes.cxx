@@ -22,6 +22,8 @@ using namespace std;
 std::ostream* pdes::chitter_io = &std::cout;
 int pdes::chitter_secs = 3;
 
+constexpr detail::sent_far_record::vtable detail::sent_far_one::the_vtbl;
+
 __thread uint32_t pdes::detail::far_id_bump = 0;
 
 #if DEBUG
@@ -89,7 +91,7 @@ namespace {
     }
 
     uint64_t next_seq_id();
-    void undo_next_seq_id();
+    void undo_next_seq_id(int n=1);
   };
 
   template<int32_t cd_state::*ix>
@@ -144,7 +146,6 @@ namespace {
   
   thread_local sim_state sim_me;
   
-  void arrive_far_anti(int32_t origin_rank, int32_t origin_cd, uint32_t far_id);
   template<int charge>
   void arrive_near(int32_t cd_ix, stamped_event e);
   
@@ -158,8 +159,8 @@ namespace {
     return id;
   }
   
-  inline void cd_state::undo_next_seq_id() {
-    seq_id -= sim_me.seq_id_delta;
+  inline void cd_state::undo_next_seq_id(int n) {
+    seq_id -= n*sim_me.seq_id_delta;
   }
   
   void global_status_state::reset() {
@@ -286,6 +287,16 @@ namespace {
     /*unexecute*/nullptr,
     /*commit*/nullptr
   };
+
+  event_vtable bcast_vtable {
+    /*destruct_and_delete*/nullptr,
+    /*execute*/nullptr,
+    /*unexecute*/nullptr,
+    /*commit*/nullptr
+  };
+
+  struct bcast_list: event_on_creator {
+  };
 }
 
 void detail::register_state(int cd_ix, fridge *fr) {
@@ -311,7 +322,9 @@ std::uint64_t detail::next_seq_id(std::int32_t cd) {
   return sim_me.cds[cd].next_seq_id();
 }
 
-void detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
+bool detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
+  bool not_annihilated;
+  
   sim_me.from_far.visit(
     {origin, far_id},
     [&](event_on_creator *o)->event_on_creator* {
@@ -321,6 +334,7 @@ void detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
         e->created_here = true;
         e->rewind_root = false;
         arrive_near<+1>(e->target_cd, stamped_event{e, e->time, e->subtime});
+        not_annihilated = true;
         return e;
       }
       else {
@@ -328,19 +342,72 @@ void detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
         DEVA_ASSERT(o->vtbl_on_creator == &anti_vtable);
         delete o;
         e->vtbl_on_creator->destruct_and_delete(e);
+        not_annihilated = false;
         return nullptr;
+      }
+    }
+  );
+
+  return not_annihilated;
+}
+
+void detail::arrive_far_anti(int32_t origin, uint32_t far_id) {
+  sim_me.from_far.visit(
+    {origin, far_id},
+    [&](event_on_creator *o)->event_on_creator* {
+      if(o != nullptr) {
+        //deva::say()<<"far anni+- id="<<far_id<<" o="<<o;
+        DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
+        // late anninilation
+        auto *e = static_cast<event*>(o);
+        stamped_event se{e, e->time, e->subtime};
+        cd_state *cd = &sim_me.cds[e->target_cd];
+        if(e->future_not_past) {
+          cd->future_events.erase(se);
+          sim_me.cds_by_now.increased({cd, cd->now()});
+          e->vtbl_on_creator->destruct_and_delete(e);
+        }
+        else
+          remove_past(cd, se);
+        return nullptr;
+      }
+      else {
+        // insert anti-event
+        o = new event_on_creator;
+        o->vtbl_on_creator = &anti_vtable;
+        o->far_origin = origin;
+        o->far_id = far_id;
+        return o;
       }
     }
   );
 }
 
-namespace {
-  void arrive_far_anti(int32_t origin, uint32_t far_id) {
+void detail::arrive_far_anti_bcast(
+    std::int32_t origin,
+    std::int32_t local_event_n,
+    std::uint32_t far_id0
+  ) {
+  std::uint32_t id = far_id0;
+  
+  for(int i=0; i < local_event_n; i++, id++) {
+    bool annihilation = false;
+    
     sim_me.from_far.visit(
-      {origin, far_id},
+      {origin, id},
       [&](event_on_creator *o)->event_on_creator* {
-        if(o != nullptr) {
-          //deva::say()<<"far anni+- id="<<far_id<<" o="<<o;
+        if(o == nullptr) {
+          DEVA_ASSERT(i == 0);
+          // no events found, thus annihilation raced ahead of actual event
+          // so we insert an anti-event
+          annihilation = true;
+          o = new event_on_creator;
+          o->vtbl_on_creator = &anti_vtable;
+          o->far_origin = origin;
+          o->far_id = id;
+          return o;
+        }
+        else {
           DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
           // late anninilation
           auto *e = static_cast<event*>(o);
@@ -355,18 +422,14 @@ namespace {
             remove_past(cd, se);
           return nullptr;
         }
-        else {
-          // insert anti-event
-          o = new event_on_creator;
-          o->vtbl_on_creator = &anti_vtable;
-          o->far_origin = origin;
-          o->far_id = far_id;
-          return o;
-        }
       }
     );
-  }
 
+    if(annihilation) break;
+  }
+}
+
+namespace {
   template<int charge>
   void arrive_near(int32_t cd_ix, stamped_event se) {
     sim_state &sim_me = ::sim_me;
@@ -453,18 +516,22 @@ namespace {
         stamped_event se = cd->past_events.at_backwards(i++);
         event *e = se.e;
         
-        // walk far-sent events
-        while(!e->sent_far.empty()) {
-          cd->undo_next_seq_id();
+        { // walk far-sent events
+          sent_far_record *far = e->sent_far_head;
+          e->sent_far_head = nullptr;
           
-          far_event_id far = e->sent_far.front();
-          e->sent_far.pop_front();
-
-          uint32_t far_id = far.id;
-          gvt::send(
-            far.rank, /*local=*/deva::cfalse3, far.time,
-            [=]() { arrive_far_anti(rank_me, far_id); }
-          );
+          while(far != nullptr) {
+            sent_far_record *far_next = far->next;
+            int unseq;
+            
+            if(far->vtbl == &sent_far_one::the_vtbl)
+              unseq = sent_far_one::the_send_anti_and_delete(far);
+            else
+              unseq = far->vtbl->send_anti_and_delete(far);
+            
+            cd->undo_next_seq_id(unseq);
+            far = far_next;
+          }
         }
 
         // walk near-sent events
@@ -780,12 +847,12 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
           cxt.cd = origin_cd;
           cxt.time = se.time;
           cxt.subtime = se.subtime;
-          cxt.sent_far = &se.e->sent_far;
           
           se.e->vtbl_on_target->execute(se.e, cxt);
           
           se.e->sent_near_head = cxt.sent_near_head;
           sent_near = cxt.sent_near_head;
+          se.e->sent_far_head = cxt.sent_far_head;
           
           executed_n += 1;
           sim_me.stats.executed_n += 1;
@@ -988,9 +1055,10 @@ void pdes::rewind(bool do_rewind) {
     // move the rewind roots into future
     for(event *e: sim_me.rewind_roots) {
       cd_state *cd = &sim_me.cds[e->target_cd];
+      if(!e->future_not_past)
+        sent_far_record::delete_list(e->sent_far_head);
       e->rewind_root = false;
       e->future_not_past = true;
-      e->sent_far.clear();
       cd->future_events.insert({e, e->time, e->subtime});
     }
     for(event *e: sim_me.rewind_created_near)

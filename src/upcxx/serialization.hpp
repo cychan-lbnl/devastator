@@ -3,32 +3,40 @@
 
 #include <upcxx/utility.hpp>
 
-#include <array>
 #include <algorithm>
 #include <cstdint>
-#include <deque>
-#include <forward_list>
-#include <list>
-#include <map>
-#include <set>
+
 #include <tuple>
 #include <type_traits>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
-#include <vector>
+
+#ifndef UPCXX_CREDUCE_SLIM
+  #include <array>
+  #include <deque>
+  #include <forward_list>
+  #include <list>
+  #include <map>
+  #include <set>
+  #include <unordered_map>
+  #include <unordered_set>
+  #include <vector>
+#endif
+
+#define UPCXX_RETURN_DECLTYPE(...) -> decltype(__VA_ARGS__)
 
 namespace upcxx {
+  constexpr std::uintptr_t serialization_align_max = 64;
+
   template<typename T>
   struct serialization;
 
   template<typename T>
-  struct serialization_complete;
+  struct serialization_traits;
 
   namespace detail {
     template<typename T, typename=std::false_type>
     struct serialization_is_specialized;
-  };
+  }
   
   template<typename T>
   struct is_definitely_trivially_serializable {
@@ -37,22 +45,28 @@ namespace upcxx {
 
   template<typename T>
   struct is_definitely_serializable {
-    static constexpr bool value = serialization_complete<T>::is_definitely_serializable;
+    static constexpr bool value = serialization_traits<T>::is_definitely_serializable;
   };
 
   template<typename T>
   struct deserialized_type_of {
-    using type = typename serialization_complete<T>::deserialized_type;
+    using type = typename serialization_traits<T>::deserialized_type;
   };
   template<typename T>
-  using deserialized_type_of_t = typename serialization_complete<T>::deserialized_type;
+  using deserialized_type_of_t = typename serialization_traits<T>::deserialized_type;
 
   namespace detail {
     template<typename T>
     struct serialization_references_buffer_not {
-      static constexpr bool value = !serialization_complete<T>::references_buffer;
+      static constexpr bool value = !serialization_traits<T>::references_buffer;
     };
   }
+  
+  template<std::size_t s_size=std::size_t(-2),
+           std::size_t s_align=std::size_t(-2)>
+  struct storage_size;
+
+  using invalid_storage_size_t = storage_size<std::size_t(-1), std::size_t(-1)>;
   
   namespace detail {
     template<std::size_t s_size, std::size_t s_align>
@@ -65,6 +79,8 @@ namespace upcxx {
       static constexpr std::size_t static_align = -1;
       static constexpr std::size_t static_align_ub = -1;
       static constexpr std::size_t size = -1, align = -1;
+
+      using static_otherwise_invalid_t = invalid_storage_size_t;
       
       constexpr storage_size_base(std::size_t dyn_size, std::size_t dyn_align) {}
 
@@ -79,6 +95,8 @@ namespace upcxx {
       static constexpr std::size_t static_align = -2;
       static constexpr std::size_t static_align_ub = s_align_ub;
       
+      using static_otherwise_invalid_t = invalid_storage_size_t;
+
       std::size_t size, align;
 
       constexpr storage_size_base(std::size_t dyn_size, std::size_t dyn_align):
@@ -95,19 +113,19 @@ namespace upcxx {
     
     template<std::size_t s_size, std::size_t s_align>
     struct storage_size_base {
+      static_assert(s_align < std::size_t(-2), "Internal error: storage_size<size,align>: size is static but align is not.");
+      
       static constexpr bool is_valid = true, is_static = true;
       static constexpr std::size_t static_size = s_size;
       static constexpr std::size_t static_align = s_align;
       static constexpr std::size_t static_align_ub = s_align;
       static constexpr std::size_t size = s_size, align = s_align;
       
+      using static_otherwise_invalid_t = storage_size<s_size,s_align>;
+
       constexpr storage_size_base(std::size_t dyn_size, std::size_t dyn_align) {}
     };
   }
-
-  template<std::size_t s_size=std::size_t(-2),
-           std::size_t s_align=std::size_t(-2)>
-  struct storage_size;
 
   template<typename T>
   constexpr storage_size<sizeof(T), alignof(T)> storage_size_of();
@@ -126,100 +144,102 @@ namespace upcxx {
     }
 
     constexpr std::size_t size_aligned(std::size_t min_align=1) const {
-      std::size_t a = min_align > this->align ? min_align : this->align;
-      return (this->size + a-1) & -a;
+      #define UPCXX_a (min_align > this->align ? min_align : this->align)
+      return (this->size + UPCXX_a-1) & -UPCXX_a;
+      #undef UPCXX_a
     }
 
-    constexpr storage_size<
-        s_size >= std::size_t(-2) || s_align >= std::size_t(-2) ? std::size_t(-1) : s_size,
-        s_size >= std::size_t(-2) || s_align >= std::size_t(-2) ? std::size_t(-1) : s_align
-      >
+    constexpr typename detail::storage_size_base<s_size, s_align>::static_otherwise_invalid_t
     static_otherwise_invalid() const {
       return {s_size, s_align};
     }
 
-  private:
+  public:
     template<std::size_t s_size1, std::size_t s_align1>
-    constexpr auto cat_help(std::size_t size1, std::size_t align1) const
-      -> storage_size<
-        /*s_size = */(
-          s_size >= std::size_t(-2) || s_size1 >= std::size_t(-2)
-            ? /*max*/(s_size > s_size1 ? s_size : s_size1)
-            : ((s_size + s_align1-1) & -s_align1) + s_size1
-        ),
-        /*s_align = max*/(
-          s_align > s_align1 ? s_align : s_align1
-        )
-      > {
+    using cat_return_t = storage_size<
+      /*s_size = */(
+        s_size >= std::size_t(-2) || s_size1 >= std::size_t(-2)
+          ? /*max*/(s_size > s_size1 ? s_size : s_size1)
+          : ((s_size + s_align1-1) & -s_align1) + s_size1
+      ),
+      /*s_align = max*/(
+        s_align > s_align1 ? s_align : s_align1
+      )
+    >;
+
+    template<std::size_t s_size1, std::size_t s_align1>
+    constexpr cat_return_t<s_size1, s_align1> cat_help(std::size_t size1, std::size_t align1) const {
       return {
         ((this->size + align1-1) & -align1) + size1,
         this->align > align1 ? this->align : align1
       };
     }
 
-  public:
     template<std::size_t s_size1, std::size_t s_align1>
-    constexpr auto cat(storage_size<s_size1, s_align1> that) const
-      -> decltype(this->template cat_help<s_size1, s_align1>(that.size, that.align)) {
+    constexpr cat_return_t<s_size1, s_align1> cat(storage_size<s_size1, s_align1> that) const {
       return this->template cat_help<s_size1, s_align1>(that.size, that.align);
     }
 
     template<std::size_t s_size1, std::size_t s_align1>
-    constexpr auto cat()
-      -> decltype(this->template cat_help<s_size1, s_align1>(s_size1, s_align1)) {
+    constexpr cat_return_t<s_size1, s_align1> cat() const {
       return this->template cat_help<s_size1, s_align1>(s_size1, s_align1);
     }
-    constexpr auto cat(std::size_t size1, std::size_t align1)
-      -> decltype(this->template cat_help<std::size_t(-2),std::size_t(-2)>(size1, align1)) {
-      return this->template cat_help<std::size_t(-2),std::size_t(-2)>(size1, align1);
+    
+    constexpr cat_return_t<std::size_t(-2), std::size_t(-2)> cat(std::size_t size1, std::size_t align1) const {
+      return this->template cat_help<std::size_t(-2), std::size_t(-2)>(size1, align1);
     }
     
     template<typename T>
-    constexpr auto cat_size_of() const
-      -> decltype(this->cat(storage_size_of<T>())) {
+    constexpr cat_return_t<sizeof(T), alignof(T)> cat_size_of() const {
       return this->cat(storage_size_of<T>());
     }
 
     template<typename T>
     constexpr auto cat_ubound_of(T const &x) const
-      -> decltype(serialization_complete<T>::ubound(*this, x)) {
-      return serialization_complete<T>::ubound(*this, x);
+      UPCXX_RETURN_DECLTYPE(
+        serialization_traits<T>::ubound(*this, x)
+      ) {
+      return serialization_traits<T>::ubound(*this, x);
     }
 
-    constexpr auto array(std::size_t n) const
+    constexpr auto arrayed(std::size_t n) const
       -> storage_size<
         -s_size == 1 ? std::size_t(-1) : std::size_t(-2),
         -s_size == 1 ? std::size_t(-1) : s_align
       > {
-      return {n*this->size, n == 0 ? 1 : this->align};
+      return {
+        n==1 ? this->size : n*this->size_aligned(),
+        n==0 ? 1 : this->align
+      };
     }
 
     template<std::size_t n>
-    constexpr auto array() const
+    constexpr auto arrayed() const
       -> storage_size<
         // size_ub
         n==0 ? 0 :
         -s_size==1 ? std::size_t(-1) :
         -s_size==2 ? std::size_t(-2) :
-        n*s_size,
+        (n==1 ? s_size : n*((s_size + s_align-1) & -s_align)),
 
         // align_ub
         n==0 ? 1 :
         -s_align==1 ? std::size_t(-1) :
         s_align
       > {
-      return {n*this->size, n==0 ? 1 : this->align};
+      return {
+        n==1 ? this->size : n*this->size_aligned(),
+        n==0 ? 1 : this->align
+      };
     }
   };
-
+  
   template<typename T>
   constexpr storage_size<sizeof(T), alignof(T)> storage_size_of() {
     return {sizeof(T), alignof(T)};
   }
 
   constexpr storage_size<0,1> empty_storage_size(0,1);
-
-  using invalid_storage_size_t = storage_size<std::size_t(-1), std::size_t(-1)>;
   constexpr invalid_storage_size_t invalid_storage_size(-1,-1);
 
   namespace detail {
@@ -230,13 +250,16 @@ namespace upcxx {
         std::is_same<Iter, T*>::value ||
         std::is_same<Iter, T const*>::value ||
 
+        #ifndef UPCXX_CREDUCE_SLIM
         std::is_same<Iter, typename std::array<T,1>::iterator>::value ||
         std::is_same<Iter, typename std::array<T,1>::const_iterator>::value ||
-
         (!std::is_same<T,bool>::value && (
           std::is_same<Iter, typename std::vector<T>::iterator>::value ||
           std::is_same<Iter, typename std::vector<T>::const_iterator>::value
         ))
+        #else
+        false
+        #endif
       > {
     };
     
@@ -269,6 +292,7 @@ namespace upcxx {
       }
       
       void* place(std::size_t obj_size, std::size_t obj_align) {
+        //UPCXX_ASSERT(detail::is_aligned(buf_, obj_align));
         size_ = (size_ + obj_align-1) & -obj_align;
         void *spot = reinterpret_cast<void*>(buf_ + size_);
         size_ += obj_size;
@@ -292,7 +316,7 @@ namespace upcxx {
 
       template<typename T>
       void push(T const &x) {
-        upcxx::template serialization_complete<T>::serialize(*this, x);
+        upcxx::template serialization_traits<T>::serialize(*this, x);
       }
 
       template<typename T>
@@ -305,7 +329,7 @@ namespace upcxx {
       template<typename T, typename Iter>
       std::size_t push_sequence_(Iter beg, Iter end, std::true_type trivial_and_contiguous) {
         std::size_t n = std::distance(beg, end);
-        void *spot = this->place(storage_size_of<T>().array(n));
+        void *spot = this->place(storage_size_of<T>().arrayed(n));
         detail::template memcpy_aligned<alignof(T)>(spot, &*beg, n*sizeof(T));
         return n;
       }
@@ -314,7 +338,7 @@ namespace upcxx {
       std::size_t push_sequence_(Iter beg, Iter end, std::false_type trivial_and_contiguous) {
         std::size_t n = 0;
         for(Iter x=beg; x != end; ++x, ++n)
-          upcxx::template serialization_complete<T>::serialize(*this, *x);
+          upcxx::template serialization_traits<T>::serialize(*this, *x);
         return n;
       }
 
@@ -327,7 +351,7 @@ namespace upcxx {
         
         return this->template push_sequence_<T,Iter>(beg, end,
           /*trivial_and_contiguous=*/std::integral_constant<bool,
-              serialization_complete<T>::is_actually_trivially_serializable &&
+              serialization_traits<T>::is_actually_trivially_serializable &&
               is_iterator_contiguous<Iter>::value
             >()
         );
@@ -340,12 +364,12 @@ namespace upcxx {
       std::size_t edge_;
       std::size_t size_, align_;
 
-      struct hunk_t {
-        hunk_t *next;
+      struct hunk_footer {
+        hunk_footer *next;
         void *front;
         std::size_t size0;
       };
-      hunk_t *head_, *tail_;
+      hunk_footer *head_, *tail_;
       
       void grow(std::size_t size0, std::size_t size1);
       void compact_and_invalidate_(void *buf);
@@ -353,12 +377,13 @@ namespace upcxx {
     public:
       serialization_writer(void *initial_buf, std::size_t initial_capacity):
         base_(reinterpret_cast<std::uintptr_t>(initial_buf)),
-        edge_((initial_capacity & -alignof(hunk_t)) - sizeof(hunk_t)),
+        edge_((initial_capacity & -alignof(hunk_footer)) - sizeof(hunk_footer)),
         size_(0), align_(1),
-        head_(::new((char*)initial_buf + edge_) hunk_t),
+        head_(::new((char*)initial_buf + edge_) hunk_footer),
         tail_(head_) {
 
-        UPCXX_ASSERT(sizeof(hunk_t) <= initial_capacity);
+        UPCXX_ASSERT(sizeof(hunk_footer) <= initial_capacity);
+        //UPCXX_ASSERT(detail::is_aligned(initial_buf, serialization_align_max));
         
         head_->next = nullptr;
         head_->front = initial_buf;
@@ -366,9 +391,9 @@ namespace upcxx {
       }
 
       ~serialization_writer() {
-        hunk_t *h = head_ ? head_->next : nullptr;
+        hunk_footer *h = head_ ? head_->next : nullptr;
         while(h != nullptr) {
-          hunk_t *h1 = h->next;
+          hunk_footer *h1 = h->next;
           std::free(h->front);
           h = h1;
         }
@@ -433,7 +458,7 @@ namespace upcxx {
       
       template<typename T>
       void push(T const &x) {
-        upcxx::template serialization_complete<T>::serialize(*this, x);
+        upcxx::template serialization_traits<T>::serialize(*this, x);
       }
 
       template<typename T>
@@ -465,7 +490,7 @@ namespace upcxx {
         w1.size_ = size_;
         w1.align_ = align_;
         while(n--) {
-          upcxx::template serialization_complete<T>::serialize(w1, *xs);
+          upcxx::template serialization_traits<T>::serialize(w1, *xs);
           ++xs;
         }
         size_ = w1.size_;
@@ -476,7 +501,7 @@ namespace upcxx {
       template<typename T, typename Iter, bool n_is_valid, typename Size>
       std::size_t push_sequence_(Iter beg, Iter end, std::integral_constant<bool,n_is_valid>, std::size_t n, Size elt_ub) {
         constexpr auto trivial_and_contiguous = std::integral_constant<bool,
-            serialization_complete<T>::is_actually_trivially_serializable &&
+            serialization_traits<T>::is_actually_trivially_serializable &&
             is_iterator_contiguous<Iter>::value
           >();
         
@@ -504,7 +529,7 @@ namespace upcxx {
         else {
           n = 0;
           while(beg != end) {
-            upcxx::template serialization_complete<T>::serialize(*this, *beg);
+            upcxx::template serialization_traits<T>::serialize(*this, *beg);
             ++beg;
             ++n;
           }
@@ -518,14 +543,14 @@ namespace upcxx {
         if(n_is_valid) {
           std::size_t n1 = n;
           while(n1-- != 0) {
-            upcxx::template serialization_complete<T>::serialize(*this, *beg);
+            upcxx::template serialization_traits<T>::serialize(*this, *beg);
             ++beg;
           }
         }
         else {
           n = 0;
           while(beg != end) {
-            upcxx::template serialization_complete<T>::serialize(*this, *beg);
+            upcxx::template serialization_traits<T>::serialize(*this, *beg);
             ++beg;
             ++n;
           }
@@ -540,7 +565,7 @@ namespace upcxx {
             typename std::iterator_traits<Iter>::value_type
           >::type;
         
-        return this->template push_sequence_<T,Iter>(beg, end, std::false_type(), 0, serialization_complete<T>::static_ubound);
+        return this->template push_sequence_<T,Iter>(beg, end, std::false_type(), 0, serialization_traits<T>::static_ubound);
       }
       
       template<typename Iter>
@@ -549,7 +574,7 @@ namespace upcxx {
             typename std::iterator_traits<Iter>::value_type
           >::type;
         
-        return this->template push_sequence_<T,Iter>(beg, end, std::true_type(), n, serialization_complete<T>::static_ubound);
+        return this->template push_sequence_<T,Iter>(beg, end, std::true_type(), n, serialization_traits<T>::static_ubound);
       }
     };
 
@@ -565,16 +590,16 @@ namespace upcxx {
       
       void jump(std::uintptr_t delta) { head_ += delta; }
       
-      template<typename T, typename T1 = typename serialization_complete<T>::deserialized_type>
+      template<typename T, typename T1 = typename serialization_traits<T>::deserialized_type>
       T1 pop() {
         detail::raw_storage<T1> raw;
-        upcxx::template serialization_complete<T>::deserialize(*this, &raw);
+        upcxx::template serialization_traits<T>::deserialize(*this, &raw);
         return raw.value_and_destruct();
       }
 
-      template<typename T, typename T1 = typename serialization_complete<T>::deserialized_type>
+      template<typename T, typename T1 = typename serialization_traits<T>::deserialized_type>
       T1* pop_into(void *raw) {
-        return upcxx::template serialization_complete<T>::deserialize(*this, raw);
+        return upcxx::template serialization_traits<T>::deserialize(*this, raw);
       }
 
       void* unplace(std::size_t obj_size, std::size_t obj_align) {
@@ -589,7 +614,7 @@ namespace upcxx {
       
       template<typename T>
       void skip() {
-        serialization_complete<T>::skip(*this);
+        serialization_traits<T>::skip(*this);
       }
 
       template<typename T>
@@ -608,7 +633,7 @@ namespace upcxx {
     private:
       template<typename T, typename T1>
       T1* pop_sequence_into_(void *raw, std::size_t n, std::true_type trivial_serz) {
-        auto ss = storage_size_of<T1>().array(n);
+        auto ss = storage_size_of<T1>().arrayed(n);
         return detail::template construct_trivial<T1>(raw, this->unplace(ss), n);
       }
 
@@ -624,10 +649,10 @@ namespace upcxx {
 
     public:
       template<typename T,
-               typename T1 = typename serialization_complete<T>::deserialized_type>
+               typename T1 = typename serialization_traits<T>::deserialized_type>
       T1* pop_sequence_into(void *raw, std::size_t n) {
         return this->template pop_sequence_into_<T,T1>(raw, n,
-            std::integral_constant<bool, serialization_complete<T>::is_actually_trivially_serializable>()
+            std::integral_constant<bool, serialization_traits<T>::is_actually_trivially_serializable>()
           );
       }
       
@@ -641,7 +666,7 @@ namespace upcxx {
 
       template<typename T>
       static constexpr bool skip_sequence_is_fast() {
-        return serialization_complete<T>::static_ubound_t::is_valid;
+        return serialization_traits<T>::static_ubound_t::is_valid;
       }
       
       template<typename T>
@@ -649,8 +674,8 @@ namespace upcxx {
         if(n != 0) {
           this->template skip<T>();
           n -= 1;
-          if(serialization_complete<T>::static_ubound_t::is_valid)
-            this->unplace(serialization_complete<T>::static_ubound.array(n)); // skip rest
+          if(serialization_traits<T>::static_ubound_t::is_valid)
+            this->unplace(serialization_traits<T>::static_ubound.arrayed(n)); // skip rest
           else {
             while(n--)
               this->template skip<T>();
@@ -669,8 +694,10 @@ namespace upcxx {
       static constexpr bool is_actually_trivially_serializable = true;
       
       template<typename Prefix>
-      static constexpr auto ubound(Prefix pre, T const&) ->
-        decltype(pre.template cat_size_of<T>()) {
+      static constexpr auto ubound(Prefix pre, T const&)
+        UPCXX_RETURN_DECLTYPE(
+          pre.template cat_size_of<T>()
+        ) {
         return pre.template cat_size_of<T>();
       }
 
@@ -722,8 +749,10 @@ namespace upcxx {
     };
 
     #define UPCXX_SERIALIZED_FIELDS(...) \
-      auto upcxx_serialized_fields() -> \
-        decltype(std::forward_as_tuple(__VA_ARGS__)) { \
+      auto upcxx_serialized_fields() \
+        UPCXX_RETURN_DECLTYPE( \
+          std::forward_as_tuple(__VA_ARGS__) \
+        ) { \
         return std::forward_as_tuple(__VA_ARGS__); \
       }
 
@@ -737,14 +766,14 @@ namespace upcxx {
       using Ti = typename std::remove_reference<typename std::tuple_element<i, TupRefs>::type>::type;
 
       static_assert(
-        std::is_same<Ti, typename serialization_complete<Ti>::deserialized_type>::value,
+        std::is_same<Ti, typename serialization_traits<Ti>::deserialized_type>::value,
         "Serialization via UPCXX_SERIALIZED_FIELDS(...) requires that all "
         "fields serialize and deserialize as the same type."
       );
 
       template<typename Prefix>
-      static auto ubound(Prefix pre, TupRefs const &refs) ->
-        decltype(
+      static auto ubound(Prefix pre, TupRefs const &refs)
+        UPCXX_RETURN_DECLTYPE(
           serialization_fields_each<TupRefs, i+1, n>::ubound(
             pre.cat_ubound_of(std::template get<i>(refs)),
             refs
@@ -762,8 +791,8 @@ namespace upcxx {
         serialization_fields_each<TupRefs, i+1, n>::serialize(w, refs);
       }
 
-      static constexpr bool references_buffer = serialization_complete<Ti>::references_buffer
-                                             || serialization_fields_each<TupRefs, i+1, n>::references_buffer;
+      static constexpr bool references_buffer = serialization_traits<Ti>::references_buffer
+                                             && serialization_fields_each<TupRefs, i+1, n>::references_buffer;
 
       template<typename Reader>
       static void deserialize(Reader &r, TupRefs refs) {
@@ -774,7 +803,7 @@ namespace upcxx {
         serialization_fields_each<TupRefs, i+1, n>::deserialize(r, refs);
       }
 
-      static constexpr bool skip_is_fast = serialization_complete<Ti>::skip_is_fast
+      static constexpr bool skip_is_fast = serialization_traits<Ti>::skip_is_fast
                                         && serialization_fields_each<TupRefs, i+1, n>::skip_is_fast;
       
       template<typename Reader>
@@ -810,8 +839,8 @@ namespace upcxx {
       using refs_tup_type = decltype(std::declval<T&>().upcxx_serialized_fields());
       
       template<typename Prefix>
-      static auto ubound(Prefix pre, T const &x) ->
-        decltype(
+      static auto ubound(Prefix pre, T const &x)
+        UPCXX_RETURN_DECLTYPE(
           serialization_fields_each<refs_tup_type>::ubound(pre, const_cast<T&>(x).upcxx_serialized_fields())
         ) {
         return serialization_fields_each<refs_tup_type>::ubound(pre, const_cast<T&>(x).upcxx_serialized_fields());
@@ -894,44 +923,44 @@ namespace upcxx {
 
   namespace detail {
     template<typename T, typename=std::false_type>
-    struct serialization_complete_definitely_serializable {
+    struct serialization_traits_definitely_serializable {
       static constexpr bool is_definitely_serializable = true;
     };
     template<typename T>
-    struct serialization_complete_definitely_serializable<T,
+    struct serialization_traits_definitely_serializable<T,
         std::integral_constant<bool, false & serialization<T>::is_definitely_serializable>
       > {
     };
 
     template<typename T, typename=std::false_type>
-    struct serialization_complete_actually_trivially_serializable {
+    struct serialization_traits_actually_trivially_serializable {
       static constexpr bool is_actually_trivially_serializable = false;
     };
     template<typename T>
-    struct serialization_complete_actually_trivially_serializable<T,
+    struct serialization_traits_actually_trivially_serializable<T,
         std::integral_constant<bool, false & serialization<T>::is_actually_trivially_serializable>
       > {
     };
 
     template<typename T, typename=std::false_type>
-    struct serialization_complete_skip_is_fast {
+    struct serialization_traits_skip_is_fast {
       static constexpr bool skip_is_fast = false;
     };
     template<typename T>
-    struct serialization_complete_skip_is_fast<T,
+    struct serialization_traits_skip_is_fast<T,
         std::integral_constant<bool, false & serialization<T>::skip_is_fast>
       > {
     };
 
     template<typename T, typename=void>
-    struct serialization_complete_ubound {
+    struct serialization_traits_ubound {
       template<typename Prefix>
       static invalid_storage_size_t ubound(Prefix pre, T const&) {
         return invalid_storage_size;
       }
     };
     template<typename T>
-    struct serialization_complete_ubound<T,
+    struct serialization_traits_ubound<T,
         decltype((
           serialization<T>().ubound(empty_storage_size, std::declval<T const&>()),
           void()
@@ -940,17 +969,17 @@ namespace upcxx {
     };
     
     template<typename T, typename=std::false_type>
-    struct serialization_complete_references_buffer {
+    struct serialization_traits_references_buffer {
       static constexpr bool references_buffer = false;
     };
     template<typename T>
-    struct serialization_complete_references_buffer<T,
+    struct serialization_traits_references_buffer<T,
         std::integral_constant<bool, false & serialization<T>::references_buffer>
       > {
     };
 
     template<typename T, typename=void>
-    struct serialization_complete_deserialized_type {
+    struct serialization_traits_deserialized_type {
       using deserialized_type = typename std::remove_pointer<
           decltype(
             serialization<T>::deserialize(std::declval<detail::serialization_reader&>(), nullptr)
@@ -958,48 +987,45 @@ namespace upcxx {
         >::type;
     };
     template<typename T>
-    struct serialization_complete_deserialized_type<T,
+    struct serialization_traits_deserialized_type<T,
         typename std::conditional<true, void, typename serialization<T>::deserialized_type>::type
       > {
     };
     
     template<typename T, bool is_def_triv_serz = is_definitely_trivially_serializable<T>::value>
-    struct serialization_complete1;
+    struct serialization_traits1;
 
     template<typename T>
-    struct serialization_complete1<T, /*is_def_triv_serz=*/true>:
+    struct serialization_traits1<T, /*is_def_triv_serz=*/true>:
       serialization_trivial<T> {
       static constexpr bool is_definitely_serializable = true;
     };
     
     template<typename T>
-    struct serialization_complete1<T, /*is_def_triv_serz=*/false>:
-      detail::serialization_complete_definitely_serializable<T>,
-      detail::serialization_complete_actually_trivially_serializable<T>,
-      detail::serialization_complete_skip_is_fast<T>,
-      detail::serialization_complete_ubound<T>,
-      detail::serialization_complete_references_buffer<T>,
-      detail::serialization_complete_deserialized_type<T>,
+    struct serialization_traits1<T, /*is_def_triv_serz=*/false>:
+      detail::serialization_traits_definitely_serializable<T>,
+      detail::serialization_traits_actually_trivially_serializable<T>,
+      detail::serialization_traits_skip_is_fast<T>,
+      detail::serialization_traits_ubound<T>,
+      detail::serialization_traits_references_buffer<T>,
+      detail::serialization_traits_deserialized_type<T>,
       serialization<T> {
     };
   }
   
   template<typename T>
-  struct serialization_complete: detail::serialization_complete1<T> {
-    using static_ubound_t = decltype(
-      detail::serialization_complete1<T>::ubound(
+  struct serialization_traits: detail::serialization_traits1<T> {
+    using static_ubound_t = typename decltype(
+      detail::serialization_traits1<T>::ubound(
           empty_storage_size, std::declval<T const&>()
-        ).static_otherwise_invalid()
-    );
+        )
+      )::static_otherwise_invalid_t;
     
     static constexpr static_ubound_t static_ubound = static_ubound_t(static_ubound_t::static_size, static_ubound_t::static_align);
   };
 
   template<typename T>
-  constexpr typename serialization_complete<T>::static_ubound_t serialization_complete<T>::static_ubound;
-  
-  template<typename T>
-  struct serialization_complete<T const>: serialization_complete<T> {};
+  constexpr typename serialization_traits<T>::static_ubound_t serialization_traits<T>::static_ubound;
   
   //////////////////////////////////////////////////////////////////////////////
 
@@ -1015,7 +1041,25 @@ namespace upcxx {
   struct serialization<T&&>: detail::serialization_not_supported {};
 
   template<typename T>
-  struct serialization<T const>: serialization<T> {};
+  struct serialization<T const>: serialization_traits<T> {
+    // inherit is_definitely_serializable
+    // inherit references_buffer
+
+    static constexpr bool is_specialized = detail::serialization_is_specialized<T>::value;
+    
+    using deserialized_type = const typename serialization_traits<T>::deserialized_type;
+
+    // inherit ubound
+    // inherit serialize
+    // inherit skip_is_fast
+
+    template<typename Reader>
+    static deserialized_type* deserialize(Reader &r, void *spot) {
+      return serialization_traits<T>::deserialize(r, spot);
+    }
+
+    // inherit skip
+  };
   
   //////////////////////////////////////////////////////////////////////////////
 
@@ -1027,8 +1071,10 @@ namespace upcxx {
     using deserialized_type = std::reference_wrapper<R(A...)>;
 
     template<typename Prefix>
-    static constexpr auto ubound(Prefix pre, R(&)(A...)) ->
-      decltype(pre.template cat_size_of<deserialized_type>()) {
+    static constexpr auto ubound(Prefix pre, R(&)(A...))
+      UPCXX_RETURN_DECLTYPE(
+        pre.template cat_size_of<deserialized_type>()
+      ) {
       return pre.template cat_size_of<deserialized_type>();
     }
 
@@ -1072,12 +1118,12 @@ namespace upcxx {
       using recurse_tail = serialization_tuple<std::tuple<T...>, i+1, n>;
       
       static constexpr bool is_definitely_serializable =
-        serialization_complete<Ti>::is_definitely_serializable &&
+        serialization_traits<Ti>::is_definitely_serializable &&
         recurse_tail::is_definitely_serializable;
 
       template<typename Prefix>
-      static auto ubound(Prefix pre, std::tuple<T...> const &x) ->
-        decltype(
+      static auto ubound(Prefix pre, std::tuple<T...> const &x)
+        UPCXX_RETURN_DECLTYPE(
           recurse_tail::ubound(
             pre.template cat_ubound_of<Ti>(std::template get<i>(x)),
             x
@@ -1090,7 +1136,7 @@ namespace upcxx {
       }
       
       static constexpr bool references_buffer =
-        serialization_complete<Ti>::references_buffer ||
+        serialization_traits<Ti>::references_buffer ||
         recurse_tail::references_buffer;
 
       template<typename Writer>
@@ -1106,7 +1152,7 @@ namespace upcxx {
       }
 
       static constexpr bool skip_is_fast =
-        serialization_complete<Ti>::skip_is_fast &&
+        serialization_traits<Ti>::skip_is_fast &&
         recurse_tail::skip_is_fast;
       
       template<typename Reader>
@@ -1145,16 +1191,16 @@ namespace upcxx {
     detail::serialization_tuple<std::tuple<T...>> {
     
     using deserialized_raws = std::tuple<typename std::aligned_storage<
-        sizeof(typename serialization_complete<T>::deserialized_type),
-        alignof(typename serialization_complete<T>::deserialized_type)
+        sizeof(typename serialization_traits<T>::deserialized_type),
+        alignof(typename serialization_traits<T>::deserialized_type)
       >::type...>;
 
     using deserialized_ptrs = std::tuple<
-        typename serialization_complete<T>::deserialized_type*...
+        typename serialization_traits<T>::deserialized_type*...
       >;
     
     using deserialized_type = std::tuple<
-        typename serialization_complete<T>::deserialized_type...
+        typename serialization_traits<T>::deserialized_type...
       >;
 
     template<typename Ti>
@@ -1193,12 +1239,14 @@ namespace upcxx {
   template<typename A, typename B>
   struct serialization<std::pair<A,B>> {
     static constexpr bool is_definitely_serializable =
-      serialization_complete<A>::is_definitely_serializable &&
-      serialization_complete<B>::is_definitely_serializable;
+      serialization_traits<A>::is_definitely_serializable &&
+      serialization_traits<B>::is_definitely_serializable;
 
     template<typename Prefix>
-    static auto ubound(Prefix pre, std::pair<A,B> const &x) ->
-      decltype(pre.cat_ubound_of(x.first).cat_ubound_of(x.second)) {
+    static auto ubound(Prefix pre, std::pair<A,B> const &x)
+      UPCXX_RETURN_DECLTYPE(
+        pre.cat_ubound_of(x.first).cat_ubound_of(x.second)
+      ) {
       return pre.cat_ubound_of(x.first).cat_ubound_of(x.second);
     }
     
@@ -1209,11 +1257,11 @@ namespace upcxx {
     }
 
     static constexpr bool references_buffer =
-      serialization_complete<A>::references_buffer ||
-      serialization_complete<B>::references_buffer;
+      serialization_traits<A>::references_buffer ||
+      serialization_traits<B>::references_buffer;
 
-    using A1 = typename serialization_complete<A>::deserialized_type;
-    using B1 = typename serialization_complete<B>::deserialized_type;
+    using A1 = typename serialization_traits<A>::deserialized_type;
+    using B1 = typename serialization_traits<B>::deserialized_type;
     
     using deserialized_type = std::pair<A1,B1>;
     
@@ -1225,8 +1273,8 @@ namespace upcxx {
     }
 
     static constexpr bool skip_is_fast =
-      serialization_complete<A>::skip_is_fast &&
-      serialization_complete<B>::skip_is_fast;
+      serialization_traits<A>::skip_is_fast &&
+      serialization_traits<B>::skip_is_fast;
 
     template<typename Reader>
     static void skip(Reader &r) {
@@ -1237,6 +1285,7 @@ namespace upcxx {
 
   //////////////////////////////////////////////////////////////////////////////
 
+  #ifndef UPCXX_CREDUCE_SLIM
   template<typename T, std::size_t n>
   struct is_definitely_trivially_serializable<std::array<T,n>>:
     is_definitely_trivially_serializable<T> {
@@ -1245,12 +1294,14 @@ namespace upcxx {
   template<typename T, std::size_t n>
   struct serialization<std::array<T,n>> {
     static constexpr bool is_definitely_serializable =
-      serialization_complete<T>::is_definitely_serializable;
+      serialization_traits<T>::is_definitely_serializable;
 
     template<typename Prefix>
-    static constexpr auto ubound(Prefix pre, std::array<T,n> const &x) ->
-      decltype(pre.cat(serialization_complete<T>::static_ubound.template array<n>())) {
-      return pre.cat(serialization_complete<T>::static_ubound.template array<n>());
+    static constexpr auto ubound(Prefix pre, std::array<T,n> const &x)
+      UPCXX_RETURN_DECLTYPE(
+        pre.cat(serialization_traits<T>::static_ubound.template arrayed<n>())
+      ) {
+      return pre.cat(serialization_traits<T>::static_ubound.template arrayed<n>());
     }
     
     template<typename Writer>
@@ -1258,9 +1309,9 @@ namespace upcxx {
       w.push_sequence(&x[0], &x[0] + n, n);
     }
 
-    static constexpr bool references_buffer = serialization_complete<T>::references_buffer;
+    static constexpr bool references_buffer = serialization_traits<T>::references_buffer;
 
-    using T1 = typename serialization_complete<T>::deserialized_type;
+    using T1 = typename serialization_traits<T>::deserialized_type;
     
     using deserialized_type = std::array<T1,n>;
     
@@ -1276,6 +1327,7 @@ namespace upcxx {
       r.template skip_sequence<T>(n);
     }
   };
+  #endif
   
   //////////////////////////////////////////////////////////////////////////////
 
@@ -1287,12 +1339,14 @@ namespace upcxx {
   template<typename T, std::size_t n>
   struct serialization<T[n]> {
     static constexpr bool is_definitely_serializable =
-      serialization_complete<T>::is_definitely_serializable;
+      serialization_traits<T>::is_definitely_serializable;
 
     template<typename Prefix>
-    static constexpr auto ubound(Prefix pre, T const(&x)[n]) ->
-      decltype(pre.cat(serialization_complete<T>::static_ubound.template array<n>())) {
-      return pre.cat(serialization_complete<T>::static_ubound.template array<n>());
+    static constexpr auto ubound(Prefix pre, T const(&x)[n])
+      UPCXX_RETURN_DECLTYPE(
+        pre.cat(serialization_traits<T>::static_ubound.template arrayed<n>())
+      ) {
+      return pre.cat(serialization_traits<T>::static_ubound.template arrayed<n>());
     }
     
     template<typename Writer>
@@ -1300,9 +1354,9 @@ namespace upcxx {
       w.push_sequence(&x[0], &x[0] + n, n);
     }
 
-    static constexpr bool references_buffer = serialization_complete<T>::references_buffer;
+    static constexpr bool references_buffer = serialization_traits<T>::references_buffer;
 
-    using T1 = typename serialization_complete<T>::deserialized_type;
+    using T1 = typename serialization_traits<T>::deserialized_type;
     
     using deserialized_type = T1[n];
     
@@ -1321,6 +1375,7 @@ namespace upcxx {
 
   //////////////////////////////////////////////////////////////////////////////
 
+  #ifndef UPCXX_CREDUCE_SLIM
   template<typename CharT, typename Traits, typename Alloc>
   struct serialization<std::basic_string<CharT, Traits, Alloc>> {
     static_assert(std::is_trivial<CharT>::value, "Bad string character type.");
@@ -1330,14 +1385,14 @@ namespace upcxx {
     using Str = std::basic_string<CharT,Traits,Alloc>;
     
     template<typename Prefix>
-    static auto ubound(Prefix pre, Str const &s) ->
-      decltype(
+    static auto ubound(Prefix pre, Str const &s)
+      UPCXX_RETURN_DECLTYPE(
         pre.template cat_ubound_of<std::size_t>(1)
-           .cat(storage_size_of<CharT>().array(1))
+           .cat(storage_size_of<CharT>().arrayed(1))
       ) {
       std::size_t n = s.size();
       return pre.template cat_ubound_of<std::size_t>(n)
-                .cat(storage_size_of<CharT>().array(n));
+                .cat(storage_size_of<CharT>().arrayed(n));
     }
 
     template<typename Writer>
@@ -1352,7 +1407,7 @@ namespace upcxx {
     template<typename Reader>
     static Str* deserialize(Reader &r, void *raw) {
       std::size_t n = r.template pop<std::size_t>();
-      CharT const *p = (CharT const*)r.unplace(storage_size_of<CharT>().array(n));
+      CharT const *p = (CharT const*)r.unplace(storage_size_of<CharT>().arrayed(n));
       return ::new(raw) Str(p, n);
     }
 
@@ -1361,12 +1416,14 @@ namespace upcxx {
     template<typename Reader>
     static void skip(Reader &r) {
       std::size_t n = r.template pop<std::size_t>();
-      r.unplace(storage_size_of<CharT>().array(n));
+      r.unplace(storage_size_of<CharT>().arrayed(n));
     }
   };
+  #endif
   
   //////////////////////////////////////////////////////////////////////////////
 
+  #ifndef UPCXX_CREDUCE_SLIM
   namespace detail {
     template<typename Bag, typename=void>
     struct reserve_if_supported {
@@ -1396,17 +1453,17 @@ namespace upcxx {
              typename T0 = typename BagIn::value_type,
              typename T1 = typename BagOut::value_type>
     struct serialization_container {
-      static constexpr bool is_definitely_serializable = serialization_complete<T0>::is_definitely_serializable;
+      static constexpr bool is_definitely_serializable = serialization_traits<T0>::is_definitely_serializable;
       
       template<typename Prefix>
-      static auto ubound(Prefix pre, BagIn const &bag) ->
-        decltype(
+      static auto ubound(Prefix pre, BagIn const &bag)
+        UPCXX_RETURN_DECLTYPE(
           pre.template cat_ubound_of<std::size_t>(1)
-             .cat(serialization_complete<T0>::static_ubound.array(1))
+             .cat(serialization_traits<T0>::static_ubound.arrayed(1))
         ) {
         std::size_t n = bag.size();
         return pre.template cat_ubound_of<std::size_t>(n)
-                  .cat(serialization_complete<T0>::static_ubound.array(n));
+                  .cat(serialization_traits<T0>::static_ubound.arrayed(n));
       }
 
       template<typename Writer>
@@ -1416,7 +1473,7 @@ namespace upcxx {
         w.push_sequence(bag.begin(), bag.end(), n);
       }
 
-      static constexpr bool references_buffer = serialization_complete<T0>::references_buffer;
+      static constexpr bool references_buffer = serialization_traits<T0>::references_buffer;
 
       using deserialized_type = BagOut;
 
@@ -1443,21 +1500,21 @@ namespace upcxx {
   struct serialization<std::vector<T,Alloc>>:
     detail::serialization_container<
       std::vector<T, Alloc>,
-      std::vector<typename serialization_complete<T>::deserialized_type, Alloc>
+      std::vector<typename serialization_traits<T>::deserialized_type, Alloc>
     > {
   };
   template<typename T, typename Alloc>
   struct serialization<std::deque<T,Alloc>>:
     detail::serialization_container<
       std::deque<T, Alloc>,
-      std::deque<typename serialization_complete<T>::deserialized_type, Alloc>
+      std::deque<typename serialization_traits<T>::deserialized_type, Alloc>
     > {
   };
   template<typename T, typename Alloc>
   struct serialization<std::list<T,Alloc>>:
     detail::serialization_container<
       std::list<T, Alloc>,
-      std::list<typename serialization_complete<T>::deserialized_type, Alloc>
+      std::list<typename serialization_traits<T>::deserialized_type, Alloc>
     > {
   };
 
@@ -1465,14 +1522,14 @@ namespace upcxx {
   struct serialization<std::set<T,Cmp,Alloc>>:
     detail::serialization_container<
       std::set<T,Cmp,Alloc>,
-      std::set<typename serialization_complete<T>::deserialized_type, Cmp, Alloc>
+      std::set<typename serialization_traits<T>::deserialized_type, Cmp, Alloc>
     > {
   };
   template<typename T, typename Cmp, typename Alloc>
   struct serialization<std::multiset<T,Cmp,Alloc>>:
     detail::serialization_container<
       std::multiset<T,Cmp,Alloc>,
-      std::multiset<typename serialization_complete<T>::deserialized_type, Cmp, Alloc>
+      std::multiset<typename serialization_traits<T>::deserialized_type, Cmp, Alloc>
     > {
   };
 
@@ -1480,14 +1537,14 @@ namespace upcxx {
   struct serialization<std::unordered_set<T,Hash,Eq,Alloc>>:
     detail::serialization_container<
       std::unordered_set<T,Hash,Eq,Alloc>,
-      std::unordered_set<typename serialization_complete<T>::deserialized_type, Hash, Eq, Alloc>
+      std::unordered_set<typename serialization_traits<T>::deserialized_type, Hash, Eq, Alloc>
     > {
   };
   template<typename T, typename Hash, typename Eq, typename Alloc>
   struct serialization<std::unordered_multiset<T,Hash,Eq,Alloc>>:
     detail::serialization_container<
       std::unordered_multiset<T,Hash,Eq,Alloc>,
-      std::unordered_multiset<typename serialization_complete<T>::deserialized_type, Hash, Eq, Alloc>
+      std::unordered_multiset<typename serialization_traits<T>::deserialized_type, Hash, Eq, Alloc>
     > {
   };
 
@@ -1496,8 +1553,8 @@ namespace upcxx {
     detail::serialization_container<
       std::map<K,V,Cmp,Alloc>,
       std::map<
-        typename serialization_complete<K>::deserialized_type,
-        typename serialization_complete<V>::deserialized_type, Cmp, Alloc>
+        typename serialization_traits<K>::deserialized_type,
+        typename serialization_traits<V>::deserialized_type, Cmp, Alloc>
     > {
   };
   template<typename K, typename V, typename Cmp, typename Alloc>
@@ -1505,8 +1562,8 @@ namespace upcxx {
     detail::serialization_container<
       std::multimap<K,V,Cmp,Alloc>,
       std::multimap<
-        typename serialization_complete<K>::deserialized_type,
-        typename serialization_complete<V>::deserialized_type, Cmp, Alloc>
+        typename serialization_traits<K>::deserialized_type,
+        typename serialization_traits<V>::deserialized_type, Cmp, Alloc>
     > {
   };
 
@@ -1515,8 +1572,8 @@ namespace upcxx {
     detail::serialization_container<
       std::unordered_map<K,V,Hash,Eq,Alloc>,
       std::unordered_map<
-        typename serialization_complete<K>::deserialized_type,
-        typename serialization_complete<V>::deserialized_type, Hash, Eq, Alloc>
+        typename serialization_traits<K>::deserialized_type,
+        typename serialization_traits<V>::deserialized_type, Hash, Eq, Alloc>
     > {
   };
   template<typename K, typename V, typename Hash, typename Eq, typename Alloc>
@@ -1524,17 +1581,17 @@ namespace upcxx {
     detail::serialization_container<
       std::unordered_multimap<K,V,Hash,Eq,Alloc>,
       std::unordered_multimap<
-        typename serialization_complete<K>::deserialized_type,
-        typename serialization_complete<V>::deserialized_type, Hash, Eq, Alloc>
+        typename serialization_traits<K>::deserialized_type,
+        typename serialization_traits<V>::deserialized_type, Hash, Eq, Alloc>
     > {
   };
 
   template<typename T, typename Alloc>
   struct serialization<std::forward_list<T,Alloc>> {
     using T0 = T;
-    using T1 = typename serialization_complete<T>::deserialized_type;
+    using T1 = typename serialization_traits<T>::deserialized_type;
 
-    static constexpr bool is_definitely_serializable = serialization_complete<T0>::is_definitely_serializable;
+    static constexpr bool is_definitely_serializable = serialization_traits<T0>::is_definitely_serializable;
 
     // no ubound
     
@@ -1545,7 +1602,7 @@ namespace upcxx {
       ::new(n_spot) std::size_t(n);
     }
 
-    static constexpr bool references_buffer = serialization_complete<T0>::references_buffer;
+    static constexpr bool references_buffer = serialization_traits<T0>::references_buffer;
 
     using deserialized_type = std::forward_list<T1,Alloc>;
 
@@ -1571,5 +1628,6 @@ namespace upcxx {
 
     static constexpr bool skip_is_fast = detail::serialization_reader::template skip_sequence_is_fast<T>();
   };
+  #endif
 }
 #endif
