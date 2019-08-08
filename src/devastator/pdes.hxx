@@ -27,22 +27,38 @@ namespace pdes {
      * parameter must be a lower bound of all timestamps for events inserted,
      * and `event_n` must match the total number of events inserted.
      * 
-     * Example: broadcast an event `e` at time `t` to all ranks
-     *  uint64_t t = <some time>;
-     *  my_event e = <some event>;
+     * Example: broadcast one event to each rank
      *  cxt.bcast_procs(
-     *    t, deva::rank_n,
+     *    time, // lower bound for all timestamps inserted by bcast
+     *    deva::rank_n, // total events inserted by bcast, 1-per-rank here
      *    [=](auto const &run_at_rank) {
-     *      // loop over all process-local ranks
+     *      // This function runs once per process, on an unspecified thread,
+     *      // which will be a communication service thread if one exists.
+     *      // DO NOT BLOCK!
+     *
+     *      // Make sure any process-local state read by this function stays
+     *      // read-only for the duration of the encompassing `pdes::drain()`
+     *      // call. This is required since this bcast will be repeated behind
+     *      // the scenes to send anti-messages and the ranks selected must
+     *      // remain the same.
+     * 
+     *      // For this example loop over all process-local ranks. You are free
+     *      // to select any subset.
      *      for(int rank = deva::process_rank_lo();
      *          rank < deva::process_rank_hi();
      *          rank++
      *        ) {
-     *        int event_n = 1; // passed to callable, must match call count for `insert_event`
-     *        run_at_rank(r, event_n, [=](auto const &insert_event) {
-     *          int cd = <pick a good cd>;
-     *          insert_event(cd, t, e);
-     *        });
+     *        int local_event_n = 1; // passed to callable, must match call count for `insert_event`
+     *        run_at_rank(rank, local_event_n,
+     *          [=](auto const &insert_event) {
+     *            // This function runs on `rank`. Again, make sure any
+     *            // rank-or-process-local state read by this function stays
+     *            // read-only for the duration of `drain()`.
+     *            int cd = <pick a good cd>;
+     *            some_event_type e = <build an event>
+     *            insert_event(cd, time, std::move(e));
+     *          }
+     *        );
      *      }
      *    }
      *  );
