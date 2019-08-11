@@ -142,13 +142,15 @@ namespace pdes {
     struct event_on_target;
     struct event;
 
-    extern __thread std::uint32_t far_id_bump;
+    extern __thread std::uint64_t far_id_bumper;
+    constexpr std::uint64_t far_id_delta = deva::rank_n;
+
+    extern std::uint64_t seq_id_delta;
+    std::uint64_t next_seq_id(std::int32_t cd_ix, int n);
     
     void root_event(std::int32_t cd_ix, event *e);
-    std::uint64_t next_seq_id(std::int32_t cd_ix);
-    bool/*not_annihilated*/ arrive_far(std::int32_t origin, std::uint32_t far_id, event *e);
-    void arrive_far_anti(std::int32_t origin, std::uint32_t far_id);
-    void arrive_far_anti_bcast(std::int32_t origin, std::int32_t local_event_n, std::uint32_t far_id0);
+    bool/*annihilated*/ arrive_far(std::uint64_t far_id, std::uint64_t time, std::int32_t cd, event *e);
+    bool/*annihilated*/ arrive_far_anti(std::uint64_t far_id, std::uint64_t time);
     
     struct event_vtable {
       void(*destruct_and_delete)(event*);
@@ -162,12 +164,14 @@ namespace pdes {
       std::uint64_t time;
       std::uint64_t subtime;
       union {
-        std::int32_t target_rank;
-        std::int32_t far_origin;
+        struct {
+          std::int32_t target_rank;
+          std::int32_t sent_near_ix;
+        };
+        std::uint64_t far_id;
       };
       std::int32_t target_cd;
-      std::uint32_t far_id;
-      std::int32_t sent_near_ix = -1;
+      // <free 32-bit padding here>
       event_on_creator *far_next = reinterpret_cast<event_on_creator*>(0x1); // 0x1 == not from far
       union {
         event *sent_near_next = nullptr;
@@ -230,7 +234,7 @@ namespace pdes {
 
     struct sent_far_one final: sent_far_record {
       std::int32_t rank;
-      std::uint32_t id;
+      std::uint64_t far_id;
       std::uint64_t time;
 
       static void the_delete1(sent_far_record *me1) {
@@ -239,14 +243,14 @@ namespace pdes {
       
       static std::int32_t the_send_anti_and_delete(sent_far_record *me1) {
         auto *me = static_cast<sent_far_one*>(me1);
-        std::int32_t rank_me = deva::rank_me();
-        uint32_t far_id = me->id;
-
+        std::uint64_t far_id = me->far_id;
+        std::uint64_t time = me->time;
+        
         gvt::send(
-          me->rank, /*local=*/deva::cfalse3, me->time,
-          [=]() { detail::arrive_far_anti(rank_me, far_id); }
+          me->rank, /*local=*/deva::cfalse3, time,
+          [=]() { detail::arrive_far_anti(far_id, time); }
         );
-
+        
         delete me;
         return 1;
       }
@@ -263,9 +267,9 @@ namespace pdes {
     
     template<typename ProcFn>
     struct sent_far_bcast_procs final: sent_far_record {
-      std::uint32_t id;
-      std::int32_t event_n;
+      std::uint64_t far_id_base;
       std::uint64_t time_lb;
+      std::int32_t total_event_n;
       ProcFn proc_fn;
 
       static void the_delete1(sent_far_record *me1) {
@@ -452,12 +456,12 @@ namespace pdes {
 
   template<typename Event>
   void execute_context::send(
-      int32_t rank, int32_t cd,
+      std::int32_t rank, std::int32_t cd,
       std::uint64_t time,
       Event user
     ) {
     auto *me = static_cast<detail::execute_context_impl*>(this);
-    std::uint64_t subtime = detail::event_subtime<Event>()(detail::next_seq_id(this->cd), user);
+    std::uint64_t subtime = detail::event_subtime<Event>()(detail::next_seq_id(this->cd, +1), user);
     
     DEVA_ASSERT(
       std::make_pair(me->time, me->subtime) <= std::make_pair(time, subtime),
@@ -473,30 +477,27 @@ namespace pdes {
       e->target_cd = cd;
       e->time = time;
       e->subtime = subtime;
+      e->sent_near_ix = -1;
       e->sent_near_next = me->sent_near_head;
       me->sent_near_head = e;
     }
     else {
-      std::int32_t origin = deva::rank_me();
-      std::uint32_t far_id = detail::far_id_bump++;
+      //std::int32_t origin = deva::rank_me();
+      std::uint64_t far_id = detail::far_id_bumper;
+      detail::far_id_bumper += detail::far_id_delta;
       
       gvt::send(rank, /*local=*/deva::cfalse3, time,
         [=](Event &user) {
           auto *e = new detail::event_impl<Event>{std::move(user)};
-          e->far_origin = origin;
-          e->far_id = far_id;
-          e->target_cd = cd;
-          e->time = time;
           e->subtime = subtime;
-          
-          detail::arrive_far(origin, far_id, e);
+          detail::arrive_far(far_id, time, cd, e);
         },
         std::move(user)
       );
 
       auto *far = new detail::sent_far_one;
       far->rank = rank;
-      far->id = far_id;
+      far->far_id = far_id;
       far->time = time;
       far->next = me->sent_far_head;
       me->sent_far_head = far;
@@ -510,46 +511,65 @@ namespace pdes {
       std::uint64_t time_lb, std::int32_t total_event_n, ProcFn proc_fn
     ) {
     auto *me = static_cast<detail::execute_context_impl*>(this);
-    std::int32_t origin = deva::rank_me();
-    std::uint64_t subtime0 = detail::next_seq_id(this->cd);
-    std::uint32_t far_id0 = detail::far_id_bump++;
+    
+    std::uint64_t far_id_base = detail::far_id_bumper;
+    detail::far_id_bumper += total_event_n*detail::far_id_delta;
+    
+    std::uint64_t seq_id_base = detail::next_seq_id(this->cd, total_event_n);
 
     gvt::bcast_procs(time_lb, /*credits=*/total_event_n,
       deva::bind(
         [=](ProcFn const &proc_fn1, auto const &run_at_rank) {
           proc_fn1([&](int rank, int local_event_n, auto fn) {
-            run_at_rank(rank,
-              [=,fn1(std::move(fn))]()->int/*gvt credits*/ {
-                std::uint32_t id_bump = far_id0;
-                bool not_annihilation = true;
-                
-                fn1([&](std::int32_t cd, std::uint64_t time, auto e_user) {
-                  if(!not_annihilation)
-                    return;
+            if(local_event_n != 0) {
+              /* We have to skip sending this message in the case of zero
+               * events because it has no gvt credits to contribute upon arrival
+               * and therefor could be raced over by gvt. In the worst case,
+               * that could mean the user's code running outside of drain() where
+               * the readonly invariants may not hold.
+               */
+              run_at_rank(rank,
+                [=,fn1(std::move(fn))]()->int/*gvt credits*/ {
+                  std::uint64_t far_id_bumper = far_id_base;
+                  std::uint64_t seq_id_bumper = seq_id_base;
+                  bool anni_all_t = true;
+                  bool anni_all_f = true;
+                  int local_event_n_actual = 0;
                   
-                  DEVA_ASSERT(time_lb <= time, "Invalid time lower-bound supplied to execute_context::bcast_procs.");
-                  
-                  using Event = decltype(e_user);
-                  std::uint64_t subtime1 = detail::event_subtime<Event>()(subtime0, e_user);
-                  auto *e = new detail::event_impl<Event>{std::move(e_user)};
-                  e->far_origin = origin;
-                  e->far_id = id_bump++;
-                  e->target_cd = cd;
-                  e->time = time;
-                  e->subtime = subtime1;
-                  
-                  not_annihilation &= detail::arrive_far(origin, e->far_id, e);
-                });
+                  fn1([&](std::int32_t cd, std::uint64_t time, auto e_user) {
+                    DEVA_ASSERT(time_lb <= time, "Invalid time lower-bound supplied to execute_context::bcast_procs.");
+                    
+                    using Event = decltype(e_user);
 
-                DEVA_ASSERT_ALWAYS(
-                  !not_annihilation || local_event_n == int(id_bump - far_id0),
-                  "Event count given to `run_at_rank` within bcast process function "
-                  "does not match actual number of events inserted."
-                );
-                
-                return local_event_n;
-              }
-            );
+                    std::uint64_t far_id = far_id_bumper;
+                    far_id_bumper += detail::far_id_delta;
+
+                    std::uint64_t seq_id = seq_id_bumper;
+                    seq_id_bumper += detail::seq_id_delta;
+
+                    local_event_n_actual += 1;
+                    
+                    auto *e = new detail::event_impl<Event>{std::move(e_user)};
+                    e->time = time;
+                    e->subtime = detail::event_subtime<Event>()(seq_id, e_user);
+
+                    bool anni = detail::arrive_far(far_id, time, cd, e);
+                    anni_all_t &= anni;
+                    anni_all_f &= !anni;
+                  });
+                  
+                  DEVA_ASSERT(anni_all_t ^ anni_all_f);
+                  DEVA_ASSERT_ALWAYS(
+                    local_event_n == local_event_n_actual,
+                    "Event count given to `run_at_rank(events="<<local_event_n<<")` "
+                    "within bcast process function does not match actual number "
+                    "of events inserted ("<<local_event_n_actual<<")."
+                  );
+                  
+                  return local_event_n;
+                }
+              );
+            }
           });
         },
         proc_fn
@@ -557,7 +577,7 @@ namespace pdes {
     );
     
     auto *rec = new detail::sent_far_bcast_procs<ProcFn>(std::move(proc_fn));
-    rec->id0 = far_id0;
+    rec->far_id_base = far_id_base;
     rec->total_event_n = total_event_n;
     rec->time_lb = time_lb;
     rec->next = me->sent_far_head;
@@ -571,20 +591,35 @@ namespace pdes {
       sent_far_record *me1
     ) {
     auto *me = static_cast<sent_far_bcast_procs*>(me1);
-    std::int32_t origin = deva::rank_me();
     std::int32_t total_event_n = me->total_event_n;
-    std::uint32_t far_id0 = me->id0;
+    std::uint64_t far_id_base = me->far_id_base;
     
     gvt::bcast_procs(me->time_lb, /*credits=*/total_event_n,
       deva::bind(
         [=](ProcFn const &proc_fn1, auto const &run_at_rank) {
-          proc_fn1([&](int rank, int local_event_n, auto const &fn_ignored) {
-            run_at_rank(rank,
-              [=]()->int {
-                detail::arrive_far_anti_bcast(origin, local_event_n, far_id0);
-                return local_event_n;
-              }
-            );
+          proc_fn1([&](int rank, int local_event_n, auto fn) {
+            if(local_event_n != 0) {
+              run_at_rank(rank,
+                [=,fn1(std::move(fn))]()->int/*gvt credits*/ {
+                  std::uint64_t far_id_bumper = far_id_base;
+                  bool anni_all_t = true;
+                  bool anni_all_f = true;
+                  
+                  fn1([&](std::int32_t cd, std::uint64_t time, auto e_user) {
+                    std::uint64_t far_id = far_id_bumper;
+                    far_id_bumper += detail::far_id_delta;
+                    
+                    bool anni = detail::arrive_far_anti(far_id, time);
+                    anni_all_t &= anni;
+                    anni_all_f &= !anni;
+                  });
+
+                  DEVA_ASSERT(anni_all_t ^ anni_all_f);
+                  
+                  return local_event_n;
+                }
+              );
+            }
           });
         },
         std::move(me->proc_fn)
@@ -657,9 +692,6 @@ namespace pdes {
       
       static std::int32_t& future_ix_of(stamped_event se) {
         return se.e->future_ix;
-      }
-      static stamped_event identity(stamped_event e) {
-        return e;
       }
 
       constexpr bool definitely_ordered_wrt(stamped_event that) const {

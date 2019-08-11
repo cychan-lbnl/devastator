@@ -108,7 +108,7 @@ namespace deva {
 
   template<typename ProcFn>
   void gvt::bcast_procs(std::uint64_t t_lb, std::int32_t credits, ProcFn const &proc_fn) {
-    DEVA_ASSERT(epoch_gvt_[0] <= t);
+    DEVA_ASSERT(epoch_gvt_[0] <= t_lb);
     
     unsigned e = epoch_ + 1;
     epoch_lsend_[1] += credits;

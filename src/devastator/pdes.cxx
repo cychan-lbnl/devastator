@@ -24,7 +24,8 @@ int pdes::chitter_secs = 3;
 
 constexpr detail::sent_far_record::vtable detail::sent_far_one::the_vtbl;
 
-__thread uint32_t pdes::detail::far_id_bump = 0;
+__thread uint64_t pdes::detail::far_id_bumper;
+uint64_t pdes::detail::seq_id_delta;
 
 #if DEBUG
 __thread std::int64_t pdes::detail::live_event_balance = 0;
@@ -54,24 +55,24 @@ namespace {
     uint64_t calc_look_t_ub(uint64_t gvt, uint64_t t_end);
   };
 
-  inline pair<int32_t,uint32_t> far_origin_id_of(event_on_creator *e) {
-    return {e->far_origin, e->far_id};
+  inline pair<uint64_t,uint64_t> far_id_time_of(event_on_creator *e) {
+    return {e->far_id, e->time};
   }
-  inline size_t far_origin_id_hash(const pair<int32_t,uint32_t> &xy) {
-    return size_t(xy.first)*0x9e3779b97f4a7c15u + xy.second;
+  inline size_t far_id_time_hash(pair<uint64_t,uint64_t> const &xy) {
+    return xy.first*0x9e3779b97f4a7c15u + xy.second;
   }
 
   struct cd_state {
     deva::intrusive_min_heap<
         stamped_event, stamped_event,
-        stamped_event::future_ix_of, stamped_event::identity>
+        stamped_event::future_ix_of, deva::identity<stamped_event>>
       future_events;
     
     deva::queue<stamped_event> past_events;
     int32_t cd_ix;
     int32_t by_now_ix, by_dawn_ix;
     int undo_n_hi=0, undo_n_lo=0;
-    uint64_t seq_id, seq_id_rewind;
+    uint64_t seq_id_bumper, seq_id_bumper_rewind;
     fridge *fridge_head = nullptr;
 
     std::pair<std::uint64_t/*time+1*/,std::uint64_t/*subtime*/>
@@ -90,8 +91,7 @@ namespace {
       return past_events.at_forwards(0).time;
     }
 
-    uint64_t next_seq_id();
-    void undo_next_seq_id(int n=1);
+    uint64_t next_seq_id(int n);
   };
 
   template<int32_t cd_state::*ix>
@@ -104,7 +104,6 @@ namespace {
   
   struct sim_state {
     int32_t local_cd_n = -1;
-    uint64_t seq_id_delta; // the amount the cd_state::seq_id value is bumped by to generated a fresh value
     unique_ptr<cd_state[]> cds;
     
     deva::intrusive_min_heap<
@@ -122,10 +121,9 @@ namespace {
       cds_by_dawn;
 
     deva::intrusive_map<
-        event_on_creator, std::pair<int32_t,uint32_t>,
+        event_on_creator, pair<uint64_t,uint64_t>,
         event_on_creator::far_next_of,
-        far_origin_id_of,
-        far_origin_id_hash>
+        far_id_time_of, far_id_time_hash>
       from_far;
 
     // time-sorted list of all locally created events which were sent away
@@ -153,14 +151,10 @@ namespace {
   void remove_past(cd_state *cd, stamped_event rem);
   void rollback(cd_state *cd, int undo_n);
 
-  inline uint64_t cd_state::next_seq_id() {
-    uint64_t id = seq_id;
-    seq_id += sim_me.seq_id_delta;
+  inline uint64_t cd_state::next_seq_id(int n) {
+    uint64_t id = seq_id_bumper;
+    seq_id_bumper += n*seq_id_delta;
     return id;
-  }
-  
-  inline void cd_state::undo_next_seq_id(int n) {
-    seq_id -= n*sim_me.seq_id_delta;
   }
   
   void global_status_state::reset() {
@@ -247,11 +241,12 @@ namespace {
 void pdes::init(int32_t local_cd_n) {
   sim_me.local_cd_n = local_cd_n;
 
+  far_id_bumper = deva::rank_me();
+  
   uint64_t global_cd_begin, global_cd_n;
   std::tie(global_cd_begin, global_cd_n) = deva::scan_reduce_sum<uint64_t>(local_cd_n);
   
-  int log_global_cd_n = log2up(global_cd_n);
-  sim_me.seq_id_delta = 1 | 0x9e3779b97f4a7c15u<<(64 - log_global_cd_n);
+  seq_id_delta = global_cd_n;
   
   cd_state *cds = new cd_state[local_cd_n];
 
@@ -262,7 +257,7 @@ void pdes::init(int32_t local_cd_n) {
   
   for(int32_t i=0; i < local_cd_n; i++) {
     cds[i].cd_ix = i;
-    cds[i].seq_id = (global_cd_begin + i) << (64 - log_global_cd_n);
+    cds[i].seq_id_bumper = global_cd_begin + i;
     cds[i].last_commit_t = {0,0};
     sim_me.cds_by_dawn.insert({&cds[i], cds[i].dawn()});
     sim_me.cds_by_now.insert({&cds[i], cds[i].now()});
@@ -287,16 +282,6 @@ namespace {
     /*unexecute*/nullptr,
     /*commit*/nullptr
   };
-
-  event_vtable bcast_vtable {
-    /*destruct_and_delete*/nullptr,
-    /*execute*/nullptr,
-    /*unexecute*/nullptr,
-    /*commit*/nullptr
-  };
-
-  struct bcast_list: event_on_creator {
-  };
 }
 
 void detail::register_state(int cd_ix, fridge *fr) {
@@ -318,15 +303,18 @@ void detail::root_event(int32_t cd_ix, event *e) {
   sim_me.cds_by_now.decreased({cd, cd->now_after_future_insert()});
 }
 
-std::uint64_t detail::next_seq_id(std::int32_t cd) {
-  return sim_me.cds[cd].next_seq_id();
+std::uint64_t detail::next_seq_id(std::int32_t cd, int n) {
+  return sim_me.cds[cd].next_seq_id(n);
 }
 
-bool detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
-  bool not_annihilated;
+bool detail::arrive_far(uint64_t far_id, uint64_t time, int32_t cd, event *e) {
+  e->far_id = far_id;
+  e->time = time;
+  e->target_cd = cd;
+
+  bool annihilated = false;
   
-  sim_me.from_far.visit(
-    {origin, far_id},
+  sim_me.from_far.visit({far_id, time},
     [&](event_on_creator *o)->event_on_creator* {
       if(o == nullptr) {
         //deva::say()<<"far insert origin="<<origin<<" id="<<far_id<<" o="<<(event_on_creator*)e;
@@ -334,7 +322,7 @@ bool detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
         e->created_here = true;
         e->rewind_root = false;
         arrive_near<+1>(e->target_cd, stamped_event{e, e->time, e->subtime});
-        not_annihilated = true;
+        annihilated = false;
         return e;
       }
       else {
@@ -342,18 +330,19 @@ bool detail::arrive_far(int32_t origin, uint32_t far_id, event *e) {
         DEVA_ASSERT(o->vtbl_on_creator == &anti_vtable);
         delete o;
         e->vtbl_on_creator->destruct_and_delete(e);
-        not_annihilated = false;
+        annihilated = true;
         return nullptr;
       }
     }
   );
 
-  return not_annihilated;
+  return annihilated;
 }
 
-void detail::arrive_far_anti(int32_t origin, uint32_t far_id) {
-  sim_me.from_far.visit(
-    {origin, far_id},
+bool detail::arrive_far_anti(uint64_t far_id, uint64_t time) {
+  bool annihilated = false;
+  
+  sim_me.from_far.visit({far_id, time},
     [&](event_on_creator *o)->event_on_creator* {
       if(o != nullptr) {
         //deva::say()<<"far anni+- id="<<far_id<<" o="<<o;
@@ -369,64 +358,22 @@ void detail::arrive_far_anti(int32_t origin, uint32_t far_id) {
         }
         else
           remove_past(cd, se);
+        annihilated = true;
         return nullptr;
       }
       else {
         // insert anti-event
         o = new event_on_creator;
         o->vtbl_on_creator = &anti_vtable;
-        o->far_origin = origin;
         o->far_id = far_id;
+        o->time = time;
+        annihilated = false;
         return o;
       }
     }
   );
-}
 
-void detail::arrive_far_anti_bcast(
-    std::int32_t origin,
-    std::int32_t local_event_n,
-    std::uint32_t far_id0
-  ) {
-  std::uint32_t id = far_id0;
-  
-  for(int i=0; i < local_event_n; i++, id++) {
-    bool annihilation = false;
-    
-    sim_me.from_far.visit(
-      {origin, id},
-      [&](event_on_creator *o)->event_on_creator* {
-        if(o == nullptr) {
-          DEVA_ASSERT(i == 0);
-          // no events found, thus annihilation raced ahead of actual event
-          // so we insert an anti-event
-          annihilation = true;
-          o = new event_on_creator;
-          o->vtbl_on_creator = &anti_vtable;
-          o->far_origin = origin;
-          o->far_id = id;
-          return o;
-        }
-        else {
-          DEVA_ASSERT(o->vtbl_on_creator != &anti_vtable);
-          // late anninilation
-          auto *e = static_cast<event*>(o);
-          stamped_event se{e, e->time, e->subtime};
-          cd_state *cd = &sim_me.cds[e->target_cd];
-          if(e->future_not_past) {
-            cd->future_events.erase(se);
-            sim_me.cds_by_now.increased({cd, cd->now()});
-            e->vtbl_on_creator->destruct_and_delete(e);
-          }
-          else
-            remove_past(cd, se);
-          return nullptr;
-        }
-      }
-    );
-
-    if(annihilation) break;
-  }
+  return annihilated;
 }
 
 namespace {
@@ -529,7 +476,7 @@ namespace {
             else
               unseq = far->vtbl->send_anti_and_delete(far);
             
-            cd->undo_next_seq_id(unseq);
+            cd->next_seq_id(-unseq);
             far = far_next;
           }
         }
@@ -537,7 +484,7 @@ namespace {
         // walk near-sent events
         event *sent = e->sent_near_head;
         while(sent != nullptr) {
-          cd->undo_next_seq_id();
+          cd->next_seq_id(-1);
           
           event *sent_next = sent->sent_near_next;
           stamped_event sent_se{sent, sent->time, sent->subtime};
@@ -666,7 +613,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     
     for(int32_t cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
-      cd->seq_id_rewind = cd->seq_id;
+      cd->seq_id_bumper_rewind = cd->seq_id_bumper;
       cd->rewind_commit_t = cd->last_commit_t;
       
       // Anything in future upon entry to drain is a root. Since might be rewinding
@@ -819,11 +766,6 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         committed_n = 0;
       }
     }
-
-    {
-      event *e = (event*)0x61000000a640;
-      //DEVA_ASSERT(!e->future_not_past || sim_me.cds[e->target_cd].future_events.at(e->future_ix).e == e);
-    }
     
     { // execute one event
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
@@ -913,7 +855,7 @@ drain_paused:
   }
   
   sim_me.from_far.for_each([&](event_on_creator *o) {
-    DEVA_ASSERT_ALWAYS(o->vtbl_on_creator != &anti_vtable, "Lingering from-far anti-message: rank="<<o->far_origin<<" id="<<o->far_id<<" o="<<o);
+    DEVA_ASSERT_ALWAYS(o->vtbl_on_creator != &anti_vtable, "Lingering from-far anti-message: id="<<o->far_id<<" o="<<o);
 
     // since we're quiesced we can pretend that events which came from afar didn't
     // since no anti-messages are in the pipes
@@ -1019,7 +961,7 @@ void pdes::rewind(bool do_rewind) {
     for(int cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
       cd_state *cd = &sim_me.cds[cd_ix];
       cd->last_commit_t = cd->rewind_commit_t;
-      cd->seq_id = cd->seq_id_rewind;
+      cd->seq_id_bumper = cd->seq_id_bumper_rewind;
       
       { // restore user state from fridge
         fridge *f = cd->fridge_head;

@@ -2,6 +2,11 @@
 #define _cfe11b2db23c404181869953e95007f3
 
 namespace deva {
+  template<typename T>
+  T identity(T x) {
+    return std::forward<T>(x);
+  }
+  
   constexpr int log_up(int x, int base, int up=0) {
     return x == 0 ? -1 :
            x < base ? (up != 0 ? 1 : 0) :
