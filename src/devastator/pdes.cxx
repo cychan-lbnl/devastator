@@ -59,7 +59,7 @@ namespace {
     return {e->far_id, e->time};
   }
   inline size_t far_id_time_hash(pair<uint64_t,uint64_t> const &xy) {
-    return xy.first*0x9e3779b97f4a7c15u + xy.second;
+    return xy.first ^ xy.second;
   }
 
   struct cd_state {
