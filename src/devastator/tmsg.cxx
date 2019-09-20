@@ -4,7 +4,8 @@
 
 #include <atomic>
 
-#include <pthread.h>
+#include <external/pthread.h>
+
 #include <sched.h>
 
 namespace opnew = deva::opnew;

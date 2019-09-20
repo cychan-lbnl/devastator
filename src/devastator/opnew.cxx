@@ -737,6 +737,7 @@ void opnew::intru_heap<T>::remove(intru_heap_link<T> T::*link_of, T *a) {
   }
 }
 
+#if 0
 template<typename T>
 void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
   auto key_of = [](void *o) {
@@ -762,6 +763,7 @@ void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
     OPNEW_ASSERT((key_of(this->top) & 1) == 0);
   #endif
 }
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // opnew::arena_holes

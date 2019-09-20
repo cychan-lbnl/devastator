@@ -1,0 +1,17 @@
+# use the current directory as the root for the build tree
+export BRUTAL_SITE="$(python3 -c 'import os; import sys; sys.stdout.write(os.path.abspath(os.getcwd()));')"
+
+if [ ! "${BRUTAL}" ]; then
+  export BRUTAL="${BRUTAL_SITE}/brutal"
+fi
+
+if [ ! -e "${BRUTAL}" ]; then
+  echo "Please set BRUTAL as the path to the brutal installation."
+  return
+fi
+
+export BRUTAL_ROOT="${BRUTAL}/template/easy_cxx.py"
+
+function brutal {
+  python3 "${BRUTAL}/tool.py" "$@"
+}

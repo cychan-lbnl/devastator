@@ -125,7 +125,11 @@ namespace opnew {
     T* pop_top(intru_heap_link<T> T::*link_of);
     void remove(intru_heap_link<T> T::*link_of, T *x);
     
+    #if 0
     void sane(intru_heap_link<T> T::*link_of);
+    #else
+    void sane(intru_heap_link<T> T::*link_of) {}
+    #endif
   };
 
   struct pool {

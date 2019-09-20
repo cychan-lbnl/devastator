@@ -5,6 +5,8 @@
 #include <sstream>
 
 namespace deva {
+  extern const char *const git_version;
+  
   void assert_failed(const char *file, int line, const char *msg=nullptr);
   void dbgbrk(bool *aborting=nullptr);
 }

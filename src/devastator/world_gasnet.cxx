@@ -2,7 +2,7 @@
 #include <devastator/intrusive_map.hxx>
 #include <devastator/opnew.hxx>
 
-#include <gasnet.h>
+#include <external/gasnetex.h>
 
 #include <atomic>
 #include <cmath>

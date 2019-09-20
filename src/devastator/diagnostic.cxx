@@ -4,14 +4,15 @@
 #include <csignal>
 #include <mutex>
 
+const char *const deva::git_version = DEVA_GIT_VERSION;
+
 namespace {
   std::mutex lock_;
 }
 
-#if WORLD_GASNET
-  #include <gasnetex.h>
-  #include <gasnet_tools.h>
-
+#if DEVA_GASNET_PRESENT
+  #include <external/gasnetex.h>
+  
   extern "C" {
     volatile int deva_frozen;
   }
@@ -33,7 +34,7 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
   if(msg != nullptr && '\0' != msg[0])
     ss << '\n' << msg << '\n';
   
-  #if WORLD_GASNET
+  #if DEVA_GASNET_PRESENT
     if(0 == gasnett_getenv_int_withdefault("GASNET_FREEZE_ON_ERROR", 0, 0)) {
       ss << "\n"
         "To freeze during these errors so you can attach a debugger, rerun "
