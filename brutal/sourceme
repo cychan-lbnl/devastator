@@ -12,6 +12,6 @@ fi
 
 export BRUTAL_ROOT="${BRUTAL}/template/easy_cxx.py"
 
-function brutal {
+brutal() {
   python3 "${BRUTAL}/tool.py" "$@"
 }
