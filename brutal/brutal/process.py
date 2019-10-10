@@ -58,9 +58,6 @@ def _everything():
 
         me.io_done.acquire()
 
-        for fd in me.fds:
-          os.close(fd)
-        
         return (status, me.outputs['stdout'], me.outputs['stderr'])
       else:
         raise Exception("brutal.process(): cancelled")
@@ -76,7 +73,7 @@ def _everything():
   io_thread_box = [None]
 
   force_mute = False
-  
+
   @digest.by_name
   def io_thread_fn():
     try:
@@ -96,13 +93,14 @@ def _everything():
         
         for fd in fds_r:
           try:
-            buf = os.read(fd, 32<<10).decode('utf-8')
+            buf = os.read(fd, 8<<10).decode()
           except OSError:
             buf = ''
 
           chks, outname, job = io_r[fd]
           
           if len(buf) == 0:
+            os.close(fd)
             del io_r[fd]
             job.outputs[outname] = ''.join(chks)
             job.satisfy()
@@ -113,6 +111,7 @@ def _everything():
           rev_bufs, job = io_w[fd]
           os.write(fd, rev_bufs.pop())
           if len(rev_bufs) == 0:
+            os.close(fd)
             del io_w[fd]
             job.satisfy()
 
@@ -213,17 +212,26 @@ def _everything():
         sys.stderr.write(msg)
 
       if 1 or capture_stdout:
-        pipe_r, pipe_w = os.pipe()
-        set_nonblock(pipe_r)
+        stdout_r, stdout_w = os.pipe()
+        set_nonblock(stdout_r)
+
+      if stdin:
+        stdin_r, stdin_w = os.pipe()
+        set_nonblock(stdout_w)
       
       pid, ptfd = os.forkpty()
       
       if pid == 0: # i am child
         if 1 or capture_stdout:
-          os.close(pipe_r)
-          os.dup2(pipe_w, 1)
-          os.close(pipe_w)
+          os.close(stdout_r)
+          os.dup2(stdout_w, 1)
+          os.close(stdout_w)
 
+        if stdin:
+          os.close(stdin_w)
+          os.dup2(stdin_r, 0)
+          os.close(stdin_r)
+        
         child_close_fds()
         
         if cwd is not None:
@@ -233,23 +241,23 @@ def _everything():
           os.execvpe(args[0], args, env)
         else:
           os.execvp(args[0], args)
+
       else: # i am parent
         with io_cond:
           job.pid = pid
           job.wait_n = 1
           
-          if len(stdin) > 0:
-            job.wait_n += 1
-            io_w[ptfd] = (reversed_bufs(stdin), job)
-            
           io_r[ptfd] = ([], 'stderr', job)
-          job.fds = [ptfd]
+          
+          if stdin:
+            job.wait_n += 1
+            os.close(stdin_r)
+            io_w[stdin_w] = (reversed_bufs(stdin), job)
           
           if 1 or capture_stdout:
             job.wait_n += 1
-            os.close(pipe_w)
-            io_r[pipe_r] = ([], 'stdout', job)
-            job.fds.append(pipe_r)
+            os.close(stdout_w)
+            io_r[stdout_r] = ([], 'stdout', job)
           else:
             job.outputs['stdout'] = ''
           
@@ -285,8 +293,11 @@ def _everything():
         except OSError: pass
 
   def reversed_bufs(s):
+    if type(s) is str:
+      s = s.encode()
+    
     cn = select.PIPE_BUF
-    n = (len(s) + cn-1)/cn
+    n = (len(s) + cn-1)//cn
     ans = [None]*n
     i = 0
     while i < n:

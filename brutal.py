@@ -32,9 +32,25 @@ def cxx_compiler():
     cxx = ['g++']
     break
 
-  ver_text = brutal.process(cxx + ['--version'], show=0, capture_stdout=1).wait()
-  brutal.depend_fact('CXX --version', ver_text)
-  return cxx
+  text = brutal.process(cxx + ['--version'], show=0, capture_stdout=1)
+  text = text.wait()
+  brutal.depend_fact('CXX --version', text)
+
+  text = brutal.process(
+    cxx + ['-x','c++','-E','-'],
+    stdin='__cplusplus', capture_stdout=1, show=0
+  )
+  text = text.wait()
+
+  for line in text.split('\n'):
+    if line and not line.startswith('#'):
+      std_ver = int(line.rstrip('L'))
+      if std_ver < 201400:
+        return cxx + ['-std=c++14']
+      else:
+        return cxx
+
+  brutal.error('Invalid preprocessor output:', text)
 
 @brutal.rule
 def sources_from_includes_enabled(PATH):
