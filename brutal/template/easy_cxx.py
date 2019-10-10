@@ -95,20 +95,24 @@ def discovery(main_src):
   
   memo_cxt = {}
   cxt_big = CodeContext()
+  cxt_big_part = CodeContext()
   pp_flags = cxt_big.pp_flags()
 
   splitext = brutal.os.path.splitext
   
   while srcs_todo or incs_todo:
     cxt_old = cxt_big
-    cxts = [(p,code_context(p)) for p in (srcs_todo + incs_todo) if p not in memo_cxt]
-    for (path,cxt) in cxts:
-      cxt = yield cxt
-      memo_cxt[path] = cxt
+    cxts = [(p, code_context.as_complete_and_partial(p)) for p in (srcs_todo + incs_todo) if p not in memo_cxt]
+    for (path,cxt_result) in cxts:
+      cxt_result = yield cxt_result
+      cxt, cxt_part = cxt_result.complete_and_partial_values()
+      memo_cxt[path] = (cxt, cxt_part)
       if path in srcs_todo:
         cxt_big |= cxt.with_updates(pp_defines={})
+        cxt_big_part |= cxt_part.with_updates(pp_defines={})
       else:
         cxt_big |= cxt
+        cxt_big_part |= cxt_part
     
     del incs_todo[:]
 
@@ -122,7 +126,7 @@ def discovery(main_src):
       srcs_todo = []
       while srcs_temp:
         src = srcs_temp.pop()
-        incs = yield includes(src, memo_cxt[src].compiler(), pp_flags)
+        incs = yield includes(src, memo_cxt[src][0].compiler(), pp_flags)
         srcs_seen[src] = incs
         incs = [inc for inc in incs if inc not in incs_seen]
         incs_todo += incs
@@ -132,14 +136,21 @@ def discovery(main_src):
             if src1 not in srcs_seen:
               srcs_todo += (src1,)
               srcs_seen[src1] = None
-
+  
+  srcs_seen_part = {}
   for src in list(srcs_seen.keys()):
-    cxt = memo_cxt[src]
+    cxt, cxt_part = memo_cxt[src]
     for f in sorted(srcs_seen[src]):
-      cxt |= memo_cxt[f]
+      full, part = memo_cxt[f]
+      cxt |= full
+      cxt_part |= part
     srcs_seen[src] = cxt
+    srcs_seen_part[src] = cxt_part
 
-  yield (srcs_seen, cxt_big)
+  yield brutal.complete_and_partial(
+    complete_value=(srcs_seen, cxt_big),
+    partial_value=(srcs_seen_part, cxt_big_part)
+  )
 
 @brutal.rule(caching='file', cli='exe')
 @brutal.coroutine

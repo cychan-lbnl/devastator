@@ -17,7 +17,7 @@ def _everything():
     from . import coflow
     import brutal
 
-  from .panic import panic, panic_unless
+  from .panic import panic, panic_unless, PanicError
   
   BaseException = builtins.BaseException
   getattr = builtins.getattr
@@ -147,10 +147,8 @@ def _everything():
 
   persistent_memo_types = ()
   counter = [0]
-  
-  @export
-  @by_name
-  def ingest(hasher, *values):
+
+  def _ingest(hasher, values, memo_map=None):
     try:
       work_stack = list(values)
       work_stack_pop = work_stack.pop
@@ -160,7 +158,7 @@ def _everything():
       open_levs = 0
       open_map = {} # open_map[id(x)] = open_stack.index(x)
       open_map_pop = open_map.pop
-      memo_map = {} # memo_map[id(x)] = (x, buf_begin_ix, buf_end_ix) | (x, bytes)
+      memo_map = memo_map or {} # memo_map[id(x)] = (x, buf_begin_ix, buf_end_ix) | (x, bytes)
       memo_log = array('Q', []) # [id(value)]
       memo_log_append = memo_log.append
       buf = bytearray()
@@ -256,7 +254,7 @@ def _everything():
               
               for i in range(memo_ix+1, len(memo_log)):
                 x_id = memo_log[i]
-                if x_id: # delete form map only if object was memo'd
+                if x_id: # delete from map only if object was memo'd
                   del memo_map[x_id]
               
               del memo_log[memo_ix:]
@@ -276,11 +274,16 @@ def _everything():
 
   @export
   @by_name
+  def ingest(hasher, *values):
+    return _ingest(hasher, values)
+
+  @export
+  @by_name
   def digest_of(*values):
     """
     Produce a SHA1 digest of the given values.
     """
-    return ingest(hashlib_sha1(), *values).digest()
+    return _ingest(hashlib_sha1(), values).digest()
 
   @export
   @by_name
@@ -288,8 +291,19 @@ def _everything():
     """
     Produce a SHA1 digest of the given values.
     """
-    return ingest(hashlib_sha1(), *values).hexdigest()
+    return _ingest(hashlib_sha1(), values).hexdigest()
 
+  @export
+  @by_name
+  def digest_of_many(*values):
+    h = hashlib_sha1()
+    memo_map = {}
+    ans = []
+    for x in values:
+      _ingest(h, (x,), memo_map)
+      ans.append(h.digest())
+    return ans
+  
   @destructurer(list)
   def de(x, buf, work):
     if x:
@@ -340,9 +354,7 @@ def _everything():
   
   @destructurer(types.ModuleType)
   def de(x, buf, work):
-    name = x.__name__.encode()
-    buf += b'mod(%x)' % len(name)
-    buf += name
+    buf += b'mod(%r)' % x.__name__
   
   import dis
   if hasattr(dis, '_unpack_opargs'):
@@ -378,9 +390,9 @@ def _everything():
   
   @destructurer(CodeOnGlobals)
   def de(me, buf, work):
-    x = getattr(me, '_brutal_digest_memo', None)
-    if x:
-      buf += x
+    me_dict = me.__dict__
+    if '_brutal_digest_memo' in me_dict:
+      buf += me_dict['_brutal_digest_memo']
       return
     
     import opcode
@@ -416,7 +428,7 @@ def _everything():
           #  print 'GLOBAL',name
           if name in fn_globals:
             val = fn_globals[name]
-            if type(val) is ModuleType:
+            if isinstance(val, ModuleType):
               co_mods.add(val)
             else:
               co_gvars[name] = fn_globals[name]
@@ -431,7 +443,7 @@ def _everything():
           for attr in co_attrs:
             if attr in mod and attr != '__init__':
               val = mod[attr]
-              if type(val) is ModuleType:
+              if isinstance(val, ModuleType):
                 co_mods1.add(val)
               else:
                 co_gvars[name] = fn_globals[name]
@@ -453,23 +465,22 @@ def _everything():
 
   @destructurer(types.FunctionType)
   def de(fn, buf, work):
-    x = getattr(fn, '_brutal_digest_memo', None)
-    if x:
-      buf += x
+    fn_dict = fn.__dict__
+
+    if '_brutal_digest_memo' in fn_dict:
+      buf += fn_dict['_brutal_digest_memo']
       return
     
-    x = getattr(fn, '_brutal_digest_other', fn)
-    if x is not fn:
+    if '_brutal_digest_other' in fn_dict:
       buf += b'fn-o'
-      work += (x,)
+      work += (fn_dict['_brutal_digest_other'],)
       return
     
     fn_mod = fn.__module__
-    fn_modfile = getattr(sys_modules[fn_mod], '__file__', None)
+    fn_modfile = getattr(sys_modules[fn_mod], '__file__', '')
     
-    if fn_mod != '__main__' and fn_modfile and fn_modfile.startswith(stdlib_dir):
-      fn_name = fn.__name__
-      buf += b'fn-sys(%r,%r)' % (fn_mod, fn_name)
+    if fn_mod == 'builtins' or fn_modfile.startswith(stdlib_dir):
+      buf += b'fn-sys(%r,%r)' % (fn_mod, fn.__name__)
     else:
       fn_code = fn.__code__
       fn_globals = fn.__globals__
@@ -505,26 +516,26 @@ def _everything():
 
   @destructurer(type)
   def de(ty, buf, work):
-    x = getattr(ty, '_brutal_digest_memo', None)
-    if x:
-      buf += x
-      return
-    
-    x = getattr(ty, '_brutal_digest_other', ty)
-    if x is not ty:
-      buf += b'ty-o'
-      work += (x,)
-      return
-    
     ty_mod = ty.__module__
     ty_name = ty.__name__
-    ty_modfile = getattr(sys_modules[ty_mod], '__file__', None)
+    ty_modfile = getattr(sys_modules[ty_mod], '__file__', '')
 
-    if ty_mod != '__main__' and ty_modfile and ty_modfile.startswith(stdlib_dir):
+    if ty_mod == 'builtins' or ty_modfile.startswith(stdlib_dir):
       buf += b'ty-sys(%r,%r)' % (ty_mod, ty_name)
     else:
+      ty_dict = ty.__dict__
+
+      if '_brutal_digest_memo' in ty_dict:
+        buf += ty_dict['_brutal_digest_memo']
+        return
+      
+      if '_brutal_digest_other' in ty_dict:
+        buf += b'ty-o'
+        work += (ty_dict['_brutal_digest_other'],)
+        return
+      
       mbrs = sorted([
-        (mx,my) for mx,my in ty.__dict__.items()
+        (mx,my) for mx,my in ty_dict.items()
         if not(mx.startswith('__') and mx.endswith('__')) or
           mx in ('__init__','__call__','__getitem__','__getattr__')
       ])
@@ -537,24 +548,24 @@ def _everything():
     ty = type(x)
     ty_mod = ty.__module__
     ty_name = ty.__name__
+
+    x_dict = getattr(x, '__dict__', None)
     
-    memo = getattr(x, '_brutal_digest_memo', None)
-    if memo is not None:
-      buf += memo
+    if x_dict and '_brutal_digest_memo' in x_dict:
+      buf += x_dict['_brutal_digest_memo']
       return
     
     if isinstance(x, BaseException):
       buf += b'ex(%r,%r)' % (ty_mod, ty_name)
     elif 1: #ty is getattr(sys.modules[ty_mod], ty_name, None):
-      got = getattr(x, '__getstate__', None)
-      if got is not None:
+      __getstate__ = getattr(x, '__getstate__', None)
+      if __getstate__ is not None:
         buf += b'ob1'
-        work += (got(),)
+        work += (__getstate__(),)
       else:
-        got = getattr(x, '__dict__', buf)
-        if got is not buf:
-          keys = sorted(got.keys())
-          vals = [got[k] for k in keys]
+        if x_dict is not None:
+          keys = sorted(x_dict.keys())
+          vals = list(map(x_dict.__getitem__, keys))
         else:
           keys = sorted(getattr(ty, '__slots__', ()))
           kvs = [(k, getattr(x, k, buf)) for k in keys]

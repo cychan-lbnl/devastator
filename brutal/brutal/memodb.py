@@ -72,6 +72,7 @@ def _everything():
     coflow_coroutine = coflow.coroutine
     coflow_Promise = coflow.Promise
     coflow_Result = coflow.Result
+    coflow_mbind = coflow.mbind
     
     hashlib_sha1 = hashlib.sha1
     
@@ -415,12 +416,54 @@ def _everything():
     return name, full
   
   traced_hash_digest = binascii.unhexlify(b"b13b4fbd38684ba882c10426b457dc90")
+  object__new__ = object.__new__
   
+  @export
+  @digest.by_name
+  class CompleteAndPartial(object):
+    def __init__(me, complete_value, partial_value):
+      me.complete_value = complete_value
+      me.partial_value = partial_value
+
+    def complete_and_partial_values(me):
+      return (me.complete_value, me.partial_value)
+
+    def __repr__(me):
+      if me.complete_value == me.partial_value:
+        return 'CompleteAndPartial(complete_value=%r)' % (me.complete_value,)
+      else:
+        return 'CompleteAndPartial(\ncomplete_value=%r,\npartial_value=%r)' % (me.complete_value, me.partial_value)
+  
+  @export
+  @digest.by_name
+  def complete_and_partial(complete_value, partial_value=None):
+    if partial_value is None:
+      if type(complete_value) is CompleteAndPartial:
+        return complete_value
+      elif isinstance(complete_value, coflow_Future):
+        @coflow_mbind(complete_value)
+        def have(complete_value):
+          return CompleteAndPartial(complete_value, complete_value)
+        return have
+      else:
+        return CompleteAndPartial(complete_value, complete_value)
+    else:
+      if isinstance(complete_value, coflow_Future) or isinstance(partial_value, coflow_Future):
+        @coflow_mbind(complete_value)
+        def have_first(complete_value):
+          @coflow_mbind(partial_value)
+          def have_second(partial_value):
+            return CompleteAndPartial(complete_value, partial_value)
+          return have_second
+        return have_first
+      else:
+        return CompleteAndPartial(complete_value, partial_value)
+    
   @export
   @digest.by_name
   def traced(fn):
     memo = {}
-    def resultoid_and_digests(args, kws):
+    def result_and_digests(args, kws):
       arg_dig = digest_of(args, kws)
       
       if arg_dig in memo:
@@ -430,40 +473,75 @@ def _everything():
       @coflow.capture_effects(
         (coflow.effect(TraceShadow, log.append),), False,
         fn, *args, **kws)
-      def resultoid_and_digests(result):
-        h = ingest(hashlib_sha1(), arg_dig, result)
-        cname = cfull = h.digest()
-
-        elog = sorted(set([(r[5],r[6]) for r in log]))
-
-        if len(elog) == 0:
-          ename, efull = zero, zero
-        elif len(elog) == 1:
-          ename, efull = elog[0]
-        else:
-          enames, efulls = zip(*elog)
-          h = hashlib_sha1()
-          h.update(b'%x.' % len(enames))
-          h.update(b''.join(enames))
-          ename = h.digest()
-          h.update(b''.join(efulls))
-          efull = h.digest()
+      def result_and_digests(result):
+        result_ty = type(result)
         
-        return (result.value, cname, cfull, ename, efull)
+        if result_ty is coflow_Result:
+          value = result._value
+          value_ty = type(value)
+          
+          if value_ty is CompleteAndPartial:
+            cname, cfull = digest.digest_of_many(value.partial_value, value.complete_value)
+          else:
+            h = ingest(hashlib_sha1(), arg_dig, value)
+            cname = cfull = h.digest()
 
-      memo[arg_dig] = resultoid_and_digests
-      return resultoid_and_digests
+          elog = sorted(set([(r[5],r[6]) for r in log]))
+          elog_len = len(elog)
+
+          if elog_len == 0:
+            ename, efull = zero, zero
+          elif elog_len == 1:
+            ename, efull = elog[0]
+          else:
+            enames, efulls = zip(*elog)
+            h = hashlib_sha1()
+            h.update(b'%x.' % elog_len)
+            h.update(b''.join(enames))
+            ename = h.digest()
+            h.update(b''.join(efulls))
+            efull = h.digest()
+
+        elif result_ty is coflow_Failure:
+          cname = cfull = zero
+          ename = efull = zero
+          
+        else:
+          panic()
+        
+        return (result, cname, cfull, ename, efull)
+      
+      memo[arg_dig] = result_and_digests
+      return result_and_digests
 
     @digest.by_name(traced_hash_digest)
     def proxy(*args, **kws):
-      @coflow.after(resultoid_and_digests, args, kws)
+      @coflow.after(result_and_digests, args, kws)
       def result(res_and_digs):
-        resultoid, cname, cfull, ename, efull = res_and_digs.value()
+        result, cname, cfull, ename, efull = res_and_digs.value()
         TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
-        return resultoid()
+        result_ty = type(result)
+        if result_ty is coflow_Result:
+          value = result._value
+          if type(value) is CompleteAndPartial:
+            return value.complete_value
+          else:
+            return value
+        else:
+          return result.value() # will explode
       return result
-  
-    proxy._brutal_resultoid_and_digests = resultoid_and_digests
+    
+    @digest.by_name(traced_hash_digest)
+    def as_complete_and_partial(*args, **kws):
+      @coflow.after(result_and_digests, args, kws)
+      def result(res_and_digs):
+        result, cname, cfull, ename, efull = res_and_digs.value()
+        TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
+        return result.value()
+      return result
+
+    proxy.as_complete_and_partial = as_complete_and_partial
+    proxy._brutal_result_and_digests = result_and_digests
     proxy.__name__ = fn.__name__
     proxy.__doc__ = fn.__doc__
     proxy.__wrapped__ = fn
@@ -473,23 +551,23 @@ def _everything():
     proxy._brutal_trace_id = (tr_name, tr_meat)
     if tr_name not in user_traces:
       user_traces[tr_name] = {}
-    user_traces[tr_name][tr_meat] = resultoid_and_digests
+    user_traces[tr_name][tr_meat] = result_and_digests
     
     return proxy
   
   if 1: # depend_apath & depend_file
-    def depend_apath_resultoid_and_digests():
-      dummy = lambda:None
-      def depend_apath_resultoid_and_digests(apath, _):
+    def depend_apath_result_and_digests():
+      dummy = coflow_Result(None)
+      def depend_apath_result_and_digests(apath, _):
         cname, cfull = query_file_digests(apath)
         return (dummy, cname, cfull, zero, zero)
-      return depend_apath_resultoid_and_digests
-    depend_apath_resultoid_and_digests = depend_apath_resultoid_and_digests()
+      return depend_apath_result_and_digests
+    depend_apath_result_and_digests = depend_apath_result_and_digests()
     
-    builtin_traces['#apath'] = depend_apath_resultoid_and_digests
+    builtin_traces['#apath'] = depend_apath_result_and_digests
     
     def depend_apath(apath):
-      _, cname, cfull, ename, efull = depend_apath_resultoid_and_digests(apath, None)
+      _, cname, cfull, ename, efull = depend_apath_result_and_digests(apath, None)
       TraceShadow.emit('#apath', apath, None, cname, cfull, ename, efull)
     
     @export
@@ -499,24 +577,24 @@ def _everything():
         depend_apath(os_path_abspath(p))
   
   if 1: # depend_fact
-    def depend_fact_resultoid_and_digests(factdict):
+    def depend_fact_result_and_digests(factdict):
       efull = digest_of(factdict)
-      return (lambda:None, zero, zero, efull, efull)
+      return (coflow_Result(None), zero, zero, efull, efull)
     
-    builtin_traces['#fact'] = depend_fact_resultoid_and_digests
+    builtin_traces['#fact'] = depend_fact_result_and_digests
     
     @export
     @digest.by_name
     def depend_fact(key=None, val=None, **kws):
       if key is not None:
         kws[key] = val
-      _, cname, cfull, ename, efull = depend_fact_resultoid_and_digests(kws)
+      _, cname, cfull, ename, efull = depend_fact_result_and_digests(kws)
       TraceShadow.emit('#fact', kws, None, cname, cfull, ename, efull)
   
   if 1: # env
-    def env_resultoid_and_digests():
+    def env_result_and_digests():
       memo = {}
-      def env_resultoid_and_digests(name, default):
+      def env_result_and_digests(name, default):
         key = (name, default)
         try: hash(key)
         except TypeError: key = hexdigest_of(key)
@@ -558,13 +636,13 @@ def _everything():
           val = s
         
         full = digest_of(name, default, val)
-        ans = (lambda:val, full, full, zero, zero)
+        ans = (coflow_Result(val), full, full, zero, zero)
         memo[key] = ans
         return ans
-      return env_resultoid_and_digests
-    env_resultoid_and_digests = env_resultoid_and_digests()
+      return env_result_and_digests
+    env_result_and_digests = env_result_and_digests()
     
-    builtin_traces['#env'] = env_resultoid_and_digests
+    builtin_traces['#env'] = env_result_and_digests
 
     @digest.by_name
     class Env(object):
@@ -572,9 +650,9 @@ def _everything():
         return lambda default=None: me(name, default)
       
       def __call__(me, name, default=None):
-        val_fn, full, full, zero, zero = env_resultoid_and_digests(name, default)
+        val_fn, full, full, zero, zero = env_result_and_digests(name, default)
         TraceShadow.emit('#env', name, default, full, full, zero, zero)
-        return val_fn()
+        return val_fn.value()
     
     brutal.env = globals()['env'] = Env()
   
@@ -583,14 +661,14 @@ def _everything():
   def memoized(fn):
     @coflow_coroutine
     def proxy(*args, **kws):
-      resultoid, cname, cfull, ename, efull = yield memo_resultoid_and_digests(fn, args, kws)
+      result, cname, cfull, ename, efull = yield memo_result_and_digests(fn, args, kws)
       TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
-      yield resultoid()
+      yield result.value()
     
-    resultoid_and_digests = lambda args,kws: memo_resultoid_and_digests(fn, args, kws)
+    result_and_digests = lambda args,kws: memo_result_and_digests(fn, args, kws)
     
     proxy._brutal_digest_memo = traced_hash_digest
-    proxy._brutal_resultoid_and_digests = resultoid_and_digests
+    proxy._brutal_result_and_digests = result_and_digests
     proxy.__name__ = fn.__name__
     proxy.__doc__ = fn.__doc__
     proxy.__wrapped__ = fn
@@ -600,7 +678,7 @@ def _everything():
     proxy._brutal_trace_id = (tr_name, tr_meat)
     if tr_name not in user_traces:
       user_traces[tr_name] = {}
-    user_traces[tr_name][tr_meat] = resultoid_and_digests
+    user_traces[tr_name][tr_meat] = result_and_digests
     
     return proxy
   
@@ -652,7 +730,7 @@ def _everything():
   
   @coflow_coroutine
   @digest.by_name
-  def memo_resultoid_and_digests(memo_fn, memo_args, memo_kws):
+  def memo_result_and_digests(memo_fn, memo_args, memo_kws):
     db = _db()
     db_lock_release = yield db.lock.acquire()
     db_dedup_decode = db.dedup_decode
@@ -699,10 +777,10 @@ def _everything():
           _, _, cfull, ename, efull, res_vals, res_kws, _ = node
           res_vals = db_dedup_decode(res_vals)
           res_kws = db_dedup_decode(res_kws)
-          yield lambda:coflow_Result(*res_vals, **res_kws), cfull, cfull, ename, efull
+          yield coflow_Result(coflow_Result(*res_vals, **res_kws)), cfull, cfull, ename, efull
         else:
           _, _, cfull, ename, efull, failure = node
-          yield lambda:failure, cfull, cfull, ename, efull
+          yield coflow_Result(failure), cfull, cfull, ename, efull
         return
       
       elif tag == 0:
@@ -854,7 +932,7 @@ def _everything():
     db_lock_release()
     subtree_changed.satisfy()
     
-    yield (lambda:result, memo_cfull, memo_cfull, ename, efull)
+    yield (coflow_Result(result), memo_cfull, memo_cfull, ename, efull)
   
 _everything()
 del _everything

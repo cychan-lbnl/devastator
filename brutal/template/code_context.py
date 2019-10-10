@@ -3,7 +3,7 @@
 assert brutal
 
 def _merge_flags(a, b):
-  if a:
+  if a and a is not b:
     if b:
       return a + [x for x in b if x not in a]
     else:
@@ -12,7 +12,7 @@ def _merge_flags(a, b):
     return b
 
 def _merge_ppdefs(a, b):
-  if a:
+  if a and a is not b:
     if b:
       ans = {}
       for x in set(a.keys()) | set(b.keys()):
@@ -25,9 +25,9 @@ def _merge_ppdefs(a, b):
         elif v is None or str(u) == str(v):
           ans[x] = u
         else:
-          raise AssertionError(
+          brutal.panic(
             'CodeContext merger attempted with differing values for ' +
-            'preprocessor defines (pp_defines): symbol "%s", values: %r and %r.' % (x, a, b)
+            'preprocessor defines (pp_defines): symbol "{0}", values: {1!r} and {2!r}.', x, a, b
           )
       return ans
     else:
@@ -78,17 +78,15 @@ class CodeContext(object):
     if compiler:
       compilers = compilers | frozenset(((compiler,),) if type(compiler) is str else (tuple(compiler),))
     
-    if pp_defines:
-      pp_defines = {str(x): str(y) for x,y in pp_defines.items() if y is not None}
+    if any(type(y) is not str for y in pp_defines.values()):
+      pp_defines = {x: str(y) for x,y in pp_defines.items() if y is not None}
 
     cg_optlev = str(cg_optlev)
     
-    locvars = locals()
     fields = CodeContext._state_fields
-    me.__dict__.update({field: locvars[field] for field in fields})
-    me.digest = b'H' + brutal.digest_of(*[locvars[field] for field in fields])
-    me._brutal_digest_memo = me.digest
-
+    me.__dict__.update(zip(fields, map(locals().__getitem__, fields)))
+    me._digest = None
+  
   def __or__(a, b):
     return CodeContext(
       compilers = (a.compilers | b.compilers) or _empty_froset,
@@ -113,31 +111,71 @@ class CodeContext(object):
     return (acc|me) if acc else me
 
   def with_updates(me, **kws):
-    fields = CodeContext._state_fields
-    d = me.__dict__
-    d = dict(zip(fields, [d[x] for x in fields]))
+    cls = CodeContext
+    fields = cls._state_fields
+    d = dict(zip(fields, map(me.__dict__.__getitem__, fields)))
     d.update(kws)
-    return CodeContext(**d)
-  
-  def __getstate__(me):
-    return tuple(me.__dict__[x] for x in CodeContext._state_fields)
+    return cls(**d)
 
-  def __setstate__(me, s):
-    me.__init__(**dict(zip(CodeContext._state_fields, s)))
-  
-  def __eq__(a, b): return a.digest == b.digest
-  def __ne__(a, b): return a.digest != b.digest
-  def __lt__(a, b): return a.digest <  b.digest
-  def __le__(a, b): return a.digest <= b.digest
-  def __gt__(a, b): return a.digest >  b.digest
-  def __ge__(a, b): return a.digest >= b.digest
+  def with_pp_defines(__0, __1=None, **defs):
+    pp_defines = dict(__0.pp_defines)
+    changed = 0
+    defs = __1 or defs
+    for x in defs:
+      y = defs[x]
+      if y is None:
+        if x in pp_defines:
+          changed = 1
+          del pp_defines[x]
+      else:
+        y = str(y)
+        changed |= pp_defines[x] != y
+        pp_defines[x] = y
 
-  def __hash__(me): return hash(me.digest)
+    if not changed:
+      return __0
+    else:
+      obj = object.__new__(CodeContext)
+      obj.__dict__.update(__0.__dict__)
+      obj.pp_defines = pp_defines
+      obj._digest = None
+      return obj
+  
+  def __getstate__(fields):
+    def __getstate__(me):
+      return tuple(map(me.__dict__.__getitem__, fields))
+    return __getstate__
+  __getstate__ = __getstate__(_state_fields)
+  
+  def __setstate__(fields):
+    def __setstate__(me, s):
+      me.__dict__.update(zip(fields, s))
+      me._digest = None
+    return __setstate__
+  __setstate__ = __setstate__(_state_fields)
+
+  def digest(fields):
+    def digest(me):
+      dig = me._digest
+      if dig is None:
+        me._digest = dig = b'H' + brutal.digest_of(*map(me.__dict__.__getitem__, fields))
+      return dig
+    return digest
+  digest = digest(_state_fields)
+  
+  def __eq__(a, b): return a.digest() == b.digest()
+  def __ne__(a, b): return a.digest() != b.digest()
+  def __lt__(a, b): return a.digest() <  b.digest()
+  def __le__(a, b): return a.digest() <= b.digest()
+  def __gt__(a, b): return a.digest() >  b.digest()
+  def __ge__(a, b): return a.digest() >= b.digest()
+
+  def __hash__(me): return hash(me.digest())
 
   def compiler(me):
     cs = me.compilers
-    if len(cs) == 0: raise AssertionError("No compiler exists in CodeContext.")
-    if len(cs)  > 1: raise AssertionError("Compiler is not unique in CodeContext: "+', '.join(map(repr, cs)))
+    if len(cs) == 0: brutal.panic("No compiler exists in CodeContext.")
+    if len(cs) >  1: brutal.panic("Compiler is not unique in CodeContext: {0}", ', '.join(map(repr, cs)))
     return list(next(iter(cs)))
   
   def pp_flags(me):

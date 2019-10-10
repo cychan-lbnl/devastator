@@ -48,6 +48,7 @@ def _everything():
   os_path_samefile = os.path.samefile
 
   digest_of = digest.digest_of
+  hexdigest_of = digest.hexdigest_of
 
   path_root = os.environ.get('BRUTAL_ROOT', os_path_join(os.getcwd(), 'brutal.py'))
   path_root = os_path_abspath(path_root)
@@ -88,7 +89,7 @@ def _everything():
           return None
   
   def import_interposer(name, globals={}, locals={}, fromlist=[], level=0):
-    here = globals.get('__brutal_here__')
+    here = globals.get('_brutal_here')
     if here is not None:
       #print('import_interposer name='+name)
       sys.meta_path[0:0] = (Finder(),)
@@ -100,11 +101,69 @@ def _everything():
   
   builtins.__import__ = import_interposer
 
+  class SubtreeModule(types.ModuleType):
+    def __init__(me, name, here, parent_here):
+      types.ModuleType.__init__(me, name)
+      me._brutal_here = here
+      me._brutal_parent_here = parent_here
+      me._brutal_imported = False
+      
+    def __getattr__(me, name):
+      if not me._brutal_imported:
+        panic('Subtree modules cannot be accessed from the toplevel scope of the importing module.')
+      else:
+        return me.__dict__[name]
+
+  proxy_module_memo = {}
+  subtree_module_memo = {}
+  def brutal_module_proxy(here):
+    if here not in proxy_module_memo:
+      name = 'brutal_proxy_' + hexdigest_of(here)[:16]
+      mod = types.ModuleType(name)
+      mod.__dict__.update(brutal.__dict__)
+
+      deferred_subtree_modules = []
+      def import_subtree_deferred(path):
+        if path not in subtree_module_memo:
+          name = 'brutal_subtree_' + hexdigest_of(path)[:16]
+          submod = SubtreeModule(name, path, here)
+          sys.modules[name] = submod
+          subtree_module_memo[path] = submod
+          if mod._brutal_exec_done:
+            import_subtree_module(submod)
+          else:
+            deferred_subtree_modules.append(submod)
+        else:
+          submod = subtree_module_memo[path]
+          panic_unless(submod._brutal_parent_here == here, 'Attempted import of subtree module from two different directoryies: "{0}", "{1}"', submod._brutal_parent_here, here)
+        
+        return submod
+      
+      mod.__dict__.update({
+        'here': lambda *relpath: os_path_join(here, *relpath),
+        'rule': rule,
+        '_deferred_subtree_modules': deferred_subtree_modules,
+        'import_subtree_deferred': import_subtree_deferred,
+        '_brutal_exec_done': False
+      })
+      sys.modules[name] = mod
+      proxy_module_memo[here] = mod
+    
+    return proxy_module_memo[here]
+
+  def import_subtree_module(submod):
+    _, subdefs, _ = node_at(submod._brutal_here, 'brutal.py', None, os_path_join(submod._brutal_parent_here, 'brutal.py'))
+    submod.__dict__.update({
+      x: (y if isinstance(y, SubtreeModule) else None) or getattr(y, '_brutal_scoped_rule', None) or y
+      for x,y in subdefs.items()
+    })
+    submod._brutal_imported = True
+  
   @export
   def import_file(path, owner_package_name=None):
     _, _, m = node_at(path, owner_package_name=owner_package_name)
     return m
-
+  
   def node_at(path_rule, path_rule_add=None, owner_package_name=None, explicit_parent=None):
     panic_unless(not(owner_package_name and explicit_parent))
     
@@ -156,21 +215,22 @@ def _everything():
       if owner_mod:
         mod_name = owner_package_name + '.' + os_path_basename(path_rule)[:-3]
       else:
-        mod_name = 'brutal_rulefile_' + digest.hexdigest_of(path_rule)[:16]
+        mod_name = 'brutal_rulefile_' + hexdigest_of(path_rule)[:16]
       
       mod = types.ModuleType(mod_name)
       defs = mod.__dict__
       _, parent_defs, _ = parent
       defs.update(parent_defs)
+      brutal_proxy = brutal_module_proxy(path_here)
       defs.update({
         '__name__': mod_name,
         '__package__': (owner_package_name if owner_package_name else mod_name),
         '__file__': path_rule,
         '__path__': None if owner_package_name else [path_here],
-        '__brutal_rule_file__': path_rule,
-        '__brutal_here__': path_here,
-        '__brutal_parent_node__': parent,
-        'brutal': brutal_module_proxy(path_here)
+        '_brutal_rule_file': path_rule,
+        '_brutal_here': path_here,
+        '_brutal_parent_node': parent,
+        'brutal': brutal_proxy
       })
       
       sys.modules[mod_name] = mod
@@ -183,6 +243,11 @@ def _everything():
       with open(path_rule,'r') as f:
         code = compile(f.read(), path_rule, 'exec')
       exec(code, defs, None)
+
+      if not(owner_package_name or explicit_parent):
+        defs['_brutal_exec_done'] = True
+        for submod in brutal_proxy._deferred_subtree_modules:
+          import_subtree_module(submod)
     
     return node
 
@@ -190,7 +255,8 @@ def _everything():
   rule_cli = {}
 
   @memodb.traced
-  def locate_rule_fn(fn_name, path_rule, path_arg_ix, args, kws):
+  @digest.by_name
+  def locate_rule_fn(fn_name, path_rule, scoped, path_arg_ix, args, kws):
     if 'PATH' in kws:
       kws['PATH'] = path = os_path_abspath(kws['PATH'])
       path = os_path_dirname(path)
@@ -205,14 +271,34 @@ def _everything():
       path_add = 'brutal.py'
     else:
       path = path_rule
-      path_add = ''
+      path_add = None
     
-    par_nd, defs, _ = node_at(path, path_add)
+    par_nd, defs, _ = nd = node_at(path, path_add)
     
     while fn_name not in defs:
-      panic_unless(par_nd is not None)
-      par_nd, defs = par_nd
+      panic_unless(par_nd is not None, '"{0}" not found starting at "{1}"', fn_name, path)
+      par_nd, defs, _ = nd = par_nd
 
+    if scoped:
+      if path_rule == path_root:
+        path_here = path_root
+        path_add = None
+      else:
+        path_here = os_path_dirname(path_rule)
+        path_add = 'brutal.py'
+
+      nd_here = node_at(path_here, path_add)
+      is_subnode = False
+
+      while nd is not None:
+        if nd is nd_here:
+          is_subnode = True
+          break
+        nd = nd[0]
+
+      if not is_subnode:
+        defs = nd_here[1]
+    
     return (defs[fn_name]._brutal_rule_fn, args, kws)
 
   def rule(fn=None, caching=None, cli=None, traced=None):
@@ -224,8 +310,9 @@ def _everything():
       co_argcount = unwrapped.__code__.co_argcount
       co_argnames = unwrapped.__code__.co_varnames[0:co_argcount]
       
-      par_nd = unwrapped.__globals__['__brutal_parent_node__']
-      path_rule = unwrapped.__globals__['__brutal_rule_file__']
+      unwrapped__globals__ = unwrapped.__globals__
+      par_nd = unwrapped__globals__['_brutal_parent_node']
+      path_rule = unwrapped__globals__['_brutal_rule_file']
       
       path_arg_ix = None
       if 'PATH' in co_argnames:
@@ -277,13 +364,25 @@ def _everything():
         if caching == 'file':
           panic("brutal.rule(): invalid argument: caching=%r, traced=%r"%(caching, traced))
         fn = memodb.traced(fn)
+      else:
+        fn.as_complete_and_partial = lambda *a,**kw: memodb.complete_and_partial(fn(*a,**kw))
       
-      def resolving_proxy(*args, **kws):
-        fn, args, kws = locate_rule_fn(fn_name, path_rule, path_arg_ix, args, kws)
-        return fn(*args, **kws)
-      resolving_proxy._brutal_rule_fn = fn
-      resolving_proxy.__wrapped__ = fn
-      
+      def make_resolving_proxy(fn, scoped):
+        def resolving_proxy(*args, **kws):
+          fn, args, kws = locate_rule_fn(fn_name, path_rule, scoped, path_arg_ix, args, kws)
+          return fn(*args, **kws)
+
+        def as_complete_and_partial(*args, **kws):
+          fn, args, kws = locate_rule_fn(fn_name, path_rule, scoped, path_arg_ix, args, kws)
+          return fn.as_complete_and_partial(*args, **kws)
+
+        resolving_proxy._brutal_rule_fn = fn
+        resolving_proxy.__wrapped__ = fn
+        resolving_proxy.as_complete_and_partial = as_complete_and_partial
+        return resolving_proxy
+
+      resolving_proxy = make_resolving_proxy(fn, False)
+      resolving_proxy._brutal_scoped_rule = make_resolving_proxy(fn, True)
       par_defs = par_nd[1]
       
       if fn_name in par_defs:
@@ -298,28 +397,13 @@ def _everything():
     else:
       return make_rule
 
-  proxy_memo = {}
-  def brutal_module_proxy(here):
-    if here not in proxy_memo:
-      name = 'brutal_proxy_' + digest.hexdigest_of(here)[:16]
-      mod = types.ModuleType(name)
-      mod.__dict__.update(brutal.__dict__)
-      mod.__dict__.update({
-        'here': lambda *relpath: os_path_join(here, *relpath),
-        'rule': rule,
-        'import_tree': lambda path: node_at(path, 'brutal.py', None, os_path_join(here,'brutal.py'))[2]
-      })
-      sys.modules[name] = mod
-      proxy_memo[here] = mod
-    return proxy_memo[here]
-
   @export
   def cli_hooks():
     _, root_defs, _ = node_at(os.getcwd(), 'brutal.py')
     
     ans = dict(root_defs)
     for nm in root_defs.keys():
-      do_del = nm in ('brutal','__brutal_rule_file__','__brutal_parent_node__')
+      do_del = nm in ('brutal','_brutal_rule_file','_brutal_parent_node')
       do_del |= type(root_defs[nm]) is type(sys)
       if do_del: del ans[nm]
     

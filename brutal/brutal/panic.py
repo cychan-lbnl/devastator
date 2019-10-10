@@ -1,7 +1,7 @@
 import brutal
 
 class PanicError(BaseException):
-  def __init__(me, message):
+  def __init__(me, message=None):
     BaseException.__init__(me, message)
 
 def panic_unless(ok, fmtstr='', *fmtargs, **fmtkws):

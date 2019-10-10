@@ -205,6 +205,13 @@ def _everything():
     def go(job):
       initialize()
       
+      if show:
+        msg = '(in '+cwd+')\n' if cwd else ''
+        msg += ''.join(['%s=%s '%(shlex.quote(x), shlex.quote(y)) for x,y in (env_add or {}).items()])
+        msg += ' '.join([shlex.quote(a) for a in args])
+        msg += '\n'*2
+        sys.stderr.write(msg)
+
       if 1 or capture_stdout:
         pipe_r, pipe_w = os.pipe()
         set_nonblock(pipe_r)
@@ -247,13 +254,6 @@ def _everything():
             job.outputs['stdout'] = ''
           
           io_cond.notify()
-
-    if show:
-      msg = '(in '+cwd+')\n' if cwd else ''
-      msg += ''.join(['%s=%s '%(shlex.quote(x), shlex.quote(y)) for x,y in (env_add or {}).items()])
-      msg += ' '.join([shlex.quote(a) for a in args])
-      msg += '\n'*2
-      sys.stderr.write(msg)
 
     status, out, err = yield coflow.submit_job(Job(go))
     

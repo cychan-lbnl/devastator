@@ -106,7 +106,7 @@ def _everything():
     """A memoized version of `os.listdir`. More performant, but only useful
     if you don't expect the queried directory to change during this
     program's lifetime."""
-    return os_listdir(path)
+    return frozenset(os_listdir(path))
   
   @export
   def rmtree(path):
