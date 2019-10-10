@@ -174,7 +174,11 @@ def _everything():
         panic_unless(type(x) in (str,int,float))
         return [str(x)]
     
-    args = flatten(args)
+    try:
+      args = flatten(args)
+    except:
+      print('args',args)
+      raise
 
     capture_stdout = capture_stdout or force_mute
 
@@ -186,6 +190,8 @@ def _everything():
           return ' '.join([shlex.quote(t) for t in x])
         elif x is None:
           return ''
+        elif type(x) is bool:
+          return str(int(x))
         else:
           return str(x)
       

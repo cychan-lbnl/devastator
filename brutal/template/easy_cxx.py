@@ -35,15 +35,31 @@ def code_context(PATH):
 def sources_from_includes_enabled(PATH):
   return False
 
+@brutal.rule(caching='memory', traced=1)
+def dir_source_exts_by_noext(dir):
+  ans = {}
+  for m in brutal.os.listdir(dir):
+    noext, ext = brutal.os.path.splitext(m)
+    if ext in source_exts:
+      if noext in ans:
+        ans[noext].append(ext)
+      else:
+        ans[noext] = [ext]
+  return ans
+
 @brutal.rule
 def sources_for_include(PATH):
   if not sources_from_includes_enabled(PATH):
     return set()
   
-  inc_base, inc_ext = brutal.os.path.splitext(PATH)
+  inc_dir, inc_base = brutal.os.path.split(PATH)
+  inc_base, inc_ext = brutal.os.path.splitext(inc_base)
   
   if inc_ext in header_exts:
-    return set([inc_base + ext for ext in find_src_exts(inc_base)])
+    return set([
+      brutal.os.path.join(inc_dir, inc_base + ext)
+      for ext in dir_source_exts_by_noext(inc_dir).get(inc_base, ())
+    ])
   else:
     return set()
 
@@ -64,7 +80,7 @@ def includes(PATH, compiler, pp_flags):
 @brutal.rule(caching='file')
 @brutal.coroutine
 def compile(PATH, compiler, pp_flags, cg_flags):
-  out = brutal.mkpath(PATH, '.o')
+  out = brutal.mkpath(PATH + '.o')
   brutal.depend_file(PATH)
   incs = includes(PATH, compiler, pp_flags)
   cmd = compiler + pp_flags + cg_flags + ['-c',PATH,'-o',out]
@@ -73,16 +89,6 @@ def compile(PATH, compiler, pp_flags, cg_flags):
   brutal.depend_file(*incs)
   yield out
 
-def find_src_exts(base):
-  ans = []
-  for ext in source_exts:
-    path = base + ext
-    brutal.depend_file(path)
-    if brutal.os.exists(path):
-      ans.append(ext)
-  return ans
-
-@brutal.traced
 @brutal.coroutine
 def discovery(main_src):
   if sources_from_includes_enabled(main_src):
@@ -95,24 +101,19 @@ def discovery(main_src):
   
   memo_cxt = {}
   cxt_big = CodeContext()
-  cxt_big_part = CodeContext()
   pp_flags = cxt_big.pp_flags()
 
   splitext = brutal.os.path.splitext
   
   while srcs_todo or incs_todo:
     cxt_old = cxt_big
-    cxts = [(p, code_context.as_complete_and_partial(p)) for p in (srcs_todo + incs_todo) if p not in memo_cxt]
-    for (path,cxt_result) in cxts:
-      cxt_result = yield cxt_result
-      cxt, cxt_part = cxt_result.complete_and_partial_values()
-      memo_cxt[path] = (cxt, cxt_part)
+    cxts = [(p, code_context(p)) for p in (srcs_todo + incs_todo) if p not in memo_cxt]
+    for (path, cxt) in cxts:
+      memo_cxt[path] = cxt = yield cxt
       if path in srcs_todo:
         cxt_big |= cxt.with_updates(pp_defines={})
-        cxt_big_part |= cxt_part.with_updates(pp_defines={})
       else:
         cxt_big |= cxt
-        cxt_big_part |= cxt_part
     
     del incs_todo[:]
 
@@ -126,7 +127,7 @@ def discovery(main_src):
       srcs_todo = []
       while srcs_temp:
         src = srcs_temp.pop()
-        incs = yield includes(src, memo_cxt[src][0].compiler(), pp_flags)
+        incs = yield includes(src, memo_cxt[src].compiler(), pp_flags)
         srcs_seen[src] = incs
         incs = [inc for inc in incs if inc not in incs_seen]
         incs_todo += incs
@@ -137,26 +138,31 @@ def discovery(main_src):
               srcs_todo += (src1,)
               srcs_seen[src1] = None
   
-  srcs_seen_part = {}
   for src in list(srcs_seen.keys()):
-    cxt, cxt_part = memo_cxt[src]
+    cxt = memo_cxt[src]
     for f in sorted(srcs_seen[src]):
-      full, part = memo_cxt[f]
-      cxt |= full
-      cxt_part |= part
+      cxt |= memo_cxt[f]
     srcs_seen[src] = cxt
-    srcs_seen_part[src] = cxt_part
 
-  yield brutal.complete_and_partial(
-    complete_value=(srcs_seen, cxt_big),
-    partial_value=(srcs_seen_part, cxt_big_part)
-  )
+  yield srcs_seen, cxt_big
+
+@brutal.rule(caching='file')
+@brutal.coroutine
+def linked_binary(name, cxt, objs):
+  ld = cxt.compiler()
+  ld_flags = cxt.ld_flags()
+  lib_flags = cxt.lib_flags()
+  
+  exe = brutal.mkpath(name + '.exe')
+  cmd = ld + ld_flags + ['-o',exe] + sorted(objs) + lib_flags
+  yield brutal.process(cmd)
+  yield exe
 
 @brutal.rule(caching='file', cli='exe')
 @brutal.coroutine
 def executable(PATH):
   srcs, cxt_big = yield discovery(PATH)
-  
+
   objs = {}
   for src in srcs:
     cxt = srcs[src]
@@ -165,13 +171,6 @@ def executable(PATH):
   
   for src in objs:
     objs[src] = yield objs[src]
-  objs = list(objs.values())
+  objs = frozenset(objs.values())
 
-  ld = cxt_big.compiler()
-  ld_flags = cxt_big.ld_flags()
-  lib_flags = cxt_big.lib_flags()
-  
-  exe = brutal.mkpath(PATH, suffix='.exe')
-  cmd = ld + ld_flags + ['-o',exe] + objs + lib_flags
-  yield brutal.process(cmd)
-  yield exe
+  yield linked_binary(PATH, cxt_big, objs)

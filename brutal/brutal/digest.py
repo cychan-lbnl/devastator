@@ -148,7 +148,7 @@ def _everything():
   persistent_memo_types = ()
   counter = [0]
 
-  def _ingest(hasher, values, memo_map=None):
+  def _ingest(hasher, values, buf=None, memo_map=None):
     try:
       work_stack = list(values)
       work_stack_pop = work_stack.pop
@@ -158,11 +158,12 @@ def _everything():
       open_levs = 0
       open_map = {} # open_map[id(x)] = open_stack.index(x)
       open_map_pop = open_map.pop
+      buf = buf or bytearray()
+      buf_origin = len(buf)
       memo_map = memo_map or {} # memo_map[id(x)] = (x, buf_begin_ix, buf_end_ix) | (x, bytes)
       memo_log = array('Q', []) # [id(value)]
       memo_log_append = memo_log.append
-      buf = bytearray()
-
+      
       if counter[0]:
         print('ingest begin', counter)
         counter[0]+=1
@@ -263,8 +264,13 @@ def _everything():
             if open_stack[-3] > cy_lev: # max parent's cycle depth with ours
               open_stack[-3] = cy_lev
       
-      hasher.update(buf)
-
+      if buf_origin:
+        buf_mem = memoryview(buf)
+        hasher.update(buf_mem[buf_origin:])
+        buf_mem.release()
+      else:
+        hasher.update(buf)
+      
       if counter[0]:
         print('ingest done')
       
@@ -295,14 +301,18 @@ def _everything():
 
   @export
   @by_name
-  def digest_of_many(*values):
-    h = hashlib_sha1()
+  def digests_of(*values):
+    buf = bytearray()
     memo_map = {}
-    ans = []
-    for x in values:
-      _ingest(h, (x,), memo_map)
-      ans.append(h.digest())
-    return ans
+    return [_ingest(hashlib_sha1(), (x,), buf, memo_map).digest() for x in values]
+
+  @export
+  @by_name
+  def digests_of_run(*values):
+    h = hashlib_sha1()
+    buf = bytearray()
+    memo_map = {}
+    return [_ingest(h, (x,), buf, memo_map).digest() for x in values]
   
   @destructurer(list)
   def de(x, buf, work):

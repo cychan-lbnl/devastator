@@ -12,7 +12,7 @@ def _everything():
 
   import brutal
   from . import digest
-  from .panic import panic, panic_unless
+  from .panic import panic, panic_unless, PanicError
   
   def export(obj, name=None):
     name = name or obj.__name__
@@ -237,9 +237,10 @@ def _everything():
 
       if not done:
         fu_effs = fu._effects
-        if isinstance(fu, CaptureEffects) and not fu._keep_shadows:
+        if isinstance(fu, CaptureEffects):# and not fu._keep_shadows:
           #print('  cap block',list(type(sh).__name__ for sh in fu._captures))
-          effs = set(e for e in effs if e not in fu_effs and e.shadow not in fu._captures)
+          fu_caps = fu._captures
+          effs = set(e for e in effs if e not in fu_effs and (e.keep_shadows or e.shadow not in fu_caps))
         else:
           effs = effs - fu_effs if fu_effs else effs
         fu_effs |= effs
@@ -287,7 +288,7 @@ def _everything():
 
   @export
   @digest.by_name
-  def effect(sh, fn):
+  def effect(sh, fn, keep_shadows):
     seen_trees = {}
     seen_keys = {}
     sh_key_of = sh.key_of
@@ -316,6 +317,7 @@ def _everything():
             seen_keys[key] = 0
             fn(t)
     consume.shadow = sh
+    consume.keep_shadows = keep_shadows
     return consume
         
   @export
@@ -822,15 +824,14 @@ def _everything():
   @export
   @digest.indigestible_type
   class CaptureEffects(Future):
-    __slots__ = Future.__slots__ + ('_sucs','_dep','_effects','_captures','_keep_shadows')
+    __slots__ = Future.__slots__ + ('_sucs','_dep','_effects','_captures')
     
-    def __init__(me, shadows, effects, captures, keep_shadows, dep):
+    def __init__(me, shadows, effects, captures, dep):
       me._done = False
       me._sucs = []
       me._shadows = shadows
       me._effects = effects
       me._captures = captures
-      me._keep_shadows = keep_shadows
       me._dep = dep
 
       if dep._done:
@@ -843,19 +844,20 @@ def _everything():
     def _fire(me):
       shs = me._shadows
       dep = me._dep._result
-      
-      if not me._keep_shadows:
-        dep_shs = dict(dep._shadows)
-        for sh in me._captures:
+
+      dep_shs = dict(dep._shadows)
+      for e in me._effects:
+        if not e.keep_shadows:
+          sh = e.shadow
           shs.pop(sh, None)
           dep_shs.pop(sh, None)
-        dep = dep._shadows_changed(dep_shs)
+      dep = dep._shadows_changed(dep_shs)
       
       enter_done(me, shs, dep)
   
   @export
   @digest.by_name
-  def capture_effects(effects, keep_shadows, fn, *args, **kws):
+  def capture_effects(effects, fn, *args, **kws):
     captures = set(e.shadow for e in effects)
     def proxy(aft):
       old_sh, old_effs = top
@@ -865,22 +867,22 @@ def _everything():
       try:
         ans = fn(*args, **kws)
       except Exception as e:
-        if not keep_shadows:
-          for sh in captures:
-            new_sh.pop(sh, None)
+        for e in effects:
+          if not e.keep_shadows:
+            new_sh.pop(e.shadow, None)
         ans = Failure(e) # captures new_sh as shadows from top
         top[:] = (old_sh, old_effs)
         return aft(ans)
       else:
         if not isinstance(ans, Future):
-          if not keep_shadows:
-            for sh in captures:
-              new_sh.pop(sh, None)
+          for e in effects:
+            if not e.keep_shadows:
+              new_sh.pop(e.shadow, None)
           ans = Result(ans) # captures new_sh as shadows from top
           top[:] = (old_sh, old_effs)
           return aft(ans)
         else:
-          ans = Mbind(CaptureEffects(new_sh, set(effects), captures, keep_shadows, ans), aft, 1) # wrapped=1
+          ans = Mbind(CaptureEffects(new_sh, set(effects), captures, ans), aft, 1) # wrapped=1
           top[:] = (old_sh, old_effs)
           progress()
           return ans
@@ -957,6 +959,37 @@ def _everything():
         me._held = True
 
       return pro
+
+  box_it = lambda r: (r,)
+  unbox_it = lambda box: box.value()[0].value()
+  def ignore(_): pass
+  
+  @export
+  @digest.by_name
+  def memoized(fn):
+    memo = {}
+    shs = Result()
+    
+    @digest.by_other(fn)
+    def fn1(*args, **kws):
+      key = (args, kws or None)
+      try: hash(key)
+      except TypeError: key = digest.digest_of(key)
+          
+      if key not in memo:
+        def assign():
+          shs.value()
+          memo[key] = ans = after(fn, *args, **kws)(box_it)
+          return ans
+        capture_effects((), assign)(ignore)
+          
+      return after(dict.__getitem__, memo, key)(unbox_it)
+    
+    fn1.__name__ = fn.__name__
+    fn1.__doc__ = fn.__doc__
+    fn1.__module__ = fn.__module__
+    fn1.__wrapped__ = fn
+    return fn1
 
 _everything()
 del _everything

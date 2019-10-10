@@ -79,8 +79,11 @@ class CodeContext(object):
       compilers = compilers | frozenset(((compiler,),) if type(compiler) is str else (tuple(compiler),))
     
     if any(type(y) is not str for y in pp_defines.values()):
-      pp_defines = {x: str(y) for x,y in pp_defines.items() if y is not None}
-
+      pp_defines = {
+        x: str(int(y) if type(y) is bool else y)
+        for x,y in pp_defines.items() if y is not None
+      }
+    
     cg_optlev = str(cg_optlev)
     
     fields = CodeContext._state_fields
@@ -96,7 +99,7 @@ class CodeContext(object):
       pp_misc = _merge_flags(a.pp_misc, b.pp_misc),
       cg_optlev = _merge_optlev(a.cg_optlev, b.cg_optlev),
       cg_misc = _merge_flags(a.cg_misc, b.cg_misc),
-      ld_misc = _merge_flags(a.ld_misc, a.ld_misc),
+      ld_misc = _merge_flags(a.ld_misc, b.ld_misc),
       lib_paths = _merge_flags(a.lib_paths, b.lib_paths),
       lib_misc = _merge_flags(a.lib_misc, b.lib_misc)
     )

@@ -11,6 +11,7 @@ def _everything():
   import pickle
   import hashlib
   import os
+  import re
   import shlex
   import sys
   import traceback
@@ -69,10 +70,8 @@ def _everything():
     
     coflow_Failure = coflow.Failure
     coflow_Future = coflow.Future
-    coflow_coroutine = coflow.coroutine
     coflow_Promise = coflow.Promise
     coflow_Result = coflow.Result
-    coflow_mbind = coflow.mbind
     
     hashlib_sha1 = hashlib.sha1
     
@@ -102,10 +101,9 @@ def _everything():
   path_art = os_path_join(path_site, '.brutal', 'art')
   
   @digest.by_name
-  def artifact_path(pre, art_id, suf):
-    pre += '.' if pre and not pre.endswith('.') else ''
-    suf =  ('.' if suf and not suf.startswith('.') else '')  + suf
-    return os_path_join(path_art, '%s%x%s'%(pre, art_id, suf))
+  def artifact_path(art_id, suf):
+    suf = suf.replace('%','@')
+    return os_path_join(path_art, '%x%%%s'%(art_id, suf))
   
   DB_TAG_BRANCH = 0
   DB_TAG_PRUNE = 1
@@ -129,12 +127,12 @@ def _everything():
     db.dedup_encoder_table = {}
     # Tree = {name_dig: (0, full_dig, fn_id, arg1, arg2, Tree)
     #                 | (1, full_dig, changed:Promise)
-    #                 | (2, full_dig, cfull, ename, efull, result_vals, result_kws, artifacts)
-    #                 | (3, full_dig, cfull, ename, efull, Failure)}
+    #                 | (2, full_dig, result_vals, result_kws, artifacts)
+    #                 | (3, full_dig, Failure)}
     db.tree = {}
     db.files = {} # {dedup_encode(path): (mtime, fname, ffull)}
     db.art_id_bump = 0
-    db.arts = {} # {art_id: (pre,suf,refn)}
+    db.arts = {} # {art_id: (suf,refn)}
     db.failed_name_logs = []
     db.pending_n = 0
     db.size_head = 0
@@ -175,13 +173,10 @@ def _everything():
             record_tag = record[0]
             
             if record_tag == DB_TAG_BRANCH:
-              _, log, cfull, ename, efull, result_vals, result_kws, arts = record
+              _, log, result_vals, result_kws, arts = record
               tip = db.tree
               _, _, _, name, full = log[0]
 
-              cfull = dedup_encode(cfull)
-              ename = dedup_encode(ename)
-              efull = dedup_encode(efull)
               name = dedup_encode(name)
               full = dedup_encode(full)
               
@@ -205,11 +200,11 @@ def _everything():
 
               result_vals = dedup_encode(result_vals)
               result_kws = dedup_encode(result_kws)
-              tip[name] = (2, full, cfull, ename, efull, result_vals, result_kws, arts)
+              tip[name] = (2, full, result_vals, result_kws, arts)
               
               for art_id in arts:
-                pre, suf, refn = db.arts[art_id]
-                db.arts[art_id] = (pre, suf, refn+1)
+                suf, refn = db.arts[art_id]
+                db.arts[art_id] = (suf, refn+1)
 
             elif record_tag == DB_TAG_PRUNE:
               _, name_log = record
@@ -228,12 +223,12 @@ def _everything():
                   for name,node1 in node[5].items():
                     prune_arts(node1)
                 elif tag == 2:
-                  for art_id in node[7]:
+                  for art_id in node[4]:
                     if art_id not in db.arts:
                       panic('brutal internal error: assert art_id in db.arts')
-                    pre, suf, refn = db.arts[art_id]
+                    suf, refn = db.arts[art_id]
                     if refn != 1:
-                      db.arts[art_id] = (pre, suf, refn-1)
+                      db.arts[art_id] = (suf, refn-1)
                     else:
                       del db.arts[art_id]
                 else:
@@ -251,11 +246,11 @@ def _everything():
               db.files[dedup_encode(apath)] = (mtime, dedup_encode(name), dedup_encode(full))
               
             elif record_tag == DB_TAG_ART:
-              _, pre, suf = record
-              pre = dedup_encode(pre)
+              _, suf = record
+              suf = dedup_encode(suf)
               art_id = db.art_id_bump
               db.art_id_bump += 1
-              db.arts[art_id] = (pre, suf, 0)
+              db.arts[art_id] = (suf, 0)
             
             elif record_tag == DB_TAG_IMPORT:
               _, path = record
@@ -286,7 +281,7 @@ def _everything():
 
   @export
   @digest.by_name
-  @coflow_coroutine
+  @coflow.coroutine
   def save():
     db = the_db
     if not db.initialized:
@@ -372,9 +367,9 @@ def _everything():
   @digest.by_name
   class TraceShadow(coflow.Shadow):
     def key_of(me, rec):
-      return id(rec)
-    def emit(me, proxy, args, kws, cname, cfull, ename, efull):
-      coflow.Shadow.emit(me, (proxy, args, kws, cname, cfull, ename, efull))
+      return rec[3]
+    def emit(me, fn_id, args, kws, key, cname, cfull, ename, efull):
+      coflow.Shadow.emit(me, (fn_id, args, kws, key, cname, cfull, ename, efull))
   TraceShadow = TraceShadow()
   
   @digest.by_name
@@ -387,29 +382,22 @@ def _everything():
   user_traces = {}
   
   @digest.by_name
-  def encode_trace_id(fn):
-    if isinstance(fn, str):
-      panic_unless(fn in builtin_traces)
-      return fn
-    return fn._brutal_trace_id
-  
-  @digest.by_name
-  def decode_trace_id(tr_id):
+  def decode_fn_id(tr_id):
     if tr_id in builtin_traces:
       return builtin_traces[tr_id]
     else:
       name, meat = tr_id
-      names = user_traces.get(name, None)
-      if names is None:
+      if name not in user_traces:
         return None
+      names = user_traces[name]
       if len(names) == 1:
-        return tuple(names.values())[0]
-      return names.get(meat, None)
+        return next(iter(names.values()))
+      return names[meat] if meat in names else None
   
   @digest.by_name
-  def tree_digests(fn_id, cname, cfull, ename, efull):
+  def tree_digests(cname, cfull, ename, efull):
     h = hashlib_sha1()
-    h.update(b'%r:%b%b' % (fn_id, cname, ename))
+    h.update(cname + ename)
     name = h.digest()
     h.update(cfull + efull)
     full = h.digest()
@@ -420,73 +408,86 @@ def _everything():
   
   @export
   @digest.by_name
-  class CompleteAndPartial(object):
-    def __init__(me, complete_value, partial_value):
-      me.complete_value = complete_value
-      me.partial_value = partial_value
-
-    def complete_and_partial_values(me):
-      return (me.complete_value, me.partial_value)
-
-    def __repr__(me):
-      if me.complete_value == me.partial_value:
-        return 'CompleteAndPartial(complete_value=%r)' % (me.complete_value,)
+  class Named(object):
+    def __new__(ty, value=None, name=None):
+      if type(value) is ty:
+        return value
+      elif isinstance(value, coflow_Future) or isinstance(name, coflow_Future):
+        @coflow.mbind(value)
+        def have_value(value):
+          @coflow.mbind(name)
+          def have_name(name):
+            return Named(value, name)
+          return have_name
+        return have_value
       else:
-        return 'CompleteAndPartial(\ncomplete_value=%r,\npartial_value=%r)' % (me.complete_value, me.partial_value)
+        return object.__new__(ty)
+    
+    def __init__(me, value, name=None):
+      if me is value:
+        panic_unless(name is None)
+        return
+      me.value = value
+      me.name = value if name is None else name
+
+    def value_and_name(me):
+      return (me.value, me.name)
+
+    def __getstate__(me):
+      value = me.value
+      name = me.name
+      return (value, None if name is value else name)
+
+    def __setstate__(me, st):
+      value, name = st
+      me.value = value
+      me.name = value if name is None else name
+    
+    def __repr__(me):
+      if me.value is me.name or  me.value == me.name:
+        return 'Named(value=%r)' % (me.value,)
+      else:
+        return 'Named(\value=%r,\nname=%r)' % (me.value, me.name)
   
   @export
   @digest.by_name
-  def complete_and_partial(complete_value, partial_value=None):
-    if partial_value is None:
-      if type(complete_value) is CompleteAndPartial:
-        return complete_value
-      elif isinstance(complete_value, coflow_Future):
-        @coflow_mbind(complete_value)
-        def have(complete_value):
-          return CompleteAndPartial(complete_value, complete_value)
-        return have
-      else:
-        return CompleteAndPartial(complete_value, complete_value)
-    else:
-      if isinstance(complete_value, coflow_Future) or isinstance(partial_value, coflow_Future):
-        @coflow_mbind(complete_value)
-        def have_first(complete_value):
-          @coflow_mbind(partial_value)
-          def have_second(partial_value):
-            return CompleteAndPartial(complete_value, partial_value)
-          return have_second
-        return have_first
-      else:
-        return CompleteAndPartial(complete_value, partial_value)
-    
-  @export
-  @digest.by_name
   def traced(fn):
+    tr_name = (fn.__module__, fn.__name__)
+    tr_meat = digest_of(fn.__code__, fn.__closure__ or ())
+    tr_id = (tr_name, tr_meat)
+    
     memo = {}
     def result_and_digests(args, kws):
-      arg_dig = digest_of(args, kws)
+      key = digest_of(tr_name, tr_meat, args, kws)
       
-      if arg_dig in memo:
-        return memo[arg_dig]
-
-      log = []
-      @coflow.capture_effects(
-        (coflow.effect(TraceShadow, log.append),), False,
-        fn, *args, **kws)
-      def result_and_digests(result):
-        result_ty = type(result)
+      if key not in memo:
+        log = []
+        @coflow.capture_effects(
+          (coflow.effect(TraceShadow, log.append, False),),
+          fn, *args, *kws)
+        def result_and_digests(result):
+          result_ty = type(result)
         
-        if result_ty is coflow_Result:
-          value = result._value
-          value_ty = type(value)
-          
-          if value_ty is CompleteAndPartial:
-            cname, cfull = digest.digest_of_many(value.partial_value, value.complete_value)
-          else:
-            h = ingest(hashlib_sha1(), arg_dig, value)
-            cname = cfull = h.digest()
+          if result_ty is coflow_Result:
+            value = result._value
+            value_ty = type(value)
+            
+            if value_ty is Named:
+              value_name = value.name
+              value_full = value.value
+              result = coflow_Result(value_full)
+            else:
+              value_name = value_full = value
+            
+            cname, cfull = digest.digests_of_run(value_name, value_full)
 
-          elog = sorted(set([(r[5],r[6]) for r in log]))
+          elif result_ty is coflow_Failure:
+            cname = cfull = digest_of(result)
+          
+          else:
+            panic()
+          
+          elog = sorted(set([(r[6],r[7]) for r in log]))
           elog_len = len(elog)
 
           if elog_len == 0:
@@ -502,53 +503,39 @@ def _everything():
             h.update(b''.join(efulls))
             efull = h.digest()
 
-        elif result_ty is coflow_Failure:
-          cname = cfull = zero
-          ename = efull = zero
-          
-        else:
-          panic()
+          return (result, cname, cfull, ename, efull)
         
-        return (result, cname, cfull, ename, efull)
-      
-      memo[arg_dig] = result_and_digests
-      return result_and_digests
+        memo[key] = result_and_digests
+
+      @coflow.after(dict.__getitem__, memo, key)
+      def answer(result_and_digests):
+        result, cname, cfull, ename, efull = answer = result_and_digests.value()
+        TraceShadow.emit(tr_id, args, kws, key, cname, cfull, ename, efull)
+        return answer
+      return answer
 
     @digest.by_name(traced_hash_digest)
     def proxy(*args, **kws):
       @coflow.after(result_and_digests, args, kws)
-      def result(res_and_digs):
-        result, cname, cfull, ename, efull = res_and_digs.value()
-        TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
-        result_ty = type(result)
-        if result_ty is coflow_Result:
-          value = result._value
-          if type(value) is CompleteAndPartial:
-            return value.complete_value
-          else:
-            return value
-        else:
-          return result.value() # will explode
+      def result(result_and_digests):
+        result, cname, cfull, ename, efull = result_and_digests.value()
+        value = result.value() # might explode
+        return value.value if type(value) is Named else value
       return result
     
     @digest.by_name(traced_hash_digest)
-    def as_complete_and_partial(*args, **kws):
+    def as_named(*args, **kws):
       @coflow.after(result_and_digests, args, kws)
-      def result(res_and_digs):
-        result, cname, cfull, ename, efull = res_and_digs.value()
-        TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
-        return result.value()
+      def result(result_and_digests):
+        result, cname, cfull, ename, efull = result_and_digests.value()
+        return Named(result.value())
       return result
 
-    proxy.as_complete_and_partial = as_complete_and_partial
-    proxy._brutal_result_and_digests = result_and_digests
+    proxy.as_named = as_named
     proxy.__name__ = fn.__name__
     proxy.__doc__ = fn.__doc__
     proxy.__wrapped__ = fn
     
-    tr_name = (fn.__module__, fn.__name__)
-    tr_meat = digest_of(fn.__code__, fn.__closure__ or ())
-    proxy._brutal_trace_id = (tr_name, tr_meat)
     if tr_name not in user_traces:
       user_traces[tr_name] = {}
     user_traces[tr_name][tr_meat] = result_and_digests
@@ -560,88 +547,90 @@ def _everything():
       dummy = coflow_Result(None)
       def depend_apath_result_and_digests(apath, _):
         cname, cfull = query_file_digests(apath)
+        TraceShadow.emit('#apath', apath, None, ('#apath', apath), cname, cfull, zero, zero)
         return (dummy, cname, cfull, zero, zero)
       return depend_apath_result_and_digests
     depend_apath_result_and_digests = depend_apath_result_and_digests()
     
     builtin_traces['#apath'] = depend_apath_result_and_digests
     
-    def depend_apath(apath):
-      _, cname, cfull, ename, efull = depend_apath_result_and_digests(apath, None)
-      TraceShadow.emit('#apath', apath, None, cname, cfull, ename, efull)
-    
     @export
     @digest.by_name
     def depend_file(*paths):
       for p in paths:
-        depend_apath(os_path_abspath(p))
+        apath = os_path_abspath(p)
+        # dependencies on artifacts not necessary since they are invariant
+        if not opsys.path_within_any(apath, path_art):
+          depend_apath_result_and_digests(apath, None)
   
   if 1: # depend_fact
-    def depend_fact_result_and_digests(factdict):
+    def depend_fact_result_and_digests(factdict, _):
       efull = digest_of(factdict)
+      TraceShadow.emit('#fact', factdict, None, ('#fact', efull), zero, zero, efull, efull)
       return (coflow_Result(None), zero, zero, efull, efull)
     
     builtin_traces['#fact'] = depend_fact_result_and_digests
     
     @export
     @digest.by_name
-    def depend_fact(key=None, val=None, **kws):
-      if key is not None:
-        kws[key] = val
-      _, cname, cfull, ename, efull = depend_fact_result_and_digests(kws)
-      TraceShadow.emit('#fact', kws, None, cname, cfull, ename, efull)
-  
+    def depend_fact(tag=None, val=None, **kws):
+      if tag is not None:
+        kws[tag] = val
+      depend_fact_result_and_digests(kws, None)
+
   if 1: # env
     def env_result_and_digests():
       memo = {}
       def env_result_and_digests(name, default):
         key = (name, default)
         try: hash(key)
-        except TypeError: key = hexdigest_of(key)
+        except TypeError: key = digest_of(key)
         
-        if key in memo:
-          return memo[key]
-        
-        s = os.environ.get(name, None)
+        if key not in memo:
+          s = os.environ.get(name, None)
+          
+          def parse(s):
+            if s.startswith('%'):
+              return eval(s[1:])
+            for ty in (int, float):
+              try: val = ty(s); break
+              except: pass
+            return s
+          
+          if s is None or s == '':
+            val = default
+          elif s.startswith('%'):
+            val = eval(s[1:])
+          elif type(default) is bool:
+            val = {'0':False, 'false':False, '1':True, 'true':True}[s.lower()]
+          elif type(default) in (int, float):
+            val = eval(s)
+          elif type(default) in (tuple, list, set, frozenset):
+            val = type(default)([parse(x) for x in shlex.split(s)])
+          elif type(default) is dict:
+            import re
+            val = {}
+            toks = shlex.split(s)
+            for tok in toks:
+              m = re.match('([^=:]+)[=:]', tok)
+              if not m: break
+              x = parse(m.group(1))
+              y = parse(tok[len(m.group(0)):])
+              val[x] = y
+          else:
+            val = s
+          
+          full = digest_of(name, default, val)
+          memo[key] = (coflow_Result(val), full, full, zero, zero)
 
-        def parse(s):
-          if s.startswith('%'):
-            return eval(s[1:])
-          for ty in (int, float):
-            try: val = ty(s); break
-            except: pass
-          return s
-        
-        if s is None or s == '':
-          val = default
-        elif s.startswith('%'):
-          val = eval(s[1:])
-        elif type(default) is bool:
-          val = {'0':False, 'false':False, '1':True, 'true':True}[s.lower()]
-        elif type(default) in (int, float):
-          val = eval(s)
-        elif type(default) in (tuple, list, set, frozenset):
-          val = type(default)([parse(x) for x in shlex.split(s)])
-        elif type(default) is dict:
-          import re
-          val = {}
-          toks = shlex.split(s)
-          for tok in toks:
-            m = re.match('([^=:]+)[=:]', tok)
-            if not m: break
-            x = parse(m.group(1))
-            y = parse(tok[len(m.group(0)):])
-            val[x] = y
-        else:
-          val = s
-        
-        full = digest_of(name, default, val)
-        ans = (coflow_Result(val), full, full, zero, zero)
-        memo[key] = ans
+        ans = memo[key]
+        full = ans[1]
+        TraceShadow.emit('#env', name, default, ('#env', key), full, full, zero, zero)
         return ans
+
       return env_result_and_digests
+
     env_result_and_digests = env_result_and_digests()
-    
     builtin_traces['#env'] = env_result_and_digests
 
     @digest.by_name
@@ -650,52 +639,25 @@ def _everything():
         return lambda default=None: me(name, default)
       
       def __call__(me, name, default=None):
-        val_fn, full, full, zero, zero = env_result_and_digests(name, default)
-        TraceShadow.emit('#env', name, default, full, full, zero, zero)
-        return val_fn.value()
+        result = env_result_and_digests(name, default)[0]
+        return result.value()
     
     brutal.env = globals()['env'] = Env()
   
   @export
   @digest.by_name
-  def memoized(fn):
-    @coflow_coroutine
-    def proxy(*args, **kws):
-      result, cname, cfull, ename, efull = yield memo_result_and_digests(fn, args, kws)
-      TraceShadow.emit(proxy, args, kws, cname, cfull, ename, efull)
-      yield result.value()
-    
-    result_and_digests = lambda args,kws: memo_result_and_digests(fn, args, kws)
-    
-    proxy._brutal_digest_memo = traced_hash_digest
-    proxy._brutal_result_and_digests = result_and_digests
-    proxy.__name__ = fn.__name__
-    proxy.__doc__ = fn.__doc__
-    proxy.__wrapped__ = fn
-    
-    tr_name = (fn.__module__, fn.__name__)
-    tr_meat = digest_of(fn.__code__, fn.__closure__ or ())
-    proxy._brutal_trace_id = (tr_name, tr_meat)
-    if tr_name not in user_traces:
-      user_traces[tr_name] = {}
-    user_traces[tr_name][tr_meat] = result_and_digests
-    
-    return proxy
-  
-  @export
-  @digest.by_name
-  def mkpath(prefix='', suffix=''):
-    _, prefix = os.path.split(prefix)
-    panic_unless(os_path_sep not in suffix)
+  def mkpath(suffix=''):
+    _, suffix = os.path.split(suffix)
+    suffix = re.sub('^[0-9a-f]+%', '', suffix)
     
     db = _db()
     art_id = db.art_id_bump
     db.art_id_bump += 1
-    db.arts[art_id] = (db.dedup_encode(prefix), suffix, 0)
+    db.arts[art_id] = (db.dedup_encode(suffix), 0)
     ArtsShadow.emit(art_id)
-    apath = artifact_path(prefix, art_id, suffix)
+    apath = artifact_path(art_id, suffix)
     
-    db_append_record(DB_TAG_ART, prefix, suffix)
+    db_append_record(DB_TAG_ART, suffix)
     
     opsys_rmtree(apath)
     return apath
@@ -728,211 +690,195 @@ def _everything():
     all_temps.add(path)
     return path
   
-  @coflow_coroutine
+  @export
   @digest.by_name
-  def memo_result_and_digests(memo_fn, memo_args, memo_kws):
-    db = _db()
-    db_lock_release = yield db.lock.acquire()
-    db_dedup_decode = db.dedup_decode
-    db_dedup_encode = db.dedup_encode
-    
-    # run down tree
-    tip = db.tree
-    memo_cfull = name = full = digest_of(memo_fn, memo_args, memo_kws)
-    log = [(None, None, None, name, full)] # [(fn_id, arg1, arg2, name, full),...]
-    edigs = set()
-    do_prune = False
-
-    prev_node = None
-    node = None
-    
-    while True:
-      prev_node = node
-      node = tip[name] if name in tip else None
-      tag = None if node is None else node[0]
-
-      if node is None or node[1] != full:
-        if node is not None:
-          if node[0] == 1:
-            panic('brutal internal error: Same trace and instance generated different full hashes.')
-          do_prune = True
-        if 0:
-          print('failed, %s not in %r: '%(hexlify(name), [hexlify(x) for x in tip]),'\n',
-                memo_fn.__name__,memo_args,'\n ',
-                prev_node[2:5] if prev_node else None)
-        break # jump to execute
-        
-      elif tag == 1:
-        db_lock_release()
-        _, _, subtree_changed = node
-        yield subtree_changed
-        db_lock_release = yield db.lock.acquire()
-        
-      elif tag in (2,3):
-        db_lock_release()
-        
-        #print('\n\nmemo result',memo_fn.__name__,memo_args)
-        
-        if tag == 2:
-          _, _, cfull, ename, efull, res_vals, res_kws, _ = node
-          res_vals = db_dedup_decode(res_vals)
-          res_kws = db_dedup_decode(res_kws)
-          yield coflow_Result(coflow_Result(*res_vals, **res_kws)), cfull, cfull, ename, efull
-        else:
-          _, _, cfull, ename, efull, failure = node
-          yield coflow_Result(failure), cfull, cfull, ename, efull
-        return
+  def memoized(memo_fn):
+    @coflow.coroutine
+    @digest.by_other(memo_fn)
+    def proxy(*memo_args, **memo_kws):
+      db = _db()
+      db_lock_release = yield db.lock.acquire()
+      db_dedup_decode = db.dedup_decode
+      db_dedup_encode = db.dedup_encode
       
-      elif tag == 0:
-        _, _, fn_id, arg1, arg2, tip1 = node
-        fn_id = db_dedup_decode(fn_id)
-        arg1 = db_dedup_decode(arg1)
-        arg2 = db_dedup_decode(arg2)
+      # run down tree
+      tip = db.tree
+      name = full = digest_of(memo_fn, memo_args, memo_kws)
+      log = [(None, None, None, name, full)] # [(fn_id, arg1, arg2, name, full),...]
+      do_prune = False
 
-        trace_fn = decode_trace_id(fn_id)
-        
-        if trace_fn is None:
-          do_prune = True
-          break
-        
-        db_lock_release()
-        
-        #print(memo_fn.__name__, memo_args,': tracing',fn_id)
-        
-        _, cname, cfull, ename, efull = yield trace_fn(arg1, arg2)
-        edigs.add((ename, efull))
-        name, full = tree_digests(fn_id, cname, cfull, ename, efull)
+      prev_node = None
+      node = None
+      
+      while True:
+        prev_node = node
+        node = tip[name] if name in tip else None
+        tag = None if node is None else node[0]
+
+        if node is None or node[1] != full:
+          if node is not None:
+            if node[0] == 1:
+              panic('brutal internal error: Same trace and instance generated different full hashes.')
+            do_prune = True
+          if 0:
+            print('failed, %s not in %r: '%(hexlify(name), [hexlify(x) for x in tip]),'\n',
+                  memo_fn.__name__,memo_args,'\n ',
+                  prev_node[2:5] if prev_node else None)
+          break # jump to execute
           
-        db_lock_release = yield db.lock.acquire()
-        tip = tip1
-        log.append((fn_id, arg1, arg2, name, full))
-    
-    if do_prune:
-      # commit prune record to file
-      db_append_record(DB_TAG_PRUNE, tuple(zip(*log))[3])
-      
-      # delete orphaned artifacts
-      def prune_arts(node):
-        tag = node[0]
-        if tag == 0:
-          for name,node1 in node[5].items():
-            prune_arts(node1)
         elif tag == 1:
-          panic('brutal internal error: Same trace and instance generated different full hashes.')
-        elif tag == 2:
-          for art_id in node[7]:
-            if art_id not in db.arts:
-              panic('brutal internal error: assert art_id in db.arts')
-            pre, suf, refn = db.arts[art_id]
-            if refn != 1:
-              db.arts[art_id] = (pre, suf, refn-1)
-            else:
-              del db.arts[art_id]
-              prefix = db_dedup_decode(pre)
-              path_art = artifact_path(prefix, art_id, suf)
-              opsys_rmtree(path_art)
+          db_lock_release()
+          _, _, subtree_changed = node
+          yield subtree_changed
+          db_lock_release = yield db.lock.acquire()
+          
+        elif tag in (2,3):
+          db_lock_release()
+          
+          #print('\n\nmemo result',memo_fn.__name__,memo_args)
+          if tag == 2:
+            _, _, res_vals, res_kws, _ = node
+            res_vals = db_dedup_decode(res_vals)
+            res_kws = db_dedup_decode(res_kws)
+            yield coflow_Result(*res_vals, **res_kws)
+          else:
+            _, _, failure = node
+            yield failure
+          return
+        
+        elif tag == 0:
+          _, _, tr_id, arg1, arg2, tip1 = node
+          tr_id = db_dedup_decode(tr_id)
+          arg1 = db_dedup_decode(arg1)
+          arg2 = db_dedup_decode(arg2)
+
+          tr_result_and_digests = decode_fn_id(tr_id)
+          
+          if tr_result_and_digests is None:
+            do_prune = True
+            break
+          
+          db_lock_release()
+          
+          #if memo_fn.__name__ == 'executable':
+          #  print('\ntraced',tr_id,arg1,arg2)
+
+          _, cname, cfull, ename, efull = yield tr_result_and_digests(arg1, arg2)
+          name, full = tree_digests(cname, cfull, ename, efull)
+          
+          db_lock_release = yield db.lock.acquire()
+          tip = tip1
+          log.append((tr_id, arg1, arg2, name, full))
       
-      prune_arts(node)
-    
-    tip[name] = (1, full, coflow_Promise())
-    #print('pending++',db.pending_n,memo_fn.__name__,memo_args)
-    db.pending_n += 1
-    db_lock_release()
-    
-    #-- execute -----------------------------------------------------------
-
-    inserter_state = [tip, name, full]
-    def inserter(rec):
-      fn, arg1, arg2, cname, cfull, ename, efull = rec
-      edigs.add((ename, efull))
-
-      fn_id = encode_trace_id(fn)
-      name1, full1 = tree_digests(fn_id, cname, cfull, ename, efull)
-
-      if fn_id == '#fact':
-        panic('`brutal.depend_fact` can only be called within a traced function.')
-
-      log.append((fn_id, arg1, arg2, name1, full1))
+      if do_prune:
+        # commit prune record to file
+        db_append_record(DB_TAG_PRUNE, tuple(zip(*log))[3])
+        
+        # delete orphaned artifacts
+        def prune_arts(node):
+          tag = node[0]
+          if tag == 0:
+            for name,node1 in node[5].items():
+              prune_arts(node1)
+          elif tag == 1:
+            panic('brutal internal error: Same trace and instance generated different full hashes.')
+          elif tag == 2:
+            for art_id in node[4]:
+              if art_id not in db.arts:
+                panic('brutal internal error: assert art_id in db.arts')
+              suf, refn = db.arts[art_id]
+              if refn != 1:
+                db.arts[art_id] = (suf, refn-1)
+              else:
+                del db.arts[art_id]
+                suf = db_dedup_decode(suf)
+                path_art = artifact_path(art_id, suf)
+                opsys_rmtree(path_art)
+        
+        prune_arts(node)
       
-      tip0, name0, full0 = inserter_state
-      _, _, changed0 = tip0[name0]
-      tip1 = {name1: (1, full1, coflow_Promise())}
-      name0 = db_dedup_encode(name0)
-      full0 = db_dedup_encode(full0)
-      fn_id = db_dedup_encode(fn_id)
-      arg1 = db_dedup_encode(arg1)
-      arg2 = db_dedup_encode(arg2)
-      tip0[name0] = (0, full0, fn_id, arg1, arg2, tip1)
-      changed0.satisfy()
+      tip[name] = (1, full, coflow_Promise())
+      #print('pending++',db.pending_n,memo_fn.__name__,memo_args)
+      db.pending_n += 1
+      db_lock_release()
       
-      inserter_state[:] = (tip1, name1, full1)
+      #-- execute -----------------------------------------------------------
 
-    arts = set()
+      inserter_state = [tip, name, full]
+      def inserter(rec):
+        fn_id, arg1, arg2, _, cname, cfull, ename, efull = rec
+        name1, full1 = tree_digests(cname, cfull, ename, efull)
+        
+        if fn_id == '#fact':
+          panic('`brutal.depend_fact` can only be called within a traced function.')
 
-    result = coflow.capture_effects(
-        (coflow.effect(TraceShadow, inserter),
-         coflow.effect(ArtsShadow, arts.add)), False,
-        memo_fn, *memo_args, **memo_kws
-      )(lambda result: result)
+        log.append((fn_id, arg1, arg2, name1, full1))
+        
+        tip0, name0, full0 = inserter_state
+        _, _, changed0 = tip0[name0]
+        tip1 = {name1: (1, full1, coflow_Promise())}
+        name0 = db_dedup_encode(name0)
+        full0 = db_dedup_encode(full0)
+        fn_id = db_dedup_encode(fn_id)
+        arg1 = db_dedup_encode(arg1)
+        arg2 = db_dedup_encode(arg2)
+        tip0[name0] = (0, full0, fn_id, arg1, arg2, tip1)
+        changed0.satisfy()
+        
+        inserter_state[:] = (tip1, name1, full1)
 
-    yield coflow.mbind_wrapped(result)(lambda fu: None)
-    result = result.result()
+      arts = set()
 
-    tip, name, full = inserter_state
+      result = coflow.capture_effects(
+          (coflow.effect(TraceShadow, inserter, True),
+           coflow.effect(ArtsShadow, arts.add, False)),
+          memo_fn, *memo_args, **memo_kws
+        )(lambda result: result)
+      
+      yield coflow.mbind_wrapped(result)(lambda fu: None)
+      result = result.result()
 
-    #print memo_fn.__name__ + repr(memo_args)
-    #for i,r in zip(range(len(log)), log):
-    #  print '  log '+str(i)+':'+repr((r[0],r[1],r[2],hexlify(r[3]),hexlify(r[4])))
-    
-    # add result to call hash
-    h = hashlib_sha1()
-    h.update(memo_cfull)
-    memo_cfull = ingest(h, result).digest()
-    
-    # compute ename, efull from log
-    if len(edigs) == 0:
-      ename, efull = zero, zero
-    elif len(edigs) == 1:
-      ename, efull = edigs.pop()
-    else:
-      h = hashlib_sha1()
-      enames, efulls = zip(*sorted(edigs))
-      h.update(b'%x.' % len(enames))
-      h.update(b''.join(enames))
-      ename = h.digest()
-      h.update(b''.join(efulls))
-      efull = h.digest()
-    
-    # finish tree
-    db_lock_release = yield db.lock.acquire()
-    db.pending_n -= 1
-    #print('pending--',memo_fn.__name__,memo_args)
-    
-    _, _, _, name, full = log[-1]
-    _, _, subtree_changed = tip[name]
+      tip, name, full = inserter_state
 
-    name = db_dedup_encode(name)
-    full = db_dedup_encode(full)
-    
-    if isinstance(result, coflow_Result):
-      res_vals, res_kws = result.values(), result.kws()
-      enc_vals = db_dedup_encode(res_vals)
-      enc_kws = db_dedup_encode(res_kws)
-      tip[name] = (2, full, memo_cfull, ename, efull, enc_vals, enc_kws, arts)
-      for art_id in arts:
-        pre, suf, refn = db.arts[art_id]
-        db.arts[art_id] = (pre, suf, refn+1)
-      db_append_record(DB_TAG_BRANCH, log, memo_cfull, ename, efull, res_vals, res_kws, arts)
-    elif isinstance(result, coflow_Failure):
-      tip[name] = (3, full, memo_cfull, ename, efull, result)
-      db.failed_name_logs.append(tuple(zip(*log))[3])
-    else:
-      panic()
-    
-    db_lock_release()
-    subtree_changed.satisfy()
-    
-    yield (coflow_Result(result), memo_cfull, memo_cfull, ename, efull)
-  
+      cfull = digest_of(result)
+      
+      # finish tree
+      db_lock_release = yield db.lock.acquire()
+      db.pending_n -= 1
+      #print('pending--',memo_fn.__name__,memo_args)
+      
+      _, _, _, name, full = log[-1]
+      _, _, subtree_changed = tip[name]
+
+      name = db_dedup_encode(name)
+      full = db_dedup_encode(full)
+      
+      if isinstance(result, coflow_Result):
+        res_vals, res_kws = result.values(), result.kws()
+        enc_vals = db_dedup_encode(res_vals)
+        enc_kws = db_dedup_encode(res_kws)
+        tip[name] = (2, full, enc_vals, enc_kws, arts)
+        for art_id in arts:
+          suf, refn = db.arts[art_id]
+          db.arts[art_id] = (suf, refn+1)
+        db_append_record(DB_TAG_BRANCH, log, res_vals, res_kws, arts)
+
+      elif isinstance(result, coflow_Failure):
+        tip[name] = (3, full, result)
+        db.failed_name_logs.append(tuple(zip(*log))[3])
+
+      else:
+        panic()
+      
+      db_lock_release()
+      subtree_changed.satisfy()
+      
+      yield result
+
+    proxy.__name__ = memo_fn.__name__
+    proxy.__doc__ = memo_fn.__doc__
+    proxy.__wrapped__ = memo_fn
+    return proxy
+
 _everything()
 del _everything
