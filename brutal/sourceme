@@ -13,5 +13,11 @@ fi
 export BRUTAL_ROOT="${BRUTAL}/template/easy_cxx.py"
 
 brutal() {
-  python3 "${BRUTAL}/tool.py" "$@"
+  if [ $1 == clean ]; then
+    echo rm -rf "${BRUTAL_SITE}/.brutal"
+    rm -rf "${BRUTAL_SITE}/.brutal"
+  else
+    python3 "${BRUTAL}/tool.py" "$@"
+  fi
 }
+
