@@ -1,5 +1,11 @@
 # Devastator: Build Instructions #
 
+Preqrequisites:
+
+  - GCC capable of `-std=c++14`
+
+  - Python >= 3.3 invokable as `python3`
+
 ```
 # You have to be in *precisely* this directory for next command to work.
 $> cd <devastator>
