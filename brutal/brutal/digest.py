@@ -414,7 +414,7 @@ def _everything():
     fn_globals = me.fn_globals
     gvars = {}
     co_more = [fn_code]
-    
+
     while co_more:
       co = co_more.pop()
       code_type = type(co)
@@ -434,29 +434,29 @@ def _everything():
       for _,op,arg in unpack_opargs(co_code):
         if op == LOAD_GLOBAL:
           name = co_names[arg]
-          #if fn.__name__ == 'touches' and fn.__module__ =='__main__':
-          #  print 'GLOBAL',name
           if name in fn_globals:
             val = fn_globals[name]
             if isinstance(val, ModuleType):
               co_mods.add(val)
             else:
-              co_gvars[name] = fn_globals[name]
+              co_gvars[name] = val
         elif op == LOAD_ATTR:
-          co_attrs.add(arg)
-      
+          co_attrs.add(co_names[arg])
+
       co_mods0 = set(co_mods)
       while co_mods0:
         co_mods1 = set()
-        for mod in co_mods:
-          mod = mod.__dict__
+        for mod in co_mods0:
+          mod_name_dot = mod.__name__ + '.'
+          mod_dict = mod.__dict__
           for attr in co_attrs:
-            if attr in mod and attr != '__init__':
-              val = mod[attr]
+            if attr in mod_dict and attr != '__init__':
+              val = mod_dict[attr]
               if isinstance(val, ModuleType):
                 co_mods1.add(val)
               else:
-                co_gvars[name] = fn_globals[name]
+                co_gvars[mod_name_dot + attr] = val
+        co_mods1 -= co_mods
         co_mods |= co_mods1
         co_mods0 = co_mods1
       
