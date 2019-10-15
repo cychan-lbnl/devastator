@@ -83,17 +83,18 @@ def code_context(PATH):
   
   if PATH == brutal.here('src/devastator/world.hxx'):
     world = brutal.env('world', default='threads')
-
+    cxt |= CodeContext(pp_defines={'DEVA_WORLD':1})
+    
     if world == 'threads':
       cxt |= CodeContext(pp_defines={
-        'WORLD_THREADS': 1,
-        'RANK_N': brutal.env('ranks',2)
+        'DEVA_WORLD_THREADS': 1,
+        'DEVA_RANK_N': brutal.env('ranks',2)
       })
     elif world == 'gasnet':
       cxt |= CodeContext(pp_defines={
-        'WORLD_GASNET': 1,
-        'PROCESS_N': brutal.env('procs',2),
-        'WORKER_N': brutal.env('workers',2)
+        'DEVA_WORLD_GASNET': 1,
+        'DEVA_PROCESS_N': brutal.env('procs',2),
+        'DEVA_WORKER_N': brutal.env('workers',2)
       })
     
   elif PATH == brutal.here('src/devastator/diagnostic.cxx'):

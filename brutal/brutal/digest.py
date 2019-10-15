@@ -141,9 +141,13 @@ def _everything():
   indigestible_type(types.GeneratorType)
 
   leaf_types = set([type(None), bool, int, float, str, bytes, bytearray, array])
-  leaf_singletons = {None:b'N', True:b'T', False:b'F'}
+  leaf_singletons = {
+    (None, type(None)): b'N',
+    (True, bool): b'T',
+    (False, bool): b'F'
+  }
   for i in range(10):
-    leaf_singletons[i] = chr(ord('0') + i).encode()
+    leaf_singletons[(i, int)] = chr(ord('0') + i).encode()
 
   persistent_memo_types = ()
   counter = [0]
@@ -173,8 +177,9 @@ def _everything():
         val_ty = type(val)
         
         if val_ty in leaf_types:
-          if val in leaf_singletons:
-            buf += leaf_singletons[val]
+          val_and_ty = (val, val_ty)
+          if val_and_ty in leaf_singletons:
+            buf += leaf_singletons[val_and_ty]
           else:
             buf += b'(%r)' % val
         else:

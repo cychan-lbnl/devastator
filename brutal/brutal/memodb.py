@@ -643,6 +643,8 @@ def _everything():
         return result.value()
     
     brutal.env = globals()['env'] = Env()
+    # prevent deep hashing
+    brutal.env._brutal_digest_memo = b'H\x97\xd4\x14DQ\x9b\xaf\xea=\xfa\x18\x9c\xfa\xc5\x92\x8f\xe0\x04\x84D'
   
   @export
   @digest.by_name
@@ -812,6 +814,9 @@ def _everything():
         if fn_id == '#fact':
           panic('`brutal.depend_fact` can only be called within a traced function.')
 
+        #if fn_id=='#env':
+        #  print('insert',fn_id,arg1,arg2)
+        
         log.append((fn_id, arg1, arg2, name1, full1))
         
         tip0, name0, full0 = inserter_state

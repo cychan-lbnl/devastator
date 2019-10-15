@@ -39,12 +39,26 @@ def _everything():
   @export
   def make_encoder(table):
     cache = {}
+    if tuple not in table:
+      table[tuple] = {}
+    tuple_table = table[tuple]
     
     def unique(x):
-      if x not in table:
-        table[x] = x
+      ty = type(x)
+      if ty not in table:
+        table[ty] = {}
+      ty_tab = table[ty]
+      if x not in ty_tab:
+        ty_tab[x] = x
       else:
-        x = table[x]
+        x = ty_tab[x]
+      return x
+
+    def unique_tuple(x):
+      if x not in tuple_table:
+        tuple_table[x] = x
+      else:
+        x = tuple_table[x]
       return x
     
     def encode(value):
@@ -58,35 +72,38 @@ def _everything():
         if getstate:
           st = getstate(value)
           if type(st) is tuple:
-            return (0, ty) + tuple(map(encode, st))
+            return unique_tuple((0, ty) + tuple(map(encode, st)))
           else:
-            return (1, ty, encode(st))
+            return unique_tuple((1, ty, encode(st)))
         else:
           d = value.__dict__
-          return (2, ty, len(d)) + tuple(map(unique, d.keys())) + tuple(map(encode, d.values()))
+          return unique_tuple((2, ty, len(d)) + tuple(map(unique, d.keys())) + tuple(map(encode, d.values())))
     
     return encode
   
   @export
   def make_decoder(table):
+    tuple_table = {}
+    table[tuple] = tuple_table
+    
     def unique(x):
-      if x not in table:
-        table[x] = x
+      ty = type(x)
+      if ty not in table:
+        table[ty] = {}
+      ty_tab = table[ty]
+      if x not in ty_tab:
+        ty_tab[x] = x
       else:
-        x = table[x]
+        x = ty_tab[x]
       return x
     
     def decode(rec):
       if type(rec) is tuple:
-        if rec in table:
-          return table[rec]
+        if rec in tuple_table:
+          return tuple_table[rec]
         else:
-          try:
-            val = decoders[rec[0]](rec, decode, unique)
-          except Exception as e:
-            print(e, 'rec=',rec)
-            raise
-          table[rec] = val
+          val = decoders[rec[0]](rec, decode, unique)
+          tuple_table[rec] = val
           return val
       else:
         return rec
