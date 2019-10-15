@@ -13,8 +13,8 @@
 #include <new>
 #include <utility>
 
-#ifndef THREAD_N
-#  error "-DTHREAD_N=<num> required"
+#ifndef DEVA_THREAD_N
+#  error "-DDEVA_THREAD_N=<num> required"
 #endif
 
 namespace deva {
@@ -481,7 +481,7 @@ namespace tmsg {
   //////////////////////////////////////////////////////////////////////////////
   // deva::tmsg public API
   
-  constexpr int thread_n = THREAD_N;
+  constexpr int thread_n = DEVA_THREAD_N;
   constexpr int log2_thread_n = log_up(thread_n, 2);
   
   extern active_channels_r<thread_n> ams_r[thread_n];

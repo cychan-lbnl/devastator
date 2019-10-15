@@ -8,7 +8,7 @@
   #error "-DDEVA_WORKER_N=<num> required"
 #endif
 
-#define THREAD_N (DEVA_WORKER_N)+1
+#define DEVA_THREAD_N ((DEVA_WORKER_N)+1)
 #include <devastator/tmsg.hxx>
 #include <devastator/utility.hxx>
 

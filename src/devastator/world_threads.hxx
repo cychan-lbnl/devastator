@@ -5,7 +5,7 @@
   #error "-DDEVA_RANK_N=<num> required"
 #endif
 
-#define THREAD_N DEVA_RANK_N
+#define DEVA_THREAD_N DEVA_RANK_N
 #include <devastator/tmsg.hxx>
 #include <devastator/utility.hxx>
 

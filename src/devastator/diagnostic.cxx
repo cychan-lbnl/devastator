@@ -1,5 +1,8 @@
 #include <devastator/diagnostic.hxx>
-#include <devastator/world.hxx>
+
+#if DEVA_WORLD
+  #include <devastator/world.hxx>
+#endif
 
 #include <csignal>
 #include <mutex>
@@ -30,7 +33,11 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
   std::stringstream ss;
 
   ss << std::string(50, '/') << '\n';
-  ss << "ASSERT FAILED rank="<<deva::rank_me()<<" at="<<file<<':'<<line<<'\n';
+  #if DEVA_WORLD
+    ss << "ASSERT FAILED rank="<<deva::rank_me()<<" at="<<file<<':'<<line<<'\n';
+  #else
+    ss << "ASSERT FAILED at="<<file<<':'<<line<<'\n';
+  #endif
   if(msg != nullptr && '\0' != msg[0])
     ss << '\n' << msg << '\n';
   
@@ -55,7 +62,9 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
 
 deva::say::say() {
   lock_.lock();
-  std::cerr<<"["<<deva::rank_me()<<"] ";
+  #if DEVA_WORLD
+    std::cerr<<"["<<deva::rank_me()<<"] ";
+  #endif
 }
 
 deva::say::~say() {
