@@ -1,6 +1,6 @@
-#if WORLD_THREADS
+#if DEVA_WORLD_THREADS
   #include <devastator/world_threads.hxx>
-#elif WORLD_GASNET
+#elif DEVA_WORLD_GASNET
   #include <devastator/world_gasnet.hxx>
 #endif
 

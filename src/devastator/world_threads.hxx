@@ -1,11 +1,11 @@
 #ifndef _ea1a72b1274c4ccbbd173e0dbd75abec
 #define _ea1a72b1274c4ccbbd173e0dbd75abec
 
-#ifndef RANK_N
-  #error "-DRANK_N=<num> required"
+#ifndef DEVA_RANK_N
+  #error "-DDEVA_RANK_N=<num> required"
 #endif
 
-#define THREAD_N RANK_N
+#define THREAD_N DEVA_RANK_N
 #include <devastator/tmsg.hxx>
 #include <devastator/utility.hxx>
 

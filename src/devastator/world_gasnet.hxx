@@ -1,14 +1,14 @@
 #ifndef _e9ac220a_a23a_4309_927b_e4bca6cc4634
 #define _e9ac220a_a23a_4309_927b_e4bca6cc4634
 
-#ifndef PROCESS_N
-#  error "-DPROCESS_N=<num> required"
+#ifndef DEVA_PROCESS_N
+#  error "-DDEVA_PROCESS_N=<num> required"
 #endif
-#ifndef WORKER_N
-  #error "-DWORKER_N=<num> required"
+#ifndef DEVA_WORKER_N
+  #error "-DDEVA_WORKER_N=<num> required"
 #endif
 
-#define THREAD_N (WORKER_N)+1
+#define THREAD_N (DEVA_WORKER_N)+1
 #include <devastator/tmsg.hxx>
 #include <devastator/utility.hxx>
 
@@ -27,8 +27,8 @@ namespace deva {
            1 + log2up((x/2) | (x%2));
   }
 
-  constexpr int process_n = PROCESS_N;
-  constexpr int worker_n = WORKER_N;
+  constexpr int process_n = DEVA_PROCESS_N;
+  constexpr int worker_n = DEVA_WORKER_N;
   
   constexpr int rank_n = process_n * worker_n;
   constexpr int log2up_rank_n = log2up(rank_n);
