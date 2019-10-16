@@ -93,16 +93,16 @@ def _everything():
         
         for fd in fds_r:
           try:
-            buf = os.read(fd, 8<<10).decode()
+            buf = os.read(fd, 8<<10)
           except OSError:
-            buf = ''
+            buf = b''
 
           chks, outname, job = io_r[fd]
           
           if len(buf) == 0:
             os.close(fd)
             del io_r[fd]
-            job.outputs[outname] = ''.join(chks)
+            job.outputs[outname] = b''.join(chks).decode()
             job.satisfy()
           else:
             chks.append(buf)
