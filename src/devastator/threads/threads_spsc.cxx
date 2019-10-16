@@ -1,32 +1,30 @@
-#include <devastator/world.hxx>
-#include <devastator/tmsg.hxx>
+#include <devastator/threads/threads_spsc.hxx>
 #include <devastator/opnew.hxx>
 
 #include <atomic>
 
 #include <external/pthread.h>
-
 #include <sched.h>
 
 namespace opnew = deva::opnew;
-namespace tmsg = deva::tmsg;
+namespace threads = deva::threads;
 
-__thread int tmsg::thread_me_ = -1;
-__thread int tmsg::epoch_mod3_ = 0;
-__thread tmsg::barrier_state_local<tmsg::thread_n> tmsg::barrier_l_;
-__thread tmsg::barrier_state_local<tmsg::thread_n> tmsg::epoch_barrier_l_;
+__thread int threads::thread_me_ = -1;
+__thread int threads::epoch_mod3_ = 0;
+__thread threads::barrier_state_local<threads::thread_n> threads::barrier_l_;
+__thread threads::barrier_state_local<threads::thread_n> threads::epoch_barrier_l_;
 
-tmsg::active_channels_r<tmsg::thread_n> tmsg::ams_r[thread_n];
-tmsg::active_channels_w<tmsg::thread_n> tmsg::ams_w[thread_n];
+threads::active_channels_r<threads::thread_n> threads::ams_r[thread_n];
+threads::active_channels_w<threads::thread_n> threads::ams_w[thread_n];
 
-tmsg::epoch_transition* tmsg::epoch_transition::all_head = nullptr;
+threads::epoch_transition* threads::epoch_transition::all_head_ = nullptr;
 
 namespace {
-  tmsg::barrier_state_global<tmsg::thread_n> barrier_g_;
-  tmsg::barrier_state_global<tmsg::thread_n> epoch_barrier_g_;
+  threads::barrier_state_global<threads::thread_n> barrier_g_;
+  threads::barrier_state_global<threads::thread_n> epoch_barrier_g_;
 }
 
-void tmsg::progress_epoch() {
+void threads::progress_epoch() {
   if(epoch_barrier_l_.try_end(epoch_barrier_g_, thread_me_)) {
     // previous epoch values
     std::uint64_t e64 = epoch_barrier_l_.epoch64()-1; // incremented by successful advance()
@@ -36,17 +34,17 @@ void tmsg::progress_epoch() {
     if(epoch_mod3_ == 3)
       epoch_mod3_ = 0;
     
-    for(epoch_transition *et = epoch_transition::all_head; et != nullptr; et = et->all_next)
+    for(epoch_transition *et = epoch_transition::all_head_; et != nullptr; et = et->all_next_)
       et->transition(e64, e3);
 
     epoch_barrier_l_.begin(epoch_barrier_g_, thread_me_);
   }
 }
 
-bool tmsg::progress(bool deaf) {
+bool threads::progress(bool deaf) {
   int const me = thread_me_;
   
-  tmsg::progress_epoch();
+  threads::progress_epoch();
   
   opnew::progress();
 
@@ -57,12 +55,12 @@ bool tmsg::progress(bool deaf) {
   return did_something;
 }
 
-void tmsg::barrier(bool deaf) {
+void threads::barrier(bool deaf) {
   barrier_l_.begin(barrier_g_, thread_me_);
 
   int spun = 0;
   while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
-    tmsg::progress(deaf);
+    threads::progress(deaf);
     
     if(++spun == 100) {
       spun = 0;
@@ -72,7 +70,7 @@ void tmsg::barrier(bool deaf) {
 }
 
 namespace {
-  pthread_t threads[tmsg::thread_n];
+  pthread_t thread_ids[threads::thread_n];
   pthread_mutex_t lock;
   pthread_cond_t wake;
   unsigned run_epoch = 0;
@@ -87,20 +85,20 @@ namespace {
       if(me == 0)
         zero_inited = true;
       
-      tmsg::thread_me_ = me;
+      threads::thread_me_ = me;
       opnew::thread_me_initialized();
       
-      for(int r=0; r < tmsg::thread_n; r++)
-        tmsg::ams_w[me].connect(r, tmsg::ams_r[r]);
+      for(int r=0; r < threads::thread_n; r++)
+        threads::ams_w[me].connect(r, threads::ams_r[r]);
 
-      tmsg::epoch_barrier_l_.begin(epoch_barrier_g_, me);
+      threads::epoch_barrier_l_.begin(epoch_barrier_g_, me);
     }
 
     bool running;
     unsigned run_epoch_prev = 0;
     do {
       run_fn();
-      tmsg::barrier(/*deaf=*/true);
+      threads::barrier(/*deaf=*/true);
 
       if(me == 0)
         running = false;
@@ -119,11 +117,11 @@ namespace {
   }
 
   void* finalizer_tmain(void*) {
-    DEVA_ASSERT_ALWAYS(tmsg::thread_me() == -1);
+    DEVA_ASSERT_ALWAYS(threads::thread_me() == -1);
     
-    for(int t=0; t < tmsg::thread_n; t++) {
-      pthread_join(threads[t], nullptr);
-      tmsg::ams_w[t].destroy();
+    for(int t=0; t < threads::thread_n; t++) {
+      pthread_join(thread_ids[t], nullptr);
+      threads::ams_w[t].destroy();
     }
 
     return nullptr;
@@ -137,7 +135,7 @@ namespace {
   }
 }
 
-void tmsg::run(upcxx::detail::function_ref<void()> fn) {
+void threads::run(upcxx::detail::function_ref<void()> fn) {
   static bool inited = false;
 
   run_fn = fn;
@@ -148,9 +146,9 @@ void tmsg::run(upcxx::detail::function_ref<void()> fn) {
     (void)pthread_cond_init(&wake, nullptr);
     (void)pthread_mutex_init(&lock, nullptr);
     
-    threads[0] = pthread_self();
+    thread_ids[0] = pthread_self();
     for(int t=1; t < thread_n; t++) {
-      (void)pthread_create(&threads[t], nullptr, tmain, reinterpret_cast<void*>(t));
+      (void)pthread_create(&thread_ids[t], nullptr, tmain, reinterpret_cast<void*>(t));
     }
 
     #if DEBUG

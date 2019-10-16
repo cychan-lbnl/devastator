@@ -4,7 +4,6 @@
 #include <devastator/intrusive_map.hxx>
 #include <devastator/intrusive_min_heap.hxx>
 #include <devastator/queue.hxx>
-#include <devastator/reduce.hxx>
 
 #include <atomic>
 #include <chrono>

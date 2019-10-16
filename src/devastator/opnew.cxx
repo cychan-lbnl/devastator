@@ -1,7 +1,7 @@
 #include <devastator/opnew.hxx>
 #include <devastator/diagnostic.hxx>
 
-#if OPNEW_ENABLED // contains whole file
+#if DEVA_OPNEW // contains whole file
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include <sys/mman.h>
 
 namespace opnew = deva::opnew;
-namespace tmsg = deva::tmsg;
+namespace threads = deva::threads;
 
 using namespace std;
 using namespace opnew;
@@ -21,7 +21,7 @@ void* operator new(std::size_t size) {
   return opnew::operator_new(size);
 }
 
-void operator delete(void *o) {
+void operator delete(void *o) noexcept {
   opnew::operator_delete(o);
 }
 
@@ -56,8 +56,8 @@ namespace {
     frobj *rest_head; // = nullptr
   };
   
-  __thread uintptr_t remote_thread_mask[(tmsg::thread_n + 8*sizeof(uintptr_t)-1)/sizeof(uintptr_t)] = {/*0...*/};
-  __thread remote_thread_bins remote_bins[tmsg::thread_n] {/*{}...*/};
+  __thread uintptr_t remote_thread_mask[(threads::thread_n + 8*sizeof(uintptr_t)-1)/sizeof(uintptr_t)] = {/*0...*/};
+  __thread remote_thread_bins remote_bins[threads::thread_n] {/*{}...*/};
 
   constexpr size_t pool_waste(int bin, int pn) {
     #define bin_sz (size_of_bin(bin))
@@ -96,9 +96,9 @@ void* opnew::operator_new_slow(size_t size) {
   
   if(bin_id != -1) {
     // bin is empty!
-    OPNEW_ASSERT(bin->popn == 0);
-    OPNEW_ASSERT(bin->head() == &bin->tail);
-    OPNEW_ASSERT(bin->tail.next_xor_prev == 0);
+    DEVA_OPNEW_ASSERT(bin->popn == 0);
+    DEVA_OPNEW_ASSERT(bin->head() == &bin->tail);
+    DEVA_OPNEW_ASSERT(bin->tail.next_xor_prev == 0);
     int pn = pool_best_pages[bin_id];
     
     if(pn != -1) {
@@ -107,7 +107,7 @@ void* opnew::operator_new_slow(size_t size) {
       
       if(bin->held_pools.top != nullptr) {
         pool *poo = bin->held_pools.pop_top(&pool::heap_link);
-        OPNEW_ASSERT(poo->deadbeef == 0xdeadbeef);
+        DEVA_OPNEW_ASSERT(poo->deadbeef == 0xdeadbeef);
         
         head = poo->hold_head;
         tail = poo->hold_tail;
@@ -116,14 +116,14 @@ void* opnew::operator_new_slow(size_t size) {
         poo->hold_tail = nullptr;
         poo->popn_not_held = poo->popn;
 
-        #if OPNEW_DEBUG > 1
+        #if DEVA_OPNEW_DEBUG > 1
           frobj *x = head,*y=nullptr;
           for(int n=0; n < popn; n++) {
             frobj *z = x->next(y);
             y = x;
             x = z;
           }
-          OPNEW_ASSERT(x==nullptr && y==tail);
+          DEVA_OPNEW_ASSERT(x==nullptr && y==tail);
         #endif
       }
       else {
@@ -161,7 +161,7 @@ void opnew::operator_delete_slow(void *obj) {
   arena *a = arena_of(obj);
   
   if(a != nullptr) {
-    OPNEW_ASSERT(a->pmap_is_blob(((char*)obj - (char*)(a+1))/page_size));
+    DEVA_OPNEW_ASSERT(a->pmap_is_blob(((char*)obj - (char*)(a+1))/page_size));
     
     if(a->owner_ts == &my_ts)
       arena_dealloc_blob(a, obj);
@@ -186,7 +186,7 @@ void opnew::gc_bins() {
     
     if(bin->popn_least != 0) {
       uintptr_t n = (3*bin->popn_least)/4;
-      OPNEW_ASSERT(n <= bin->popn);
+      DEVA_OPNEW_ASSERT(n <= bin->popn);
       
       frobj *o = bin->tail.next(nullptr); // tail->prev
       frobj *oprev = &bin->tail;
@@ -235,7 +235,7 @@ void opnew::flush_remote() {
     }
   }
   
-  for(int mi=0; mi < (tmsg::thread_n + B-1)/B; mi++) {
+  for(int mi=0; mi < (threads::thread_n + B-1)/B; mi++) {
     uintptr_t m = remote_thread_mask[mi];
     remote_thread_mask[mi] = 0;
     
@@ -246,7 +246,7 @@ void opnew::flush_remote() {
       remote_thread_bins rbins = remote_bins[t];
       remote_bins[t] = {};
       
-      tmsg::send(t, [=]() {
+      threads::send(t, [=]() {
         for(int i=0; i < rbins.bin_n; i++) {
           bin_state *bin = &my_ts.bins[rbins.bin[i]];
           rbins.tail[i]->change_link(nullptr, bin->head());
@@ -270,13 +270,13 @@ void opnew::flush_remote() {
 
 void opnew::thread_me_initialized() {
   for(arena *a = my_arenas; a != nullptr; a = a->owner_next)
-    a->owner_id = tmsg::thread_me();
+    a->owner_id = threads::thread_me();
 }
 
 namespace {
   mutex mm_lock;
   arena* mm_block = nullptr;
-  int mm_id_bump = tmsg::thread_n;
+  int mm_id_bump = threads::thread_n;
   
   arena* arena_create() {
     arena *a;
@@ -284,8 +284,8 @@ namespace {
       lock_guard<mutex> mm_locked{mm_lock};
       int id = mm_id_bump++;
       
-      if(id == tmsg::thread_n) {
-        uintptr_t block_size = tmsg::thread_n*uintptr_t(arena_size);
+      if(id == threads::thread_n) {
+        uintptr_t block_size = threads::thread_n*uintptr_t(arena_size);
         uintptr_t request_size = block_size + arena_size;
         
         void *m = mmap(nullptr, request_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -308,7 +308,7 @@ namespace {
     }
     
     a->owner_ts = &my_ts;
-    a->owner_id = tmsg::thread_me();
+    a->owner_id = threads::thread_me();
     a->owner_next = my_arenas;
     my_arenas = a;
     
@@ -368,7 +368,7 @@ namespace {
     
     int hp = 2*(t - ((1<<(arena::hole_lev_n-1))-1));
     hp += a->pmap_is_hole(hp) ? 0 : 1;
-    OPNEW_ASSERT(hp < page_per_arena);
+    DEVA_OPNEW_ASSERT(hp < page_per_arena);
 
     int hpn = a->pmap_hole_length(hp);
     
@@ -416,7 +416,7 @@ namespace {
     int p1 = p0 + (-a->pmap[p0] - 16*K);
 
     pool *poo = new(b) pool;
-    #if OPNEW_DEBUG
+    #if DEVA_OPNEW_DEBUG
       poo->deadbeef = 0xdeadbeef;
     #endif
     
@@ -474,13 +474,13 @@ namespace {
   
   void arena_hold_pooled(arena *a, frobj *o, intru_heap<pool> &held_pools) {
     int p = ((char*)o - (char*)(a+1))/page_size;
-    OPNEW_ASSERT(a->pmap_is_blob(p));
+    DEVA_OPNEW_ASSERT(a->pmap_is_blob(p));
     p = a->pmap_blob_any_to_head(p);
     
     pool *poo = (pool*)((char*)(a+1) + p*page_size);
-    OPNEW_ASSERT(poo->deadbeef == 0xdeadbeef);
+    DEVA_OPNEW_ASSERT(poo->deadbeef == 0xdeadbeef);
     poo->popn_not_held -= 1;
-    OPNEW_ASSERT(poo->popn_not_held >= 0);
+    DEVA_OPNEW_ASSERT(poo->popn_not_held >= 0);
     
     if(poo->popn_not_held != 0) {
       o->set_links(nullptr, poo->hold_head);
@@ -496,7 +496,7 @@ namespace {
     }
     else {
       held_pools.remove(&pool::heap_link, poo);
-      #if OPNEW_DEBUG
+      #if DEVA_OPNEW_DEBUG
         poo->deadbeef = 666;
       #endif
       arena_dealloc_blob(a, poo);
@@ -563,7 +563,7 @@ void opnew::intru_heap<T>::insert(intru_heap_link<T> T::*link_of, T *a) {
   
   while(ix != 0) {
     T *x = *px;
-    OPNEW_ASSERT(x != a);
+    DEVA_OPNEW_ASSERT(x != a);
     if(key_of(a) < key_of(x)) {
       a->*link_of = x->*link_of;
       *px = a;
@@ -574,7 +574,7 @@ void opnew::intru_heap<T>::insert(intru_heap_link<T> T::*link_of, T *a) {
     ix >>= 1;
   }
 
-  OPNEW_ASSERT(*px == nullptr);
+  DEVA_OPNEW_ASSERT(*px == nullptr);
   *px = a;
   (a->*link_of).ix = ix0;
   (a->*link_of).kid[0] = nullptr;
@@ -589,8 +589,8 @@ T* opnew::intru_heap<T>::pop_top(intru_heap_link<T> T::*link_of) {
     return reinterpret_cast<uintptr_t>(o);
   };
 
-  OPNEW_ASSERT(key_of(this->top) > 100);
-  OPNEW_ASSERT(this->n != 0);
+  DEVA_OPNEW_ASSERT(key_of(this->top) > 100);
+  DEVA_OPNEW_ASSERT(this->n != 0);
   
   T *ans = this->top;
   
@@ -609,7 +609,7 @@ T* opnew::intru_heap<T>::pop_top(intru_heap_link<T> T::*link_of) {
   *px = nullptr;
 
   if(ans == last) {
-    OPNEW_ASSERT((ans->*link_of).ix == ix0);
+    DEVA_OPNEW_ASSERT((ans->*link_of).ix == ix0);
     this->sane(link_of);
     return ans;
   }
@@ -666,7 +666,7 @@ void opnew::intru_heap<T>::remove(intru_heap_link<T> T::*link_of, T *a) {
   *px = nullptr;
   
   if(a == last) {
-    OPNEW_ASSERT((a->*link_of).ix == ix0);
+    DEVA_OPNEW_ASSERT((a->*link_of).ix == ix0);
     this->sane(link_of);
     return;
   }
@@ -688,7 +688,7 @@ void opnew::intru_heap<T>::remove(intru_heap_link<T> T::*link_of, T *a) {
     ix >>= 1;
   }
 
-  OPNEW_ASSERT(*px == a);
+  DEVA_OPNEW_ASSERT(*px == a);
   
   // replace `a` with last
   T *x = last;
@@ -744,23 +744,23 @@ void opnew::intru_heap<T>::sane(intru_heap_link<T> T::*link_of) {
     return reinterpret_cast<uintptr_t>(o);
   };
   
-  #if OPNEW_DEBUG > 1
+  #if DEVA_OPNEW_DEBUG > 1
     for(intptr_t ix0=0; ix0 < this->n; ix0++) {
       intptr_t ix = ix0;
       T *x = top;
       while(ix != 0) {
         T **kid = (x->*link_of).kid;
-        OPNEW_ASSERT(!kid[0] || key_of(x) < key_of(kid[0]));
-        OPNEW_ASSERT(!kid[1] || key_of(x) < key_of(kid[1]));
-        OPNEW_ASSERT(!kid[1] || kid[0]);
+        DEVA_OPNEW_ASSERT(!kid[0] || key_of(x) < key_of(kid[0]));
+        DEVA_OPNEW_ASSERT(!kid[1] || key_of(x) < key_of(kid[1]));
+        DEVA_OPNEW_ASSERT(!kid[1] || kid[0]);
         ix -= 1;
         x = (x->*link_of).kid[ix & 1];
         ix >>= 1;
       }
-      OPNEW_ASSERT((x->*link_of).ix == ix0);
+      DEVA_OPNEW_ASSERT((x->*link_of).ix == ix0);
     }
   #else
-    OPNEW_ASSERT((key_of(this->top) & 1) == 0);
+    DEVA_OPNEW_ASSERT((key_of(this->top) & 1) == 0);
   #endif
 }
 #endif
@@ -779,8 +779,8 @@ void opnew::arena_holes<Arena,Size>::insert(Arena *a) {
   
   while(true) {
     if(ix == 0) {
-      OPNEW_ASSERT(*pkid == nullptr);
-      OPNEW_ASSERT(*pmax == 0);
+      DEVA_OPNEW_ASSERT(*pkid == nullptr);
+      DEVA_OPNEW_ASSERT(*pmax == 0);
       *pkid = a;
       *pmax = a_max;
       a->holes_link.kid[0] = nullptr;
@@ -790,7 +790,7 @@ void opnew::arena_holes<Arena,Size>::insert(Arena *a) {
       break;
     }
     else if((ix & (ix+1)) == 0) {
-      OPNEW_ASSERT(a != *pkid);
+      DEVA_OPNEW_ASSERT(a != *pkid);
       a->holes_link.kid[0] = *pkid;
       a->holes_link.kid_max[0] = *pmax;
       a->holes_link.kid[1] = nullptr;
@@ -813,7 +813,7 @@ template<typename Fn>
 auto opnew::arena_holes<Arena,Size>::fit_and_decrease(Size size, Fn &&fn)
   -> decltype(fn(std::declval<Arena*>())) {
   
-  OPNEW_ASSERT(size <= root_max_);
+  DEVA_OPNEW_ASSERT(size <= root_max_);
   
   Arena *a = root_;
   Arena *a_up = nullptr;
@@ -829,7 +829,7 @@ auto opnew::arena_holes<Arena,Size>::fit_and_decrease(Size size, Fn &&fn)
       k = 1;
     
     Arena *kid = a->holes_link.kid[k];
-    OPNEW_ASSERT(kid != nullptr);
+    DEVA_OPNEW_ASSERT(kid != nullptr);
     a->holes_link.kid[k] = a_up;
     a_up = a;
     a = kid;
@@ -855,7 +855,7 @@ void opnew::arena_holes<Arena,Size>::increased(Arena *a) {
     p = p->holes_link.kid[k];
   }
   
-  OPNEW_ASSERT(p == a);
+  DEVA_OPNEW_ASSERT(p == a);
 }
 
 template<typename Arena, typename Size>

@@ -3,38 +3,36 @@
 
 #include <new>
 
-#ifndef OPNEW_ENABLED
-  #define OPNEW_ENABLED !DEBUG
+#ifndef DEVA_OPNEW
+  #define DEVA_OPNEW !DEBUG
 #endif
 
-#ifndef OPNEW_DEBUG
-  #define OPNEW_DEBUG 0
+#ifndef DEVA_OPNEW_DEBUG
+  #define DEVA_OPNEW_DEBUG 0
 #endif
 
-#if !OPNEW_ENABLED
-namespace deva {
-namespace opnew {
-  inline void progress() {}
-  inline void thread_me_initialized() {}
-  
-  inline void* operator_new(std::size_t size) {
-    return ::operator new(size);
-  }
-  
-  template<std::size_t known_size=0, bool known_local=false>
-  void operator_delete(void *obj) {
-    ::operator delete(obj);
-  }
-}
-}
+#if !DEVA_OPNEW
+  namespace deva {
+  namespace opnew {
+    inline void progress() {}
+    inline void thread_me_initialized() {}
+    
+    inline void* operator_new(std::size_t size) {
+      return ::operator new(size);
+    }
+    
+    template<std::size_t known_size=0, bool known_local=false>
+    void operator_delete(void *obj) noexcept {
+      ::operator delete(obj);
+    }
+  }}
 #else
-namespace deva {
-namespace opnew {
-  void* operator_new(std::size_t);
-  
-  template<std::size_t known_size=0, bool known_local=false>
-  void operator_delete(void *obj);
-}
-}
+  namespace deva {
+  namespace opnew {
+    void* operator_new(std::size_t);
+    
+    template<std::size_t known_size=0, bool known_local=false>
+    void operator_delete(void *obj) noexcept;
+  }}
 #endif
 #endif

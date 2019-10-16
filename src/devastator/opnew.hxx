@@ -1,9 +1,9 @@
-#ifndef _1fa94734_0f88_4819_abb4_43776c659c8a
-#define _1fa94734_0f88_4819_abb4_43776c659c8a
+#ifndef _1fa947340f884819abb443776c659c8a
+#define _1fa947340f884819abb443776c659c8a
 
 #include <devastator/opnew_fwd.hxx>
 
-#if OPNEW_ENABLED
+#if DEVA_OPNEW
 
 #include <devastator/diagnostic.hxx>
 #include <devastator/world.hxx>
@@ -13,10 +13,10 @@
 #include <new>
 #include <type_traits>
 
-#if OPNEW_DEBUG
-  #define OPNEW_ASSERT(ok) (!!(ok) || (::deva::assert_failed(__FILE__,__LINE__), 0))
+#if DEVA_OPNEW_DEBUG
+  #define DEVA_OPNEW_ASSERT(ok) (!!(ok) || (::deva::assert_failed(__FILE__,__LINE__), 0))
 #else
-  #define OPNEW_ASSERT(ok) ((void)0)
+  #define DEVA_OPNEW_ASSERT(ok) ((void)0)
 #endif
 
 namespace deva {
@@ -59,7 +59,7 @@ namespace opnew {
   constexpr int bin_of_size_help1(std::size_t size) {
     return bin_of_size_help2(
       (size + sizeof(void*)-1)/sizeof(void*),
-      log2dn((size + sizeof(void*)-1)/sizeof(void*))
+      log_dn((size + sizeof(void*)-1)/sizeof(void*), 2)
     );
   }
   
@@ -73,7 +73,7 @@ namespace opnew {
   
   template<int ...i>
   constexpr bin_of_size_table make_bin_of_size_small(index_sequence<i...>) {
-    return {{bin_of_size_help1(i*sizeof(void*))...}};
+    return {{(std::int8_t)bin_of_size_help1(i*sizeof(void*))...}};
   }
 
   constexpr bin_of_size_table bin_of_size_small = make_bin_of_size_small(make_index_sequence<bin_size_max_words>());
@@ -133,7 +133,7 @@ namespace opnew {
   };
 
   struct pool {
-    #if OPNEW_DEBUG
+    #if DEVA_OPNEW_DEBUG
       unsigned deadbeef;
     #endif
     int popn, popn_not_held;
@@ -201,8 +201,8 @@ namespace opnew {
       return -pmap[p] - 16*K;
     }
 
-    static constexpr int hole_lev_n = 1 + log2up((page_per_arena+1)/2);
-    std::uint16_t holes[(2<<log2up((page_per_arena+1)/2))-1];
+    static constexpr int hole_lev_n = 1 + log_up((page_per_arena+1)/2, 2);
+    std::uint16_t holes[(2<<log_up((page_per_arena+1)/2, 2))-1];
     
     std::uint16_t hole_size_max() const {
       return holes[0];
@@ -280,7 +280,7 @@ namespace opnew {
     void sane() {
       held_pools.sane(&pool::heap_link);
       
-      #if OPNEW_DEBUG > 1
+      #if DEVA_OPNEW_DEBUG > 1
         frobj *x, *y;
         x = head();
         y = nullptr;
@@ -289,7 +289,7 @@ namespace opnew {
           y = x;
           x = z;
         }
-        OPNEW_ASSERT(x == &tail);
+        DEVA_OPNEW_ASSERT(x == &tail);
       #endif
     }
   };
@@ -345,15 +345,15 @@ namespace opnew {
       return operator_new_slow(size);
   }
 
-  template<std::size_t known_size=0, bool known_local=false>
-  void operator_delete(void *obj) {
+  template<std::size_t known_size, bool known_local>
+  void operator_delete(void *obj) noexcept {
     my_ts.opcalls += 1;
     arena *a = opnew::template arena_of<known_size>(obj);
     
     if((known_size != 0 && known_size < huge_size) || a != nullptr) {
       int bin = opnew::template bin_of<known_size>(a, obj);
 
-      OPNEW_ASSERT(!known_local || a->owner_ts == &my_ts);
+      DEVA_OPNEW_ASSERT(!known_local || a->owner_ts == &my_ts);
       
       if((known_local || a->owner_ts == &my_ts) && bin != -1) {
         bin_state *b = &my_ts.bins[bin];

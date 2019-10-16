@@ -1,7 +1,9 @@
+#include <devastator/world.hxx>
+
 #ifndef _665ed957_fc08_4e29_97d3_ecb6b268efd7
 #define _665ed957_fc08_4e29_97d3_ecb6b268efd7
 
-#include <devastator/world.hxx>
+#include <limits>
 
 namespace deva {
   namespace detail {

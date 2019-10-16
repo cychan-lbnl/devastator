@@ -1,4 +1,4 @@
-#include <devastator/reduce.hxx>
+#include <devastator/world/reduce.hxx>
 
 __thread int deva::detail::reduce_incoming = 0;
 __thread void *deva::detail::reduce_acc;

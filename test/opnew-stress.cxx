@@ -1,5 +1,4 @@
 #include <devastator/diagnostic.hxx>
-#include <devastator/reduce.hxx>
 #include <devastator/world.hxx>
 
 #include <vector>

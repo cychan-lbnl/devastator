@@ -12,7 +12,7 @@ thread_local uint64_t landed_n = 0;
 thread_local std::multiset<std::uint64_t> lvts;
 thread_local std::default_random_engine rng;
 
-constexpr uint64_t t_end = 100000 + deva::rank_n;
+constexpr uint64_t t_end = 1000 + deva::rank_n;
 constexpr int per_rank = 100;
 
 void send_someday(uint64_t t, int delta);
@@ -50,8 +50,8 @@ void send_someday(uint64_t t, int delta) {
 void tmain() {
   rng.seed(0xdeadbeefull*deva::rank_me());
   
-  gvt::init({});
-  gvt::epoch_begin(0, {});
+  gvt::init(0, {});
+  gvt::coll_begin(0, {});
 
   for(int i=0; i < per_rank; i++) {
     int delta = 1 + deva::rank_me();
@@ -66,15 +66,15 @@ void tmain() {
     deva::progress();
     gvt::advance();
 
-    //say()<<"gvt "<<gvt::epoch_gvt();
+    //deva::say()<<"gvt "<<gvt::epoch_gvt();
     
     if(~gvt::epoch_gvt() == 0)
       break;
     
-    if(gvt::epoch_ended()) {
+    if(gvt::coll_ended()) {
       //say()<<"gvt="<<gvt::epoch_gvt();
       uint64_t lvt = lvts.empty() ? uint64_t(-1) : *lvts.begin();
-      gvt::epoch_begin(lvt, {});
+      gvt::coll_begin(lvt, {});
     }
   }
 

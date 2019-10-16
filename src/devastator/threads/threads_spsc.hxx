@@ -1,49 +1,17 @@
-#ifndef _185047ccc3634e778407efc12d5bea5d
-#define _185047ccc3634e778407efc12d5bea5d
+#ifndef _bbb850e8e4e2461988f43975411ccdf3
+#define _bbb850e8e4e2461988f43975411ccdf3
 
-#include <devastator/diagnostic.hxx>
-#include <devastator/opnew_fwd.hxx>
-#include <devastator/utility.hxx>
+// The API this file implements forward declared here
+#include <devastator/threads.hxx>
 
-#include <upcxx/utility.hpp>
+#include <devastator/threads/barrier_state.hxx>
+#include <devastator/threads/signal_slots.hxx>
 
-#include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <new>
-#include <utility>
-
-#ifndef DEVA_THREAD_N
-#  error "-DDEVA_THREAD_N=<num> required"
-#endif
 
 namespace deva {
-namespace tmsg {
-  struct hot_slot {
-    std::uint32_t ix, delta, old;
-  };
-  
-  template<int n>
-  struct slot_list {
-    union alignas(n > 1 ? 64 : 1) {
-      std::atomic<std::uint32_t> live[n];
-    };
-    union alignas(n > 1 ? 64 : 1) {
-      std::uint32_t shadow[n];
-    };
-
-    slot_list() {
-      for(int i=0; i < n; i++) {
-        live[i].store(0, std::memory_order_relaxed);
-        shadow[i] = 0;
-      }
-    }
-    
-    int reap(hot_slot hot[n]);
-    
-    bool quiet() const;
-  };
-
+namespace threads {
   struct message {
     message *next = reinterpret_cast<message*>(0xdeadbeef);
   };
@@ -61,19 +29,21 @@ namespace tmsg {
       std::atomic<std::uint32_t> *ack_slot;
     } r_[n];
     
-    slot_list<n> slots_;
+    signal_slots<std::uint32_t, n> slots_;
     std::atomic<int> slot_next_{0};
     
   public:
     template<typename Rcv>
-    bool receive(Rcv rcv);
+    bool receive(Rcv &&rcv);
     template<typename Rcv, typename Batch>
-    bool receive_batch(Rcv rcv, Batch batch);
+    bool receive_batch(Rcv &&rcv, Batch &&batch);
     
-    bool quiet() const { return slots_.quiet(); }
+    bool possibly_quiesced() const {
+      return slots_.possibly_quiesced();
+    }
     
   private:
-    void prefetch(int hot_n, hot_slot hot[]);
+    void prefetch(int hot_n, hot_slot<std::uint32_t> hot[]);
   };
   
   template<int n>
@@ -85,7 +55,7 @@ namespace tmsg {
       std::uint32_t recv_bump = 0; 
     } w_[n];
     
-    slot_list<n> slots_;
+    signal_slots<std::uint32_t, n> slots_;
 
   public:
     channels_w() = default;
@@ -98,7 +68,10 @@ namespace tmsg {
     void send(int id, message *m);
 
     bool cleanup();
-    bool quiet() const { return slots_.quiet(); }
+    
+    bool possibly_quiesced() const {
+      return slots_.possibly_quiesced();
+    }
   };
 
   //////////////////////////////////////////////////////////////////////////////
@@ -135,47 +108,8 @@ namespace tmsg {
     //say()<<"wchan "<<id<<" of "<<n<<" bumped "<<w_[id].recv_bump-1<<" -> "<<w_[id].recv_bump;
   }
   
-  template<int n>
-  int slot_list<n>::reap(hot_slot hot[n]) {
-    int hot_n = 0;
-    std::uint32_t fresh[n];
-
-    for(int i=0; i < n; i++)
-      fresh[i] = live[i].load(std::memory_order_relaxed);
-
-    // software fence: prevents load/stores from moving before or after.
-    // this is for performance, we want to scan the live counters with
-    // dense loads into a temporary "fresh" buffer, and do comparison
-    // processing afterwards.
-    std::atomic_signal_fence(std::memory_order_acq_rel);
-    
-    for(int i=0; i < n; i++) {
-      if(fresh[i] != shadow[i]) {
-        hot[hot_n].ix = i;
-        hot[hot_n].delta = fresh[i] - shadow[i];
-        hot[hot_n].old = shadow[i];
-        hot_n += 1;
-        
-        shadow[i] = fresh[i];
-      }
-    }
-    
-    if(hot_n != 0)
-      std::atomic_thread_fence(std::memory_order_acquire);
-    
-    return hot_n;
-  }
-
-  template<int n>
-  bool slot_list<n>::quiet() const {
-    bool yep = true;
-    for(int i=0; i < n; i++)
-      yep &= shadow[i] == live[i].load(std::memory_order_relaxed);
-    return yep;
-  }
-  
   template<int chan_n>
-  void channels_r<chan_n>::prefetch(int hot_n, hot_slot hot[]) {
+  void channels_r<chan_n>::prefetch(int hot_n, hot_slot<std::uint32_t> hot[]) {
   #if 0
     message *mp[chan_n];
     std::uint32_t mn[chan_n];
@@ -239,8 +173,8 @@ namespace tmsg {
   
   template<int chan_n>
   template<typename Rcv>
-  bool channels_r<chan_n>::receive(Rcv rcv) {
-    hot_slot hot[chan_n];
+  bool channels_r<chan_n>::receive(Rcv &&rcv) {
+    hot_slot<std::uint32_t> hot[chan_n];
     int hot_n = this->slots_.reap(hot);
     
     prefetch(hot_n, hot);
@@ -266,8 +200,8 @@ namespace tmsg {
 
   template<int chan_n>
   template<typename Rcv, typename Batch>
-  bool channels_r<chan_n>::receive_batch(Rcv rcv, Batch batch) {
-    hot_slot hot[chan_n];
+  bool channels_r<chan_n>::receive_batch(Rcv &&rcv, Batch &&batch) {
+    hot_slot<std::uint32_t> hot[chan_n];
     int hot_n = this->slots_.reap(hot);
     
     prefetch(hot_n, hot);
@@ -297,7 +231,7 @@ namespace tmsg {
 
   template<int chan_n>
   bool channels_w<chan_n>::cleanup() {
-    hot_slot hot[chan_n];
+    hot_slot<std::uint32_t> hot[chan_n];
     int hot_n = this->slots_.reap(hot);
     
     for(int i=0; i < hot_n; i++) {
@@ -307,7 +241,7 @@ namespace tmsg {
       
       do {
         message *m1 = m->next;
-        #if OPNEW_ENABLED
+        #if DEVA_OPNEW
           opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(m);
         #else
           ::operator delete(m);
@@ -337,8 +271,8 @@ namespace tmsg {
       me->fn.~Fn();
     }
     
-    active_message_impl(Fn fn):
-      fn{std::move(fn)} {
+    active_message_impl(Fn &&fn):
+      fn{static_cast<Fn&&>(fn)} {
       this->execute_and_destruct = the_execute_and_destruct;
     }
   };
@@ -346,10 +280,10 @@ namespace tmsg {
   template<int n>
   struct active_channels_w: channels_w<n> {
     template<typename Fn>
-    void send(int id, Fn fn) {
+    void send(int id, Fn &&fn) {
       auto *m = new(
           ::operator new(sizeof(active_message_impl<Fn>))
-        ) active_message_impl<Fn>{std::move(fn)};
+        ) active_message_impl<Fn>{static_cast<Fn&&>(fn)};
 
       channels_w<n>::send(id, m);
     }
@@ -368,124 +302,10 @@ namespace tmsg {
   };
 
   //////////////////////////////////////////////////////////////////////////////
-
-  template<int thread_n>
-  class barrier_state_global {
-    template<int>
-    friend class barrier_state_local;
-    
-    static constexpr int log2_thread_n = thread_n == 1 ? 1 : log_up(thread_n, 2);
-
-    struct phase_t {
-      char slot[log2_thread_n];
-    };
-    struct alignas(64) phases_t {
-      phase_t phase[2];
-    };
-    
-    phases_t hot[thread_n];
-
-  public:
-    constexpr barrier_state_global():
-      hot{/*zeros...*/} {
-    }
-  };
-
-  template<int thread_n>
-  class barrier_state_local {
-    int i;
-    char or_acc[2];
-    std::uint64_t e64;
-
-  public:
-    constexpr barrier_state_local():
-      i(0), or_acc{0, 0}, e64(0) {
-    }
-    
-    std::uint64_t epoch64() const { return e64; }
-    bool or_result() const { return 0 != or_acc[1-(e64 & 1)]; }
-    
-    void begin(barrier_state_global<thread_n> &g, int me, bool or_in=false);
-    // returns true on barrier completion
-    bool try_end(barrier_state_global<thread_n> &g, int me);
-    
-  private:
-    bool advance(barrier_state_global<thread_n> &g, int me);
-  };
-
-  template<int thread_n>
-  void barrier_state_local<thread_n>::begin(
-      barrier_state_global<thread_n> &g, int me, bool or_in
-    ) {
-    std::atomic_thread_fence(std::memory_order_release);
-    
-    int ph = this->e64 & 1;
-    int peer = me + 1;
-    if(peer == thread_n)
-      peer = 0;
-    g.hot[peer].phase[ph].slot[0] = 0x1 | (or_in ? 0x2 : 0x0);
-    
-    this->i = 0;
-    this->or_acc[ph] = 0x1 | (or_in ? 0x2 : 0x0);
-    this->advance(g, me);
-  }
-
-  template<int thread_n>
-  bool barrier_state_local<thread_n>::try_end(
-      barrier_state_global<thread_n> &g, int me
-    ) {
-    if(this->advance(g, me)) {
-      std::atomic_thread_fence(std::memory_order_acquire);
-      
-      int ph = this->e64 & 1;
-      g.hot[me].phase[ph] = {/*zeros...*/};
-      this->or_acc[ph] ^= 0x1; // clear notify bit
-      this->e64 += 1;
-      return true;
-    }
-    else
-      return false;
-  }
-
-  template<int thread_n>
-  bool barrier_state_local<thread_n>::advance(
-      barrier_state_global<thread_n> &g, int me
-    ) {
-    
-    if(thread_n == 1)
-      return true;
-    
-    int ph = this->e64 & 1;
-    auto hot = g.hot[me].phase[ph];
-    
-    std::atomic_signal_fence(std::memory_order_acq_rel);
-
-    constexpr int log2_thread_n = barrier_state_global<thread_n>::log2_thread_n;
-    
-    for(; i < log2_thread_n-1; i++) {
-      if(hot.slot[i] != 0) {
-        or_acc[ph] |= hot.slot[i];
-        int peer = me + (1<<(i+1));
-        if(peer >= thread_n)
-          peer -= thread_n;
-        g.hot[peer].phase[ph].slot[i+1] = or_acc[ph];
-      }
-      else
-        return false;
-    }
-
-    or_acc[ph] |= hot.slot[log2_thread_n-1];
-    return hot.slot[log2_thread_n-1] != 0;
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-  // deva::tmsg public API
-  
-  constexpr int thread_n = DEVA_THREAD_N;
-  constexpr int log2_thread_n = log_up(thread_n, 2);
+  // deva::threads API implementation
   
   extern active_channels_r<thread_n> ams_r[thread_n];
-  extern tmsg::active_channels_w<thread_n> ams_w[thread_n];
+  extern active_channels_w<thread_n> ams_w[thread_n];
   
   extern __thread int thread_me_;
   extern __thread int epoch_mod3_;
@@ -503,30 +323,11 @@ namespace tmsg {
     return epoch_mod3_;
   }
   
-  struct epoch_transition {
-    static epoch_transition *all_head;
-    epoch_transition *all_next;
-
-    epoch_transition() {
-      this->all_next = all_head;
-      all_head = this;
-    }
-
-    virtual void transition(std::uint64_t epoch_low64, int epoch_mod3) = 0;
-  };
-  
   template<typename Fn>
-  void send(int thread, Fn fn) {
-    ams_w[thread_me_].send(thread, std::move(fn));
+  void send(int thread, Fn &&fn) {
+    ams_w[thread_me_].send(thread, static_cast<Fn&&>(fn));
   }
   
-  bool progress(bool deaf=false);
-  void progress_epoch();
-  
-  void barrier(bool deaf=false);
-
-  void run(upcxx::detail::function_ref<void()> fn);
-
   template<typename Fn>
   void bcast_peers(Fn fn) {
     for(int t=0; t < thread_n; t++) {
@@ -534,6 +335,5 @@ namespace tmsg {
         ams_w[thread_me_].send(t, fn);
     }
   }
-}
-}
+}}
 #endif

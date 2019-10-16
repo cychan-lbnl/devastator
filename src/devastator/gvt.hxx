@@ -22,10 +22,10 @@ namespace deva {
     void init(std::uint64_t gvt, reducibles rxs0);
     
     template<bool3 local, typename Fn, typename ...Arg>
-    void send(int rank, cbool3<local>, std::uint64_t t, Fn fn, Arg ...arg);
+    void send(int rank, cbool3<local>, std::uint64_t t, Fn &&fn, Arg &&...arg);
 
     template<typename Fn, typename ...Arg>
-    void send(int rank, std::uint64_t t, Fn fn, Arg ...arg);
+    void send(int rank, std::uint64_t t, Fn &&fn, Arg &&...arg);
 
     template<typename ProcFn>
     void bcast_procs(std::uint64_t t_lb, std::int32_t credit_n, ProcFn const &proc_fn);
@@ -80,12 +80,12 @@ namespace deva {
   }
 
   template<typename Fn, typename ...Arg>
-  void gvt::send(int rank, std::uint64_t t, Fn fn, Arg ...arg) {
-    gvt::template send<maybe3>(rank, t, std::move(fn), std::move(arg)...);
+  void gvt::send(int rank, std::uint64_t t, Fn &&fn, Arg &&...arg) {
+    gvt::send(rank, cmaybe3, t, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
   
   template<bool3 local, typename Fn, typename ...Arg>
-  void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn fn, Arg ...arg) {
+  void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn &&fn, Arg &&...arg) {
     DEVA_ASSERT(epoch_gvt_[0] <= t);
     
     unsigned e = epoch_ + 1;

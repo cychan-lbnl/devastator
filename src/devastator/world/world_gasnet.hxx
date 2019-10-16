@@ -1,46 +1,49 @@
-#ifndef _e9ac220a_a23a_4309_927b_e4bca6cc4634
-#define _e9ac220a_a23a_4309_927b_e4bca6cc4634
+// The forwarded API this header is implementing.
+#include <devastator/world.hxx>
+
+#ifndef _86d347eb52d247a290fdf21fe440bce0
+#define _86d347eb52d247a290fdf21fe440bce0
 
 #ifndef DEVA_PROCESS_N
-#  error "-DDEVA_PROCESS_N=<num> required"
+  #error "-DDEVA_PROCESS_N=<num> required"
 #endif
 #ifndef DEVA_WORKER_N
   #error "-DDEVA_WORKER_N=<num> required"
 #endif
 
-#define DEVA_THREAD_N ((DEVA_WORKER_N)+1)
-#include <devastator/tmsg.hxx>
+#include <devastator/threads.hxx>
 #include <devastator/utility.hxx>
 
 #include <upcxx/bind.hpp>
 #include <upcxx/command.hpp>
 #include <upcxx/serialization.hpp>
 
+#include <cstdint>
 #include <functional>
 #include <utility>
 
 namespace deva {
-  inline constexpr int log2up(int x) {
-    return x <= 0 ? -1 :
-           x == 1 ? 0 :
-           x == 3 ? 2 :
-           1 + log2up((x/2) | (x%2));
-  }
-
   constexpr int process_n = DEVA_PROCESS_N;
   constexpr int worker_n = DEVA_WORKER_N;
   
   constexpr int rank_n = process_n * worker_n;
   constexpr int log2up_rank_n = log2up(rank_n);
   
-  extern tmsg::channels_r<tmsg::thread_n> remote_send_chan_r;
-  extern tmsg::channels_w<1> remote_send_chan_w[tmsg::thread_n];
-  extern tmsg::channels_r<1> remote_recv_chan_r[tmsg::thread_n];
-  extern tmsg::channels_w<tmsg::thread_n> remote_recv_chan_w;
+  extern threads::channels_r<threads::thread_n> remote_send_chan_r;
+  extern threads::channels_w<1> remote_send_chan_w[threads::thread_n];
+  extern threads::channels_r<1> remote_recv_chan_r[threads::thread_n];
+  extern threads::channels_w<threads::thread_n> remote_recv_chan_w;
 
   extern __thread int rank_me_;
   extern int process_me_;
   extern int process_rank_lo_, process_rank_hi_;
+  
+  void run(upcxx::detail::function_ref<void()> fn);
+
+  inline void run_and_die(upcxx::detail::function_ref<void()> fn) {
+    run(fn);
+    std::exit(0);
+  }
   
   inline int rank_me() { return rank_me_; }
   inline int rank_me_local() { return rank_me() - process_rank_lo_; }
@@ -50,10 +53,14 @@ namespace deva {
   }
   
   inline int process_me() { return process_me_; }
-  constexpr int process_rank_lo(int proc = process_me()) { return proc*worker_n; }
-  constexpr int process_rank_hi(int proc = process_me()) { return (proc+1)*worker_n; }
-  
-  struct alignas(8) remote_out_message: tmsg::message {
+  constexpr int process_rank_lo(int proc) { return proc*worker_n; }
+  constexpr int process_rank_hi(int proc) { return (proc+1)*worker_n; }
+
+  void progress(bool spinning, bool deaf);
+
+  void barrier(bool deaf);
+
+  struct alignas(8) remote_out_message: threads::message {
     std::int32_t rank, size8;
     remote_out_message *bundle_next;
 
@@ -114,47 +121,47 @@ namespace deva {
   using upcxx::bind;
 
   template<typename Fn, typename ...Arg>
-  void send_local(int rank, Fn fn, Arg ...arg) {
+  void send_local(int rank, Fn &&fn, Arg &&...arg) {
     DEVA_ASSERT(rank == ~process_me_ || (process_rank_lo_ <= rank && rank < process_rank_hi_));
-    tmsg::send(
+    threads::send(
       rank < 0 ? 0 : 1 + rank-process_rank_lo_,
-      upcxx::bind(std::move(fn), std::move(arg)...)
+      upcxx::bind(static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...)
     );
   }
 
   template<typename Fn, typename ...Arg>
-  void send_remote(int rank, Fn fn, Arg ...arg) {
+  void send_remote(int rank, Fn &&fn, Arg &&...arg) {
     auto *m = remote_out_message::make(rank,
       upcxx::bind(
         [](auto const &fn_on_args, void const *cmd, std::size_t cmd_size) {
           fn_on_args();
         },
-        upcxx::bind(std::move(fn), std::move(arg)...)
+        upcxx::bind(static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...)
       )
     );
     //say()<<"send_remote to "<<rank<<" size "<<m->size8;
-    remote_send_chan_w[tmsg::thread_me()].send(0, m);
+    remote_send_chan_w[threads::thread_me()].send(0, m);
   }
 
   template<typename Fn, typename ...Arg>
-  void send(int rank, Fn fn, Arg ...arg) {
+  void send(int rank, Fn &&fn, Arg &&...arg) {
     if(rank_is_local(rank))
-      send_local(rank, std::move(fn), std::move(arg)...);
+      send_local(rank, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
     else
-      send_remote(rank, std::move(fn), std::move(arg)...);
+      send_remote(rank, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
 
   template<typename Fn, typename ...Arg>
-  void send(int rank, ctrue3_t local, Fn fn, Arg ...arg) {
-    send_local(rank, std::move(fn), std::move(arg)...);
+  void send(int rank, ctrue3_t local, Fn &&fn, Arg &&...arg) {
+    send_local(rank, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
   template<typename Fn, typename ...Arg>
   void send(int rank, cfalse3_t local, Fn fn, Arg ...arg) {
-    send_remote(rank, std::move(fn), std::move(arg)...);
+    send_remote(rank, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
   template<typename Fn, typename ...Arg>
   void send(int rank, cmaybe3_t local, Fn fn, Arg ...arg) {
-    send(rank, std::move(fn), std::move(arg)...);
+    send(rank, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
   
   void bcast_remote_sends_(int proc_root, void const *cmd, std::size_t cmd_size);
@@ -168,25 +175,14 @@ namespace deva {
         deva::bcast_remote_sends_(proc_root, cmd, cmd_size);
         proc_fn();
       },
-      std::forward<ProcFn>(proc_fn)
+      static_cast<ProcFn&&>(proc_fn)
     );
     
-    tmsg::send(0, [relay_fn(std::move(relay_fn))]() {
+    threads::send(0, [relay_fn(std::move(relay_fn))]() {
       auto *rm = remote_out_message::make(0xdeadbeef, relay_fn);
       relay_fn((void*)(rm+1), 8*std::size_t(rm->size8));
       operator delete((void*)rm);
     });
-  }
-  
-  void progress(bool spinning=false, bool deaf=false);
-
-  void barrier(bool deaf=false);
-  
-  void run(upcxx::detail::function_ref<void()> fn);
-
-  inline void run_and_die(upcxx::detail::function_ref<void()> fn) {
-    run(fn);
-    std::exit(0);
   }
 }
 

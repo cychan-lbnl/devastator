@@ -35,7 +35,7 @@ def cxx_compiler():
   text = brutal.process(cxx + ['--version'], show=0, capture_stdout=1)
   text = text.wait()
   brutal.depend_fact('CXX --version', text)
-
+  
   text = brutal.process(
     cxx + ['-x','c++','-E','-'],
     stdin='__cplusplus', capture_stdout=1, show=0
@@ -68,7 +68,7 @@ def code_context_base():
     cg_misc = (
       (['-flto'] if optlev == 3 else []) +
       (['-g'] if syms else []) +
-      ['-Wno-aligned-new','-march=native']
+      ['-Wno-unknown-warning-option','-Wno-aligned-new','-march=native']
     ),
     ld_misc = ['-flto'] if optlev == 3 else [],
     pp_defines = {
@@ -80,6 +80,9 @@ def code_context_base():
 @brutal.rule
 def code_context(PATH):
   cxt = code_context_base()
+
+  if PATH == brutal.here('src/devastator/threads.hxx'):
+    cxt = cxt.with_pp_defines(DEVA_THREADS_SPSC=1)
   
   if PATH == brutal.here('src/devastator/world.hxx'):
     world = brutal.env('world', default='threads')
@@ -88,13 +91,15 @@ def code_context(PATH):
     if world == 'threads':
       cxt |= CodeContext(pp_defines={
         'DEVA_WORLD_THREADS': 1,
-        'DEVA_RANK_N': brutal.env('ranks',2)
+        'DEVA_THREAD_N': brutal.env('ranks',2)
       })
+    
     elif world == 'gasnet':
       cxt |= CodeContext(pp_defines={
         'DEVA_WORLD_GASNET': 1,
         'DEVA_PROCESS_N': brutal.env('procs',2),
-        'DEVA_WORKER_N': brutal.env('workers',2)
+        'DEVA_WORKER_N': brutal.env('workers',2),
+        'DEVA_THREAD_N': '((DEVA_WORKER_N)+1)'
       })
     
   elif PATH == brutal.here('src/devastator/diagnostic.cxx'):

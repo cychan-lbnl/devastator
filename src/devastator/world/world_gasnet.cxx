@@ -1,4 +1,4 @@
-#include <devastator/world_gasnet.hxx>
+#include <devastator/world/world_gasnet.hxx>
 #include <devastator/intrusive_map.hxx>
 #include <devastator/opnew.hxx>
 
@@ -15,7 +15,7 @@
 #include <sched.h>
 #include <fcntl.h>
 
-namespace tmsg = deva::tmsg;
+namespace threads = deva::threads;
 
 using namespace std;
 
@@ -40,10 +40,10 @@ namespace {
 }
 
 alignas(64)
-tmsg::channels_r<tmsg::thread_n> deva::remote_send_chan_r;
-tmsg::channels_w<1> deva::remote_send_chan_w[tmsg::thread_n];
-tmsg::channels_r<1> deva::remote_recv_chan_r[tmsg::thread_n];
-tmsg::channels_w<tmsg::thread_n> deva::remote_recv_chan_w;
+threads::channels_r<threads::thread_n> deva::remote_send_chan_r;
+threads::channels_w<1> deva::remote_send_chan_w[threads::thread_n];
+threads::channels_r<1> deva::remote_recv_chan_r[threads::thread_n];
+threads::channels_w<threads::thread_n> deva::remote_recv_chan_w;
 
 namespace {
   enum {
@@ -55,7 +55,7 @@ namespace {
   void init_gasnet();
   void master_pump();
 
-  struct remote_in_messages: tmsg::message {
+  struct remote_in_messages: threads::message {
     int header_size;
     int count;
   };
@@ -71,8 +71,8 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
     process_rank_hi_ = (deva::process_me_+1)*worker_n;
   }
   
-  tmsg::run([&]() {
-    int tme = tmsg::thread_me();
+  threads::run([&]() {
+    int tme = threads::thread_me();
 
     static thread_local bool inited = false;
     
@@ -80,7 +80,7 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
       inited = true;
       
       if(tme == 0) {
-        for(int t=0; t < tmsg::thread_n; t++)
+        for(int t=0; t < threads::thread_n; t++)
           remote_recv_chan_w.connect(t, remote_recv_chan_r[t]);
       }
       remote_send_chan_w[tme].connect(0, remote_send_chan_r);
@@ -92,7 +92,7 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
             mu.lock();
             std::cerr<<"[pid "<<getpid()<<" t "<<tme<<"] watch *((uintptr_t*)"<<&opnew::my_ts.bins[29].held_pools.top<<")&1\n";
             mu.unlock();
-            tmsg::barrier(/*deaf=*/true);
+            threads::barrier(/*deaf=*/true);
             if(tme == 0)
               gasnett_freezeForDebuggerErr();
           }
@@ -100,11 +100,11 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
             gasnet_barrier_notify(0,0);
             gasnet_barrier_wait(0,0);
           }
-          tmsg::barrier(/*deaf=*/true);
+          threads::barrier(/*deaf=*/true);
         }
       #endif
       
-      tmsg::barrier(/*deaf=*/true);
+      threads::barrier(/*deaf=*/true);
     }
 
     if(tme == 0) {
@@ -171,12 +171,12 @@ namespace {
 
 namespace {
   bool burst_remote_recv(bool deaf) {
-    int tme = tmsg::thread_me();
+    int tme = threads::thread_me();
     bool did_something = deva::remote_send_chan_w[tme].cleanup();
     
     if(!deaf) {
       did_something |= deva::remote_recv_chan_r[tme].receive(
-        [](tmsg::message *m) {
+        [](threads::message *m) {
           auto *ms = static_cast<remote_in_messages*>(m);
           
           serialization_reader r(ms);
@@ -196,7 +196,7 @@ namespace {
 }
 
 void deva::progress(bool spinning, bool deaf) {
-  bool did_something = tmsg::progress(deaf);
+  bool did_something = threads::progress(deaf);
 
   did_something |= burst_remote_recv(deaf);
   
@@ -213,12 +213,12 @@ void deva::progress(bool spinning, bool deaf) {
 }
 
 namespace {
-  tmsg::barrier_state_global<tmsg::thread_n-1> wbar_g_;
-  thread_local tmsg::barrier_state_local<tmsg::thread_n-1> wbar_l_;
+  threads::barrier_state_global<threads::thread_n-1> wbar_g_;
+  thread_local threads::barrier_state_local<threads::thread_n-1> wbar_l_;
   std::atomic<uint64_t> bigbar_epoch_{0};
   
   void barrier_defer_try(uint64_t e) {
-    tmsg::send(0, [=]() {
+    threads::send(0, [=]() {
       if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS))
         bigbar_epoch_.store(e, std::memory_order_release);
       else
@@ -228,7 +228,7 @@ namespace {
 }
 
 void deva::barrier(bool deaf) {
-  int wme = tmsg::thread_me() - 1;
+  int wme = threads::thread_me() - 1;
   
   wbar_l_.begin(wbar_g_, wme);
 
@@ -238,7 +238,7 @@ void deva::barrier(bool deaf) {
   uint64_t e = wbar_l_.epoch64();
 
   if(wme == 0) {
-    tmsg::send(0, [=]() {
+    threads::send(0, [=]() {
       gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
       barrier_defer_try(e);
     });
@@ -249,7 +249,7 @@ void deva::barrier(bool deaf) {
 }
 
 void deva::bcast_remote_sends_(int proc_root, void const *cmd, size_t cmd_size) {
-  DEVA_ASSERT(tmsg::thread_me() == 0);
+  DEVA_ASSERT(threads::thread_me() == 0);
   int t_me = 0;
   
   int p_me = process_me_ - proc_root;
@@ -319,10 +319,10 @@ namespace {
     int thread;
     int32_t waiting_size8;
     
-    static tmsg::message*& next_of(tmsg::message *me) {
+    static threads::message*& next_of(threads::message *me) {
       return me->next;
     }
-    static pair<int,uint32_t> key_of(tmsg::message *me0) {
+    static pair<int,uint32_t> key_of(threads::message *me0) {
       auto *me = static_cast<remote_in_chunked_message*>(me0);
       return {me->proc_from, me->nonce};
     }
@@ -332,7 +332,7 @@ namespace {
   };
 
   deva::intrusive_map<
-      tmsg::message, pair<int,uint32_t>,
+      threads::message, pair<int,uint32_t>,
       remote_in_chunked_message::next_of,
       remote_in_chunked_message::key_of,
       remote_in_chunked_message::hash_of>
@@ -344,7 +344,7 @@ namespace {
     
     chunked_by_key.visit(
       /*key*/{proc_from, hdr.nonce},
-      [&](tmsg::message *m0) {
+      [&](threads::message *m0) {
         auto *m = static_cast<remote_in_chunked_message*>(m0);
         size_t part_size = 8*size_t(hdr.part_size8);
         size_t total_size = 8*size_t(hdr.total_size8);
@@ -384,7 +384,7 @@ namespace {
       proc_from = info.gex_srcrank;
     }
     
-    DEVA_ASSERT(0 <= thread_popn && thread_popn <= tmsg::thread_n);
+    DEVA_ASSERT(0 <= thread_popn && thread_popn <= threads::thread_n);
     
     upcxx::detail::serialization_reader r(buf);
     
@@ -430,7 +430,7 @@ namespace {
         remote_out_message *tail;
         int32_t offset8;
         uint32_t nonce;
-      } of[tmsg::thread_n] = {/*{nullptr,0,0}...*/};
+      } of[threads::thread_n] = {/*{nullptr,0,0}...*/};
     };
     
     std::unique_ptr<bundle[]> bun_table{ new bundle[deva::process_n] };
@@ -441,7 +441,7 @@ namespace {
     while(!leave_pump.load(std::memory_order_relaxed)) {
       gasnet_AMPoll();
       
-      bool did_something = tmsg::progress();
+      bool did_something = threads::progress();
       
       did_something |= deva::remote_recv_chan_w.cleanup();
       
@@ -449,7 +449,7 @@ namespace {
       
       did_something |= deva::remote_send_chan_r.receive_batch(
         // lambda called to receive each message
-        [&](tmsg::message *m) {
+        [&](threads::message *m) {
           auto *rm = static_cast<remote_out_message*>(m);
           
           int p, t;
@@ -514,7 +514,7 @@ namespace {
                 upcxx::detail::serialization_writer</*bounded=*/true> w(am_buf);
                 int thread_popn_sent = 0;
                 
-                for(int t=0; t < tmsg::thread_n; t++) {
+                for(int t=0; t < threads::thread_n; t++) {
                   remote_out_message *rm_tail = bun->of[t].tail;
 
                   if(rm_tail != nullptr) {

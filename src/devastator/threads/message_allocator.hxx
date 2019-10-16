@@ -6,6 +6,7 @@
 #include <cstdint>
 
 namespace deva {
+namespace threads {
   template<int epochs>
   class message_allocator {
     static constexpr std::intptr_t grain_size = 32;
@@ -112,5 +113,5 @@ namespace deva {
     }
     #endif
   }
-}
+}}
 #endif
