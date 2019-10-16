@@ -132,7 +132,7 @@ class CodeContext(object):
           del pp_defines[x]
       else:
         y = str(y)
-        changed |= pp_defines[x] != y
+        changed |= x not in pp_defines or pp_defines[x] != y
         pp_defines[x] = y
 
     if not changed:
