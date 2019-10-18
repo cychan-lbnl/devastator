@@ -40,10 +40,15 @@ namespace {
 }
 
 alignas(64)
-threads::channels_r<threads::thread_n> deva::remote_send_chan_r;
-threads::channels_w<1> deva::remote_send_chan_w[threads::thread_n];
+threads::channels_r<threads::thread_n> deva::remote_send_chan_r[1];
+threads::channels_w<1,
+    threads::channels_r<threads::thread_n>, &deva::remote_send_chan_r
+  > deva::remote_send_chan_w[threads::thread_n];
+
 threads::channels_r<1> deva::remote_recv_chan_r[threads::thread_n];
-threads::channels_w<threads::thread_n> deva::remote_recv_chan_w;
+threads::channels_w<
+    threads::thread_n, threads::channels_r<1>, &deva::remote_recv_chan_r
+  > deva::remote_recv_chan_w;
 
 namespace {
   enum {
@@ -79,11 +84,9 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
     if(!inited) {
       inited = true;
       
-      if(tme == 0) {
-        for(int t=0; t < threads::thread_n; t++)
-          remote_recv_chan_w.connect(t, remote_recv_chan_r[t]);
-      }
-      remote_send_chan_w[tme].connect(0, remote_send_chan_r);
+      if(tme == 0)
+        remote_recv_chan_w.connect();
+      remote_send_chan_w[tme].connect();
 
       #if 0
         for(int i=0; i < process_n; i++) {
@@ -172,7 +175,7 @@ namespace {
 namespace {
   bool burst_remote_recv(bool deaf) {
     int tme = threads::thread_me();
-    bool did_something = deva::remote_send_chan_w[tme].cleanup();
+    bool did_something = deva::remote_send_chan_w[tme].steward();
     
     if(!deaf) {
       did_something |= deva::remote_recv_chan_r[tme].receive(
@@ -353,7 +356,7 @@ namespace {
         if(m == nullptr) {
           void *mem = operator new(sizeof(remote_in_chunked_message) + total_size);
           m = new(mem) remote_in_chunked_message;
-          DEVA_ASSERT((void*)m == mem);
+          DEVA_ASSERT_ALWAYS((void*)m == mem);
           
           m->header_size = sizeof(remote_in_chunked_message);
           m->count = 1;
@@ -443,11 +446,11 @@ namespace {
       
       bool did_something = threads::progress();
       
-      did_something |= deva::remote_recv_chan_w.cleanup();
+      did_something |= deva::remote_recv_chan_w.steward();
       
       did_something |= burst_remote_recv(false);
       
-      did_something |= deva::remote_send_chan_r.receive_batch(
+      did_something |= deva::remote_send_chan_r[0].receive_batch(
         // lambda called to receive each message
         [&](threads::message *m) {
           auto *rm = static_cast<remote_out_message*>(m);
@@ -462,7 +465,7 @@ namespace {
             t = 0;
           }
           
-          //say()<<"rsend to p="<<p<<" w="<<w<<" sz="<<rm->size8;
+          //deva::say()<<"rsend to p="<<p<<" t="<<t<<" sz="<<rm->size8;
 
           bundle *bun = &bun_table[p];
           bun->size8 += rm->size8;

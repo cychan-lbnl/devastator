@@ -1,12 +1,51 @@
+////////////////////////////////////////////////////////////////////////////////
+// forward declarations
+
+#ifndef _b562d0d1055e42598549ddbccfb1b879
+#define _b562d0d1055e42598549ddbccfb1b879
+
+#include <new>
+
+#ifndef DEVA_OPNEW_DEBUG
+  #define DEVA_OPNEW_DEBUG 0
+#endif
+
+#if !DEVA_OPNEW
+  namespace deva {
+  namespace opnew {
+    inline void progress() {}
+    inline void thread_me_initialized() {}
+    
+    inline void* operator_new(std::size_t size) {
+      return ::operator new(size);
+    }
+    
+    template<std::size_t known_size=0, bool known_local=false>
+    void operator_delete(void *obj) noexcept {
+      ::operator delete(obj);
+    }
+  }}
+#else
+  namespace deva {
+  namespace opnew {
+    void* operator_new(std::size_t);
+    
+    template<std::size_t known_size=0, bool known_local=false>
+    void operator_delete(void *obj) noexcept;
+  }}
+#endif
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+// definitions
+
 #ifndef _1fa947340f884819abb443776c659c8a
 #define _1fa947340f884819abb443776c659c8a
-
-#include <devastator/opnew_fwd.hxx>
 
 #if DEVA_OPNEW
 
 #include <devastator/diagnostic.hxx>
-#include <devastator/world.hxx>
+#include <devastator/threads.hxx>
 #include <devastator/utility.hxx>
 
 #include <cstdint>
@@ -327,6 +366,7 @@ namespace opnew {
   }
   
   inline void* operator_new(std::size_t size) {
+    //deva::say()<<"opnew";
     my_ts.opcalls += 1;
     int bin = bin_of_size(size);
     

@@ -4,13 +4,6 @@
 #ifndef _86d347eb52d247a290fdf21fe440bce0
 #define _86d347eb52d247a290fdf21fe440bce0
 
-#ifndef DEVA_PROCESS_N
-  #error "-DDEVA_PROCESS_N=<num> required"
-#endif
-#ifndef DEVA_WORKER_N
-  #error "-DDEVA_WORKER_N=<num> required"
-#endif
-
 #include <devastator/threads.hxx>
 #include <devastator/utility.hxx>
 
@@ -27,12 +20,17 @@ namespace deva {
   constexpr int worker_n = DEVA_WORKER_N;
   
   constexpr int rank_n = process_n * worker_n;
-  constexpr int log2up_rank_n = log2up(rank_n);
+  constexpr int log2up_rank_n = log_up(rank_n, 2);
   
-  extern threads::channels_r<threads::thread_n> remote_send_chan_r;
-  extern threads::channels_w<1> remote_send_chan_w[threads::thread_n];
+  extern threads::channels_r<threads::thread_n> remote_send_chan_r[1];
+  extern threads::channels_w<1,
+      threads::channels_r<threads::thread_n>, &remote_send_chan_r
+    > remote_send_chan_w[threads::thread_n];
+
   extern threads::channels_r<1> remote_recv_chan_r[threads::thread_n];
-  extern threads::channels_w<threads::thread_n> remote_recv_chan_w;
+  extern threads::channels_w<
+      threads::thread_n, threads::channels_r<1>, &remote_recv_chan_r
+    > remote_recv_chan_w;
 
   extern __thread int rank_me_;
   extern int process_me_;
@@ -133,8 +131,8 @@ namespace deva {
   void send_remote(int rank, Fn &&fn, Arg &&...arg) {
     auto *m = remote_out_message::make(rank,
       upcxx::bind(
-        [](auto const &fn_on_args, void const *cmd, std::size_t cmd_size) {
-          fn_on_args();
+        [](auto &&fn_on_args, void const *cmd, std::size_t cmd_size) {
+          static_cast<decltype(fn_on_args)>(fn_on_args)();
         },
         upcxx::bind(static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...)
       )

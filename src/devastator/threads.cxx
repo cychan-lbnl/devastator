@@ -1,4 +1,5 @@
-#include <devastator/threads/threads_spsc.hxx>
+#include <devastator/threads.hxx>
+#include <devastator/threads/message.hxx>
 #include <devastator/opnew.hxx>
 
 #include <atomic>
@@ -15,7 +16,7 @@ __thread threads::barrier_state_local<threads::thread_n> threads::barrier_l_;
 __thread threads::barrier_state_local<threads::thread_n> threads::epoch_barrier_l_;
 
 threads::active_channels_r<threads::thread_n> threads::ams_r[thread_n];
-threads::active_channels_w<threads::thread_n> threads::ams_w[thread_n];
+threads::active_channels_w<threads::thread_n, threads::thread_n, &threads::ams_r> threads::ams_w[thread_n];
 
 threads::epoch_transition* threads::epoch_transition::all_head_ = nullptr;
 
@@ -48,7 +49,7 @@ bool threads::progress(bool deaf) {
   
   opnew::progress();
 
-  bool did_something = ams_w[me].cleanup();
+  bool did_something = ams_w[me].steward();
   if(!deaf)
     did_something |= ams_r[me].receive();
   
@@ -88,9 +89,8 @@ namespace {
       threads::thread_me_ = me;
       opnew::thread_me_initialized();
       
-      for(int r=0; r < threads::thread_n; r++)
-        threads::ams_w[me].connect(r, threads::ams_r[r]);
-
+      threads::ams_w[me].connect();
+      
       threads::epoch_barrier_l_.begin(epoch_barrier_g_, me);
     }
 

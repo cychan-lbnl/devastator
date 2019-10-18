@@ -1,6 +1,7 @@
 #ifndef _ce62bf80793b40888f7e463dfa811c3d
 #define _ce62bf80793b40888f7e463dfa811c3d
 
+#include <devastator/opnew.hxx>
 #include <devastator/utility.hxx>
 
 #include <upcxx/utility.hpp>

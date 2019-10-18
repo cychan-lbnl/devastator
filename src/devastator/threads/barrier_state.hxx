@@ -1,6 +1,8 @@
 #ifndef _6b85c1e4a172458397274fb041231337
 #define _6b85c1e4a172458397274fb041231337
 
+#include <devastator/utility.hxx>
+
 #include <atomic>
 #include <cstdint>
 

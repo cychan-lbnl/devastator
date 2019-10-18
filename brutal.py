@@ -60,6 +60,7 @@ def code_context_base():
   debug = brutal.env('debug', 0)
   optlev = brutal.env('optlev', 0 if debug else 3)
   syms = brutal.env('syms', 1 if debug else 0)
+  opnew = brutal.env('opnew', 0 if debug else 1)
   
   return CodeContext(
     compiler = cxx_compiler(),
@@ -73,7 +74,8 @@ def code_context_base():
     ld_misc = ['-flto'] if optlev == 3 else [],
     pp_defines = {
       'DEBUG': 1 if debug else 0,
-      'NDEBUG': None if debug else 1
+      'NDEBUG': None if debug else 1,
+      'DEVA_OPNEW': opnew
     }
   )
 
@@ -82,7 +84,12 @@ def code_context(PATH):
   cxt = code_context_base()
 
   if PATH == brutal.here('src/devastator/threads.hxx'):
-    cxt = cxt.with_pp_defines(DEVA_THREADS_SPSC=1)
+    impl = brutal.env('tmsg', 'spsc')
+    brutal.panic_unless(impl in ('spsc','mpsc'), '"thread_queue" must be one of "spsc","mpsc", not "{0}".', impl)
+    
+    cxt |= CodeContext(pp_defines={
+      'DEVA_THREADS_MESSAGE_'+impl.upper(): 1
+    })
   
   if PATH == brutal.here('src/devastator/world.hxx'):
     world = brutal.env('world', default='threads')
