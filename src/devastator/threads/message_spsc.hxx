@@ -12,13 +12,17 @@
 
 namespace deva {
 namespace threads {
+  #define DEVA_CAT3(a,b,c) a##b##c
+  //using uint_slot_t = DEVA_CAT3(std::uint, DEVA_THREADS_SIGNAL_BITS, _t);
+  #undef DEVA_CAT3
+  
   struct message {
     message *next = reinterpret_cast<message*>(0xdeadbeef);
   };
   
   template<int rn>
   class channels_r {
-    template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
+    template<int wn, int rn1, channels_r<rn1>(*)[wn]>
     friend class channels_w;
   
     struct each {

@@ -58,21 +58,26 @@ namespace deva {
 
     template<typename Me, std::size_t ...bi, typename ...Arg>
     static auto apply(Me &&me, std::index_sequence<bi...>, Arg &&...a)
-      -> decltype(me.fn_(std::get<bi>(me.b_)..., std::forward<Arg>(a)...)) {
-      return me.fn_(std::get<bi>(me.b_)..., std::forward<Arg>(a)...);
+      -> decltype(static_cast<Me&&>(me).fn_(std::get<bi>(static_cast<Me&&>(me).b_)..., std::forward<Arg>(a)...)) {
+      return static_cast<Me&&>(me).fn_(std::get<bi>(static_cast<Me&&>(me).b_)..., std::forward<Arg>(a)...);
     }
     
     using b_ixseq = std::make_index_sequence<sizeof...(B)>;
     
     template<typename ...Arg>
-    auto operator()(Arg &&...a)
-      -> decltype(apply(*this, b_ixseq(), std::forward<Arg>(a)...)) {
-      return apply(*this, b_ixseq(), std::forward<Arg>(a)...);
+    auto operator()(Arg &&...a) const &
+      -> decltype(apply(*this, b_ixseq(), static_cast<Arg&&>(a)...)) {
+      return apply(*this, b_ixseq(), static_cast<Arg&&>(a)...);
     }
     template<typename ...Arg>
-    auto operator()(Arg &&...a) const
-      -> decltype(apply(*this, b_ixseq(), std::forward<Arg>(a)...)) {
-      return apply(*this, b_ixseq(), std::forward<Arg>(a)...);
+    auto operator()(Arg &&...a) &
+      -> decltype(apply(*this, b_ixseq(), static_cast<Arg&&>(a)...)) {
+      return apply(*this, b_ixseq(), static_cast<Arg&&>(a)...);
+    }
+    template<typename ...Arg>
+    auto operator()(Arg &&...a) &&
+      -> decltype(apply(static_cast<bound&&>(*this), b_ixseq(), static_cast<Arg&&>(a)...)) {
+      return apply(static_cast<bound&&>(*this), b_ixseq(), static_cast<Arg&&>(a)...);
     }
   };
   

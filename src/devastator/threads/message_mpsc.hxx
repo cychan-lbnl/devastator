@@ -10,7 +10,7 @@
 
 namespace deva {
 namespace threads {
-  static constexpr int port_n = DEVA_THREADS_MESSAGE_PORT_N;
+  static constexpr int rail_n = DEVA_THREADS_MESSAGE_RAIL_N;
   
   struct message {
     std::atomic<message*> r_next; // next in reader's list (the actual queue)
@@ -25,13 +25,13 @@ namespace threads {
     template<int wn, int rn, channels_r<rn>(*)[wn]>
     friend struct channels_w;
     
-    struct alignas(64) port_tail_t {
+    struct alignas(64) rail_tail_t {
       std::atomic<message*> head0_{nullptr};
       std::atomic<std::atomic<message*>*> tailp_{&head0_};
-    } tails_[port_n];
+    } tails_[rail_n];
     
     alignas(64)
-    std::atomic<message*> *headp_[port_n];
+    std::atomic<message*> *headp_[rail_n];
     
   public:
     channels_r();
@@ -100,7 +100,7 @@ namespace threads {
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::send(int w, message *m) {
-    auto *q = &(*chan_r)[w].tails_[(threads::thread_me() + w) % port_n];
+    auto *q = &(*chan_r)[w].tails_[(threads::thread_me() + w) % rail_n];
     
     m->r_next.store(nullptr, std::memory_order_relaxed);
     std::atomic<message*> *got = q->tailp_.exchange(&m->r_next, std::memory_order_relaxed);
@@ -115,62 +115,62 @@ namespace threads {
 
   template<int rn>
   channels_r<rn>::channels_r() {
-    for(int port=0; port < port_n; port++)
-      headp_[port] = &tails_[port].head0_;
+    for(int rail=0; rail < rail_n; rail++)
+      headp_[rail] = &tails_[rail].head0_;
   }
   
   template<int rn>
   template<typename Rcv>
   bool channels_r<rn>::receive(Rcv &&rcv) {
     bool did_something = false;
-    std::atomic<message*> *tailp[port_n];
+    std::atomic<message*> *tailp[rail_n];
 
-    for(int port=0; port < port_n; port++)
-      tailp[port] = tails_[port].tailp_.load(std::memory_order_relaxed);
+    for(int rail=0; rail < rail_n; rail++)
+      tailp[rail] = tails_[rail].tailp_.load(std::memory_order_relaxed);
     
-    #if DEVA_THREADS_MESSAGE_PORT_N > 1
+    #if DEVA_THREADS_MESSAGE_RAIL_N > 1
     {
-      std::atomic<message*> *mp[port_n];
-      message *m[port_n];
+      std::atomic<message*> *mp[rail_n];
+      message *m[rail_n];
 
-      for(int port=0; port < port_n; port++) {
-        mp[port] = headp_[port];
-        m[port] = mp[port]->load(std::memory_order_relaxed);
+      for(int rail=0; rail < rail_n; rail++) {
+        mp[rail] = headp_[rail];
+        m[rail] = mp[rail]->load(std::memory_order_relaxed);
       }
 
       while(true) {
-        for(int port=0; port < port_n; port++)
-          if(!(mp[port] != tailp[port] && m[port] != nullptr))
-            goto finish_parallel_ports;
+        for(int rail=0; rail < rail_n; rail++)
+          if(!(mp[rail] != tailp[rail] && m[rail] != nullptr))
+            goto finish_parallel_rails;
 
         std::atomic_thread_fence(std::memory_order_acquire);
         did_something = true;
 
-        for(int port=0; port < port_n; port++)
-          rcv(m[port]);
+        for(int rail=0; rail < rail_n; rail++)
+          rcv(m[rail]);
 
         std::atomic_signal_fence(std::memory_order_acq_rel);
         
-        for(int port=0; port < port_n; port++) {
-          mp[port]->store(reinterpret_cast<message*>(0x1), std::memory_order_release);
-          mp[port] = &m[port]->r_next;
-          m[port] = mp[port]->load(std::memory_order_relaxed);
+        for(int rail=0; rail < rail_n; rail++) {
+          mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_release);
+          mp[rail] = &m[rail]->r_next;
+          m[rail] = mp[rail]->load(std::memory_order_relaxed);
         }
 
         std::atomic_signal_fence(std::memory_order_acq_rel);
       }
 
-    finish_parallel_ports:
-      for(int port=0; port < port_n; port++)
-        headp_[port] = mp[port];
+    finish_parallel_rails:
+      for(int rail=0; rail < rail_n; rail++)
+        headp_[rail] = mp[rail];
     }
     #endif
 
-    for(int port=0; port < port_n; port++) {
-      std::atomic<message*> *mp = headp_[port];
+    for(int rail=0; rail < rail_n; rail++) {
+      std::atomic<message*> *mp = headp_[rail];
       message *m = mp->load(std::memory_order_relaxed);
       
-      while(mp != tailp[port] && m != nullptr) {
+      while(mp != tailp[rail] && m != nullptr) {
         std::atomic_thread_fence(std::memory_order_acquire);
         did_something = true;
         rcv(m);
@@ -179,7 +179,7 @@ namespace threads {
         m = mp->load(std::memory_order_relaxed);
       }
 
-      headp_[port] = mp;
+      headp_[rail] = mp;
     }
     
     return did_something;
@@ -189,37 +189,37 @@ namespace threads {
   template<typename Rcv, typename Batch>
   bool channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch) {
     bool did_something = false;
-    std::atomic<message*> *tailp[port_n];
-    std::atomic<message*> *mp[port_n];
-    message *m[port_n];
+    std::atomic<message*> *tailp[rail_n];
+    std::atomic<message*> *mp[rail_n];
+    message *m[rail_n];
     std::intptr_t n_par = 0;
-    std::intptr_t n_seq[port_n];
+    std::intptr_t n_seq[rail_n];
     
-    for(int port=0; port < port_n; port++) {
-      tailp[port] = tails_[port].tailp_.load(std::memory_order_relaxed);
-      mp[port] = headp_[port];
-      m[port] = mp[port]->load(std::memory_order_relaxed);
+    for(int rail=0; rail < rail_n; rail++) {
+      tailp[rail] = tails_[rail].tailp_.load(std::memory_order_relaxed);
+      mp[rail] = headp_[rail];
+      m[rail] = mp[rail]->load(std::memory_order_relaxed);
     }
 
-    #if DEVA_THREADS_MESSAGE_PORT_N > 1
+    #if DEVA_THREADS_MESSAGE_RAIL_N > 1
     {
       while(true) {
-        for(int port=0; port < port_n; port++) {
-          if(!(mp[port] != tailp[port] && m[port] != nullptr))
+        for(int rail=0; rail < rail_n; rail++) {
+          if(!(mp[rail] != tailp[rail] && m[rail] != nullptr))
             goto finish_parallel_rcv;
         }
 
         std::atomic_thread_fence(std::memory_order_acquire);
 
         n_par += 1;
-        for(int port=0; port < port_n; port++)
-          rcv(m[port]);
+        for(int rail=0; rail < rail_n; rail++)
+          rcv(m[rail]);
 
         std::atomic_signal_fence(std::memory_order_acq_rel);
 
-        for(int port=0; port < port_n; port++) {
-          mp[port] = &m[port]->r_next;
-          m[port] = mp[port]->load(std::memory_order_relaxed);
+        for(int rail=0; rail < rail_n; rail++) {
+          mp[rail] = &m[rail]->r_next;
+          m[rail] = mp[rail]->load(std::memory_order_relaxed);
         }
 
         std::atomic_signal_fence(std::memory_order_acq_rel);
@@ -230,18 +230,18 @@ namespace threads {
     }
     #endif
 
-    for(int port=0; port < port_n; port++) {
+    for(int rail=0; rail < rail_n; rail++) {
       std::intptr_t n = 0;
       
-      while(mp[port] != tailp[port] && m[port] != nullptr) {
+      while(mp[rail] != tailp[rail] && m[rail] != nullptr) {
         n += 1;
         std::atomic_thread_fence(std::memory_order_acquire);
-        rcv(m[port]);
-        mp[port] = &m[port]->r_next;
-        m[port] = mp[port]->load(std::memory_order_relaxed);
+        rcv(m[rail]);
+        mp[rail] = &m[rail]->r_next;
+        m[rail] = mp[rail]->load(std::memory_order_relaxed);
       }
 
-      n_seq[port] = n;
+      n_seq[rail] = n;
       did_something |= n != 0;
     }
 
@@ -250,29 +250,29 @@ namespace threads {
     if(did_something) {
       std::atomic_thread_fence(std::memory_order_release);
 
-      for(int port=0; port < port_n; port++)
-        mp[port] = headp_[port];
+      for(int rail=0; rail < rail_n; rail++)
+        mp[rail] = headp_[rail];
       
-      #if DEVA_THREADS_MESSAGE_PORT_N > 1
+      #if DEVA_THREADS_MESSAGE_RAIL_N > 1
       while(n_par--) {
-        for(int port=0; port < port_n; port++) {
-          m[port] = mp[port]->load(std::memory_order_relaxed);
-          mp[port]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
-          mp[port] = &m[port]->r_next;
+        for(int rail=0; rail < rail_n; rail++) {
+          m[rail] = mp[rail]->load(std::memory_order_relaxed);
+          mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
+          mp[rail] = &m[rail]->r_next;
         }
       }
 
       std::atomic_signal_fence(std::memory_order_acq_rel);
       #endif
       
-      for(int port=0; port < port_n; port++) {
-        std::intptr_t n = n_seq[port];
+      for(int rail=0; rail < rail_n; rail++) {
+        std::intptr_t n = n_seq[rail];
         while(n--) {
-          m[port] = mp[port]->load(std::memory_order_relaxed);
-          mp[port]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
-          mp[port] = &m[port]->r_next;
+          m[rail] = mp[rail]->load(std::memory_order_relaxed);
+          mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
+          mp[rail] = &m[rail]->r_next;
         }
-        headp_[port] = mp[port];
+        headp_[rail] = mp[rail];
       }
     }
     
