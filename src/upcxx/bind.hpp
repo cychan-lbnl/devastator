@@ -32,32 +32,46 @@ namespace upcxx {
       b_(static_cast<std::tuple<B...>&&>(b)) {
     }
     
-    template<typename Me, int ...bi, typename ...Arg>
-    static auto apply_(Me &&me, upcxx::detail::index_sequence<bi...> bis, Arg &&...a)
+    template<typename Fn1, typename TupBs, int ...bi, typename ...Arg>
+    static auto apply_(Fn1 &&fn, TupBs &&bs, upcxx::detail::index_sequence<bi...> bis, Arg &&...a)
       -> decltype(
-        me.fn_(
-          std::declval<B&>()...,
-          std::forward<Arg>(a)...
+        static_cast<Fn1&&>(fn)(
+          std::get<bi>(static_cast<TupBs&&>(bs))...,
+          static_cast<Arg&&>(a)...
         )
       ) {
-      return me.fn_(
-        const_cast<B&>(std::get<bi>(me.b_))...,
-        std::forward<Arg>(a)...
+      return static_cast<Fn1&&>(fn)(
+        std::get<bi>(static_cast<TupBs&&>(bs))...,
+        static_cast<Arg&&>(a)...
       );
     }
   
     using the_b_ixs = upcxx::detail::make_index_sequence<sizeof...(B)>;
     
     template<typename ...Arg>
-    auto operator()(Arg &&...a) const ->
-      decltype(apply_(*this, the_b_ixs(), std::forward<Arg>(a)...)) {
-      return apply_(*this, the_b_ixs(), std::forward<Arg>(a)...);
+    auto operator()(Arg &&...a) const& ->
+      decltype(apply_(this->fn_, this->b_, the_b_ixs(), static_cast<Arg&&>(a)...)) {
+      return apply_(this->fn_, this->b_, the_b_ixs(), static_cast<Arg&&>(a)...);
     }
     
     template<typename ...Arg>
-    auto operator()(Arg &&...a) ->
-      decltype(apply_(*this, the_b_ixs(), std::forward<Arg>(a)...)) {
-      return apply_(*this, the_b_ixs(), std::forward<Arg>(a)... );
+    auto operator()(Arg &&...a) & ->
+      decltype(apply_(this->fn_, this->b_, the_b_ixs(), static_cast<Arg&&>(a)...)) {
+      return apply_(this->fn_, this->b_, the_b_ixs(), static_cast<Arg&&>(a)...);
+    }
+    
+    template<typename ...Arg>
+    auto operator()(Arg &&...a) && ->
+      decltype(
+        apply_(static_cast<Fn&&>(this->fn_),
+               static_cast<std::tuple<B...>&&>(this->b_),
+               the_b_ixs(),
+               static_cast<Arg&&>(a)...)
+      ) {
+      return apply_(static_cast<Fn&&>(this->fn_),
+                    static_cast<std::tuple<B...>&&>(this->b_),
+                    the_b_ixs(),
+                    static_cast<Arg&&>(a)...);
     }
   };
 
@@ -132,19 +146,19 @@ namespace upcxx {
   
   template<typename Fn, typename ...B>
   Fn&& bind(Fn &&fn) {
-    return std::forward<Fn>(fn);
+    return static_cast<Fn&&>(fn);
   }
 
   template<typename Fn, typename B0, typename ...Bs>
   auto bind(Fn &&fn, B0 &&b0, Bs &&...bs)
     -> bound_function_of<Fn&&,B0&&,Bs&&...> {
     return bound_function_of<Fn&&,B0&&,Bs&&...>(
-      detail::globalize_fnptr(std::forward<Fn>(fn)),
+      detail::globalize_fnptr(static_cast<Fn&&>(fn)),
       std::tuple<
           typename std::decay<B0>::type,
           typename std::decay<Bs>::type...
         >(
-        std::forward<B0>(b0), std::forward<Bs>(bs)...
+        static_cast<B0&&>(b0), static_cast<Bs&&>(bs)...
       )
     );
   }

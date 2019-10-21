@@ -23,13 +23,13 @@ namespace deva {
   constexpr int log2up_rank_n = log_up(rank_n, 2);
   
   extern threads::channels_r<threads::thread_n> remote_send_chan_r[1];
-  extern threads::channels_w<1,
-      threads::channels_r<threads::thread_n>, &remote_send_chan_r
+  extern threads::channels_w<
+      1, threads::thread_n, &remote_send_chan_r
     > remote_send_chan_w[threads::thread_n];
 
   extern threads::channels_r<1> remote_recv_chan_r[threads::thread_n];
   extern threads::channels_w<
-      threads::thread_n, threads::channels_r<1>, &remote_recv_chan_r
+      threads::thread_n, 1, &remote_recv_chan_r
     > remote_recv_chan_w;
 
   extern __thread int rank_me_;
@@ -63,11 +63,11 @@ namespace deva {
     remote_out_message *bundle_next;
 
     template<typename Fn, typename Ub>
-    static remote_out_message* make_help(Fn const &fn, Ub ub, std::false_type ub_valid) {
+    static remote_out_message* make_help(Fn &&fn, Ub ub, std::false_type ub_valid) {
       typename std::aligned_storage<512,64>::type tmp;
       upcxx::detail::serialization_writer<false> w(&tmp, 512);
       w.template place_new<remote_out_message>();
-      upcxx::detail::command::serialize(w, ub.size, fn);
+      upcxx::detail::command::serialize(w, ub.size, static_cast<Fn&&>(fn));
       w.place(0,8);
       DEVA_ASSERT(w.align() <= 8);
       std::size_t w_size = w.size();
@@ -79,11 +79,11 @@ namespace deva {
     }
     
     template<typename Fn, typename Ub>
-    static remote_out_message* make_help(Fn const &fn, Ub ub, std::true_type ub_valid) {
+    static remote_out_message* make_help(Fn &&fn, Ub ub, std::true_type ub_valid) {
       void *buf = operator new(ub.size_aligned(8));
       upcxx::detail::serialization_writer<true> w(buf);
       auto *rm = w.template place_new<remote_out_message>();
-      upcxx::detail::command::serialize(w, ub.size, fn);
+      upcxx::detail::command::serialize(w, ub.size, static_cast<Fn&&>(fn));
       DEVA_ASSERT(w.align() <= 8);
       w.place(0,8);
       rm->size8 = (w.size() - sizeof(remote_out_message))/8;
@@ -91,12 +91,12 @@ namespace deva {
     }
     
     template<typename Fn>
-    static remote_out_message* make(int rank, Fn const &fn) {
+    static remote_out_message* make(int rank, Fn &&fn) {
       auto ub = upcxx::detail::command::ubound(
           upcxx::template storage_size_of<remote_out_message>(),
           fn
         );
-      auto *rm = make_help(fn, ub, std::integral_constant<bool, ub.is_valid>());
+      auto *rm = make_help(static_cast<Fn&&>(fn), ub, std::integral_constant<bool, ub.is_valid>());
       DEVA_ASSERT(rm->size8 > 0);
       rm->rank = rank;
       return rm;
@@ -129,16 +129,20 @@ namespace deva {
 
   template<typename Fn, typename ...Arg>
   void send_remote(int rank, Fn &&fn, Arg &&...arg) {
+    #define fn_on_args_expr upcxx::bind(static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...)
+    using FnOnArgs = decltype(fn_on_args_expr);
+    
     auto *m = remote_out_message::make(rank,
       upcxx::bind(
-        [](auto &&fn_on_args, void const *cmd, std::size_t cmd_size) {
-          static_cast<decltype(fn_on_args)>(fn_on_args)();
+        [](FnOnArgs &&fn_on_args, void const *cmd, std::size_t cmd_size) {
+          static_cast<FnOnArgs&&>(fn_on_args)();
         },
-        upcxx::bind(static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...)
+        fn_on_args_expr
       )
     );
     //say()<<"send_remote to "<<rank<<" size "<<m->size8;
     remote_send_chan_w[threads::thread_me()].send(0, m);
+    #undef fn_on_args_expr
   }
 
   template<typename Fn, typename ...Arg>
@@ -164,21 +168,24 @@ namespace deva {
   
   void bcast_remote_sends_(int proc_root, void const *cmd, std::size_t cmd_size);
   
-  template<typename ProcFn>
-  void bcast_procs(ProcFn &&proc_fn) {
+  template<typename ProcFn1>
+  void bcast_procs(ProcFn1 &&proc_fn) {
+    using ProcFn = typename std::decay<ProcFn1>::type;
     std::int32_t proc_root = process_me_;
     
     auto relay_fn = deva::bind(
-      [=](ProcFn const &proc_fn, void const *cmd, std::size_t cmd_size) {
+      [=](ProcFn &&proc_fn,
+          void const *cmd,
+          std::size_t cmd_size) {
         deva::bcast_remote_sends_(proc_root, cmd, cmd_size);
-        proc_fn();
+        static_cast<ProcFn&&>(proc_fn)();
       },
-      static_cast<ProcFn&&>(proc_fn)
+      static_cast<ProcFn1&&>(proc_fn)
     );
     
-    threads::send(0, [relay_fn(std::move(relay_fn))]() {
+    threads::send(0, [relay_fn(std::move(relay_fn))]() mutable {
       auto *rm = remote_out_message::make(0xdeadbeef, relay_fn);
-      relay_fn((void*)(rm+1), 8*std::size_t(rm->size8));
+      std::move(relay_fn)((void*)(rm+1), 8*std::size_t(rm->size8));
       operator delete((void*)rm);
     });
   }

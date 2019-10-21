@@ -84,8 +84,9 @@ namespace deva {
     gvt::send(rank, cmaybe3, t, static_cast<Fn&&>(fn), static_cast<Arg&&>(arg)...);
   }
   
-  template<bool3 local, typename Fn, typename ...Arg>
-  void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn &&fn, Arg &&...arg) {
+  template<bool3 local, typename Fn1, typename ...Arg>
+  void gvt::send(int rank, cbool3<local> local1, std::uint64_t t, Fn1 &&fn, Arg &&...arg) {
+    using Fn = typename std::decay<Fn1>::type;
     DEVA_ASSERT(epoch_gvt_[0] <= t);
     
     unsigned e = epoch_ + 1;
@@ -93,21 +94,22 @@ namespace deva {
     epoch_lvt_[1] = std::min(epoch_lvt_[1], t);
     
     deva::send(rank, local1,
-      [=](Fn &fn, Arg &...arg) {
+      [=](Fn &&fn, typename std::decay<Arg>::type &&...arg) {
         int i = e >= epoch_ ? int(e - epoch_) : -int(epoch_ - e);
         DEVA_ASSERT(0 <= i && i < 3);
         DEVA_ASSERT(epoch_gvt_[0] <= t);
         
         epoch_lrecv_[i] += 1;
         
-        fn(arg...);
+        static_cast<Fn&&>(fn)(static_cast<typename std::decay<Arg>::type&&>(arg)...);
       },
-      std::move(fn), std::move(arg)...
+      static_cast<Fn1&&>(fn), static_cast<Arg&&>(arg)...
     );
   }
 
-  template<typename ProcFn>
-  void gvt::bcast_procs(std::uint64_t t_lb, std::int32_t credits, ProcFn const &proc_fn) {
+  template<typename ProcFn1>
+  void gvt::bcast_procs(std::uint64_t t_lb, std::int32_t credits, ProcFn1 &&proc_fn) {
+    using ProcFn = typename std::decay<ProcFn1>::type;
     DEVA_ASSERT(epoch_gvt_[0] <= t_lb);
     
     unsigned e = epoch_ + 1;
@@ -116,7 +118,7 @@ namespace deva {
 
     deva::bcast_procs(
       deva::bind(
-        [=](ProcFn const &proc_fn1) {
+        [=](ProcFn &&proc_fn1) {
           proc_fn1(/*run_at_rank*/[&](int rank, auto fn) {
             deva::send_local(rank,
               [=, fn1(std::move(fn))]() {
@@ -130,7 +132,7 @@ namespace deva {
             );
           });
         },
-        proc_fn
+        static_cast<ProcFn1&&>(proc_fn)
       )
     );
   }

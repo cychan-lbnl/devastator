@@ -57,8 +57,8 @@ namespace threads {
 
 namespace deva {
 namespace threads {
-  extern active_channels_r<thread_n> ams_r[thread_n];
-  extern active_channels_w<thread_n, thread_n, &ams_r> ams_w[thread_n];
+  extern channels_r<thread_n> ams_r[thread_n];
+  extern channels_w<thread_n, thread_n, &ams_r> ams_w[thread_n];
   
   extern __thread int thread_me_;
   extern __thread int epoch_mod3_;
@@ -78,14 +78,14 @@ namespace threads {
   
   template<typename Fn>
   void send(int thread, Fn &&fn) {
-    ams_w[thread_me_].send(thread, static_cast<Fn&&>(fn));
+    send_am(ams_w[thread_me_], thread, static_cast<Fn&&>(fn));
   }
   
   template<typename Fn>
   void bcast_peers(Fn fn) {
     for(int t=0; t < thread_n; t++) {
       if(t != thread_me_)
-        ams_w[thread_me_].send(t, fn);
+        send_am(ams_w[thread_me_], t, fn);
     }
   }
 }}

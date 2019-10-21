@@ -18,7 +18,7 @@ namespace threads {
   
   template<int rn>
   class channels_r {
-    template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
+    template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
     friend class channels_w;
   
     struct each {
@@ -39,7 +39,7 @@ namespace threads {
     void prefetch(int hot_n, hot_slot<std::uint32_t> hot[]);
   };
   
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   class channels_w {
     struct each {
       message *sent_last;
@@ -61,8 +61,8 @@ namespace threads {
 
   //////////////////////////////////////////////////////////////////////////////
 
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
-  void channels_w<wn,Chans_r,chan_r>::destroy() {
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
+  void channels_w<wn,rn,chan_r>::destroy() {
     for(int i=0; i < wn; i++) {
       while(w_[i].ack_head != w_[i].sent_last)
         steward();
@@ -71,11 +71,11 @@ namespace threads {
     }
   }
     
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
-  void channels_w<wn,Chans_r,chan_r>::connect() {
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
+  void channels_w<wn,rn,chan_r>::connect() {
     for(int w_id=0; w_id < wn; w_id++) {
       message *dummy = new(operator new(sizeof(message))) message;
-      Chans_r *rs = &(*chan_r)[w_id];
+      channels_r<rn> *rs = &(*chan_r)[w_id];
       int r_id = rs->slot_next_.fetch_add(1);
       
       rs->r_[r_id].recv_last = dummy;
@@ -87,8 +87,8 @@ namespace threads {
     }
   }
 
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
-  void channels_w<wn,Chans_r,chan_r>::send(int id, message *m) {
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
+  void channels_w<wn,rn,chan_r>::send(int id, message *m) {
     w_[id].sent_last->next = m;
     w_[id].sent_last = m;
     w_[id].recv_slot->store(++w_[id].recv_bump, std::memory_order_release);
@@ -216,8 +216,8 @@ namespace threads {
     return hot_n != 0; // did something
   }
 
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
-  bool channels_w<wn,Chans_r,chan_r>::steward() {
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
+  bool channels_w<wn,rn,chan_r>::steward() {
     hot_slot<std::uint32_t> hot[wn];
     int hot_n = this->slots_.reap(hot);
     

@@ -91,7 +91,12 @@ def code_context(PATH):
       'DEVA_THREADS_MESSAGE_'+impl.upper(): 1
     })
   
-  if PATH == brutal.here('src/devastator/world.hxx'):
+  if PATH == brutal.here('src/devastator/threads/message_mpsc.hxx'):
+    cxt |= CodeContext(pp_defines={
+      'DEVA_THREADS_MESSAGE_PORT_N': brutal.env('tports', 1)
+    })
+  
+  elif PATH == brutal.here('src/devastator/world.hxx'):
     world = brutal.env('world', default='threads')
     cxt |= CodeContext(pp_defines={'DEVA_WORLD':1})
     

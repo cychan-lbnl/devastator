@@ -15,8 +15,8 @@ __thread int threads::epoch_mod3_ = 0;
 __thread threads::barrier_state_local<threads::thread_n> threads::barrier_l_;
 __thread threads::barrier_state_local<threads::thread_n> threads::epoch_barrier_l_;
 
-threads::active_channels_r<threads::thread_n> threads::ams_r[thread_n];
-threads::active_channels_w<threads::thread_n, threads::thread_n, &threads::ams_r> threads::ams_w[thread_n];
+threads::channels_r<threads::thread_n> threads::ams_r[thread_n];
+threads::channels_w<threads::thread_n, threads::thread_n, &threads::ams_r> threads::ams_w[thread_n];
 
 threads::epoch_transition* threads::epoch_transition::all_head_ = nullptr;
 
@@ -51,7 +51,7 @@ bool threads::progress(bool deaf) {
 
   bool did_something = ams_w[me].steward();
   if(!deaf)
-    did_something |= ams_r[me].receive();
+    did_something |= receive_ams(ams_r[me]);
   
   return did_something;
 }

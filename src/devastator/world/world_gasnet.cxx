@@ -39,15 +39,14 @@ namespace {
   std::atomic<bool> leave_pump{false};
 }
 
-alignas(64)
 threads::channels_r<threads::thread_n> deva::remote_send_chan_r[1];
-threads::channels_w<1,
-    threads::channels_r<threads::thread_n>, &deva::remote_send_chan_r
+threads::channels_w<
+    1, threads::thread_n, &deva::remote_send_chan_r
   > deva::remote_send_chan_w[threads::thread_n];
 
 threads::channels_r<1> deva::remote_recv_chan_r[threads::thread_n];
 threads::channels_w<
-    threads::thread_n, threads::channels_r<1>, &deva::remote_recv_chan_r
+    threads::thread_n, 1, &deva::remote_recv_chan_r
   > deva::remote_recv_chan_w;
 
 namespace {

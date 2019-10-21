@@ -17,7 +17,7 @@ namespace detail {
       detail::raw_storage<typename serialization_traits<Fn>::deserialized_type> fn;
       serialization_traits<Fn>::deserialize(r, &fn);
       char const *head_after = r.head();
-      fn.value()(head_before, head_after - head_before);
+      static_cast<Fn&&>(fn.value())(head_before, head_after - head_before);
       fn.destruct();
     }
 
@@ -42,9 +42,10 @@ namespace detail {
     }
 
     // Serialize the given callable and reader actions onto the writer.
-    template<typename Fn1, typename Writer,
-             typename Fn = typename std::decay<Fn1>::type>
+    template<typename Fn1, typename Writer>
     static void serialize(Writer &w, std::size_t size_ub, Fn1 &&fn) {
+      using Fn = typename std::decay<Fn1>::type;
+      
       executor_wire_t exec = executor_wire_t(&the_executor<Fn>);
       
       w.template push_trivial<executor_wire_t>(exec);

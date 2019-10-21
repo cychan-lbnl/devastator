@@ -19,7 +19,7 @@ namespace pdes {
   
   struct execute_context: event_context {
     template<typename Event>
-    void send(std::int32_t rank, std::int32_t cd, std::uint64_t time, Event e);
+    void send(std::int32_t rank, std::int32_t cd, std::uint64_t time, Event &&e);
 
     /* bcast_procs: Send the same function to all processes which, when executed,
      * ought to use a given callable to send functions to local ranks which, when
@@ -454,12 +454,14 @@ namespace pdes {
   
   //////////////////////////////////////////////////////////////////////////////
 
-  template<typename Event>
+  template<typename Event1>
   void execute_context::send(
       std::int32_t rank, std::int32_t cd,
       std::uint64_t time,
-      Event user
+      Event1 &&user
     ) {
+    using Event = typename std::decay<Event1>::type;
+    
     auto *me = static_cast<detail::execute_context_impl*>(this);
     std::uint64_t subtime = detail::event_subtime<Event>()(detail::next_seq_id(this->cd, +1), user);
     
@@ -472,7 +474,7 @@ namespace pdes {
     );
     
     if(deva::rank_is_local(rank)) {
-      auto *e = new detail::event_impl<Event>{std::move(user)};
+      auto *e = new detail::event_impl<Event>{static_cast<Event1&&>(user)};
       e->target_rank = rank;
       e->target_cd = cd;
       e->time = time;
@@ -487,12 +489,12 @@ namespace pdes {
       detail::far_id_bumper += detail::far_id_delta;
       
       gvt::send(rank, /*local=*/deva::cfalse3, time,
-        [=](Event &user) {
-          auto *e = new detail::event_impl<Event>{std::move(user)};
+        [=](Event &&user) {
+          auto *e = new detail::event_impl<Event>{static_cast<Event&&>(user)};
           e->subtime = subtime;
           detail::arrive_far(far_id, time, cd, e);
         },
-        std::move(user)
+        static_cast<Event1&&>(user)
       );
 
       auto *far = new detail::sent_far_one;

@@ -11,7 +11,7 @@ namespace threads {
   template<int>
   class channels_r;
   
-  template<int wn, typename Chans_r, Chans_r(*chan_r)[wn]>
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   class channels_w;
 }}
 
@@ -46,33 +46,22 @@ namespace threads {
     }
   };
 
-  template<int rn>
-  struct active_channels_r;
-
-  template<int wn, int rn, active_channels_r<rn>(*achan_r)[wn]>
-  struct active_channels_w:
-    channels_w<wn, active_channels_r<rn>, achan_r> {
-    
-    template<typename Fn>
-    void send(int c, Fn &&fn) {
-      auto *m = new(
-          ::operator new(sizeof(active_message_impl<Fn>))
-        ) active_message_impl<Fn>{static_cast<Fn&&>(fn)};
-
-      channels_w<wn, active_channels_r<rn>, achan_r>::send(c, m);
-    }
-  };
+  template<int wn, int rn, channels_r<rn>(*chan_r)[wn], typename Fn>
+  void send_am(channels_w<wn,rn,chan_r> &chan_w, int c, Fn &&fn) {
+    auto *m = new(
+        ::operator new(sizeof(active_message_impl<Fn>))
+      ) active_message_impl<Fn>{static_cast<Fn&&>(fn)};
+    chan_w.send(c, m);
+  }
 
   template<int rn>
-  struct active_channels_r: channels_r<rn> {
-    bool receive() {
-      return channels_r<rn>::receive(
-        [](message *m) {
-          auto *am = static_cast<active_message*>(m);
-          am->execute_and_destruct(am);
-        }
-      );
-    }
-  };
+  bool receive_ams(channels_r<rn> &chan_r) {
+    return chan_r.receive(
+      [](message *m) {
+        auto *am = static_cast<active_message*>(m);
+        am->execute_and_destruct(am);
+      }
+    );
+  }
 }}
 #endif

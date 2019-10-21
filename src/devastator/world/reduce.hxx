@@ -19,8 +19,8 @@ namespace deva {
         int mid = rank_me + (to_ub - rank_me)/2;
         if(mid == rank_me) break;
 
-        deva::send(mid, [=](T &ans) {
-            reduce_down_(to_ub, std::move(ans));
+        deva::send(mid, [=](T &&ans) {
+            reduce_down_(to_ub, static_cast<T&&>(ans));
           },
           ans
         );
@@ -41,7 +41,7 @@ namespace deva {
           reduce_incoming += 1;
         }
         reduce_incoming += 1; // add one for self
-        reduce_acc = new T(std::move(val));
+        reduce_acc = new T(static_cast<T&&>(val));
       }
       else
         op(*(T*)reduce_acc, std::move(val));
@@ -56,10 +56,10 @@ namespace deva {
         else {
           int parent = deva::rank_me();
           parent &= parent-1;
-          deva::send(parent, [=](T &val) {
-              reduce_up_(std::move(val), op);
+          deva::send(parent, [=](T &&val) {
+              reduce_up_(static_cast<T&&>(val), op);
             },
-            std::move(val)
+            static_cast<T&&>(val)
           );
         }
       }
@@ -122,20 +122,20 @@ namespace deva {
           break;
 
         if(i == 0 && rank_me == 0)
-          prefix = std::move(accs[i]);
+          prefix = static_cast<T&&>(accs[i]);
         else
-          op(prefix, std::move(accs[i]));
+          op(prefix, static_cast<T&&>(accs[i]));
         accs[i].~T();
         
         deva::send(kid,
-          [=](T &pre, T &tot) {
-            scan_reduce_down(std::move(pre), std::move(tot), op);
+          [=](T &&pre, T &&tot) {
+            scan_reduce_down(static_cast<T&&>(pre), static_cast<T&&>(tot), op);
           },
           prefix, total
         );
       }
 
-      scan_reduce_ans = new std::pair<T,T>(std::move(prefix_old), std::move(total));
+      scan_reduce_ans = new std::pair<T,T>(static_cast<T&&>(prefix_old), static_cast<T&&>(total));
       ::operator delete((void*)accs);
     }
     
@@ -156,7 +156,7 @@ namespace deva {
       if(scan_reduce_accs == nullptr)
         scan_reduce_accs = ::operator new(incoming*sizeof(T));
 
-      ::new((T*)scan_reduce_accs + slot) T(std::move(val));
+      ::new((T*)scan_reduce_accs + slot) T(static_cast<T&&>(val));
       
       if(++scan_reduce_received == incoming) {
         scan_reduce_received = 0;
@@ -166,17 +166,17 @@ namespace deva {
           op(total, ((T*)scan_reduce_accs)[i]);
         
         if(0 == deva::rank_me()) {
-          scan_reduce_down(T(), std::move(total), op);
+          scan_reduce_down(T(), static_cast<T&&>(total), op);
         }
         else {
           sender = deva::rank_me();
           int parent = sender & (sender-1);
           
           deva::send(parent,
-            [=](T &total) {
-              scan_reduce_up(sender, std::move(total), op);
+            [=](T &&total) {
+              scan_reduce_up(sender, static_cast<T&&>(total), op);
             },
-            std::move(total)
+            static_cast<T&&>(total)
           );
         }
       }
@@ -188,7 +188,7 @@ namespace deva {
   template<typename T, typename Op>
   std::pair<T/*prefix*/, T/*total*/> scan_reduce(T val, T zero, Op op) {
     detail::scan_reduce_ans = nullptr;
-    detail::scan_reduce_up(deva::rank_me(), std::move(val), op);
+    detail::scan_reduce_up(deva::rank_me(), static_cast<T&&>(val), op);
     
     while(detail::scan_reduce_ans == nullptr)
       deva::progress(/*spinning=*/true);
@@ -197,8 +197,8 @@ namespace deva {
     delete (std::pair<T,T>*)detail::scan_reduce_ans;
     
     return std::pair<T,T>(
-      std::move(deva::rank_me() == 0 ? zero : ans.first),
-      std::move(ans.second)
+      static_cast<T&&>(deva::rank_me() == 0 ? zero : ans.first),
+      static_cast<T&&>(ans.second)
     );
   }
 
