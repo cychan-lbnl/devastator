@@ -12,9 +12,26 @@
 
 namespace deva {
 namespace threads {
-  #define DEVA_CAT3(a,b,c) a##b##c
-  //using uint_slot_t = DEVA_CAT3(std::uint, DEVA_THREADS_SIGNAL_BITS, _t);
-  #undef DEVA_CAT3
+  #if 1
+    #define DEVA_CAT3_1(a,b,c) a##b##c
+    #define DEVA_CAT3(a,b,c) DEVA_CAT3_1(a,b,c)
+    using uint_signal_t = DEVA_CAT3(std::uint, DEVA_THREADS_MESSAGE_SIGNAL_BITS, _t);
+    #undef DEVA_CAT3
+    #undef DEVA_CAT3_1
+  #else // really low credit mode to test for backpressure correctness
+    #undef DEVA_THREADS_MESSAGE_SIGNAL_BITS
+    #define DEVA_THREADS_MESSAGE_SIGNAL_BITS 2
+    using uint_signal_t = std::uint8_t;
+  #endif
+  
+  static constexpr int signal_bits = DEVA_THREADS_MESSAGE_SIGNAL_BITS;
+
+  inline bool u32_less(std::uint32_t a, std::uint32_t b) {
+    return b-a - 1 < ~(~std::uint32_t(0)>>1); // a < b
+  }
+  inline bool u32_less_eq(std::uint32_t a, std::uint32_t b) {
+    return b-a < ~(~std::uint32_t(0)>>1); // a <= b
+  }
   
   struct message {
     message *next = reinterpret_cast<message*>(0xdeadbeef);
@@ -27,10 +44,10 @@ namespace threads {
   
     struct each {
       message *recv_last;
-      std::atomic<std::uint32_t> *ack_slot;
+      std::atomic<uint_signal_t> *ack_slot;
     } r_[rn];
     
-    signal_slots<std::uint32_t, rn> slots_;
+    signal_slots<uint_signal_t, rn> slots_;
     std::atomic<int> slot_next_{0};
     
   public:
@@ -38,9 +55,9 @@ namespace threads {
     bool receive(Rcv &&rcv);
     template<typename Rcv, typename Batch>
     bool receive_batch(Rcv &&rcv, Batch &&batch);
-    
+
   private:
-    void prefetch(int hot_n, hot_slot<std::uint32_t> hot[]);
+    void prefetch(int hot_n, hot_slot<uint_signal_t> hot[]);
   };
   
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
@@ -48,11 +65,14 @@ namespace threads {
     struct each {
       message *sent_last;
       message *ack_head;
-      std::atomic<std::uint32_t> *recv_slot;
-      std::uint32_t recv_bump = 0; 
+      std::atomic<uint_signal_t> *recv_slot;
+      std::uint32_t recv_bump = 0;
+      #if DEVA_THREADS_MESSAGE_SIGNAL_BITS < 32
+        std::uint32_t recv_bump_wall = 1<<signal_bits;
+      #endif
     } w_[wn];
     
-    signal_slots<std::uint32_t, wn> slots_;
+    signal_slots<uint_signal_t, wn> slots_;
 
   public:
     channels_w() = default;
@@ -93,14 +113,23 @@ namespace threads {
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::send(int id, message *m) {
-    w_[id].sent_last->next = m;
-    w_[id].sent_last = m;
-    w_[id].recv_slot->store(++w_[id].recv_bump, std::memory_order_release);
-    //say()<<"wchan "<<id<<" of "<<n<<" bumped "<<w_[id].recv_bump-1<<" -> "<<w_[id].recv_bump;
+    auto *w = &this->w_[id];
+    w->sent_last->next = m;
+    w->sent_last = m;
+    w->recv_bump += 1;
+    #if DEVA_THREADS_MESSAGE_SIGNAL_BITS < 32
+      if(u32_less(w->recv_bump, w->recv_bump_wall))
+        w->recv_slot->store(w->recv_bump, std::memory_order_release);
+      //else
+      //  deva::say()<<"BACKPRESSURED";
+    #else
+      w->recv_slot->store(w->recv_bump, std::memory_order_release);
+    #endif
+    //say()<<"wchan "<<id<<" of "<<n<<" bumped "<<w->recv_bump-1<<" -> "<<w->recv_bump;
   }
   
   template<int rn>
-  void channels_r<rn>::prefetch(int hot_n, hot_slot<std::uint32_t> hot[]) {
+  void channels_r<rn>::prefetch(int hot_n, hot_slot<uint_signal_t> hot[]) {
   #if 0
     message *mp[chan_n];
     std::uint32_t mn[chan_n];
@@ -165,7 +194,7 @@ namespace threads {
   template<int rn>
   template<typename Rcv>
   bool channels_r<rn>::receive(Rcv &&rcv) {
-    hot_slot<std::uint32_t> hot[rn];
+    hot_slot<uint_signal_t> hot[rn];
     int hot_n = this->slots_.reap(hot);
     
     prefetch(hot_n, hot);
@@ -192,7 +221,7 @@ namespace threads {
   template<int rn>
   template<typename Rcv, typename Batch>
   bool channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch) {
-    hot_slot<std::uint32_t> hot[rn];
+    hot_slot<uint_signal_t> hot[rn];
     int hot_n = this->slots_.reap(hot);
     
     prefetch(hot_n, hot);
@@ -222,14 +251,23 @@ namespace threads {
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   bool channels_w<wn,rn,chan_r>::steward() {
-    hot_slot<std::uint32_t> hot[wn];
+    hot_slot<uint_signal_t> hot[wn];
     int hot_n = this->slots_.reap(hot);
     
     for(int i=0; i < hot_n; i++) {
-      channels_w::each *ch = &this->w_[hot[i].ix];
+      channels_w::each *w = &this->w_[hot[i].ix];
       std::uint32_t msg_n = hot[i].delta;
-      message *m = ch->ack_head;
       
+      #if DEVA_THREADS_MESSAGE_SIGNAL_BITS < 32
+        if(u32_less_eq(w->recv_bump_wall + msg_n-1, w->recv_bump))
+          w->recv_slot->store(w->recv_bump_wall + msg_n-1, std::memory_order_release);
+        else if(u32_less_eq(w->recv_bump_wall, w->recv_bump))
+          w->recv_slot->store(w->recv_bump, std::memory_order_release);
+        
+        w->recv_bump_wall += msg_n;
+      #endif
+      
+      message *m = w->ack_head;
       do {
         message *m1 = m->next;
         #if DEVA_OPNEW
@@ -240,7 +278,7 @@ namespace threads {
         m = m1;
       } while(--msg_n != 0);
       
-      ch->ack_head = m;
+      w->ack_head = m;
     }
 
     return hot_n != 0; // did something

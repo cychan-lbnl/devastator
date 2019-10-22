@@ -7,7 +7,8 @@ namespace deva {
 namespace threads {
   template<typename Uint>
   struct hot_slot {
-    Uint ix, delta, old;
+    int ix;
+    Uint delta, old;
   };
   
   template<typename Uint, int n>

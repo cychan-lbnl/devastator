@@ -83,27 +83,51 @@ def code_context_base():
 def code_context(PATH):
   cxt = code_context_base()
 
+  def get_world():
+    world = brutal.env('world', default='threads')
+    brutal.error_unless(world in ('threads','gasnet'), '"world" must be one of ["threads","gasnet"], not "{0}".', world)
+    return world
+  
+  def get_thread_n():
+    world = get_world()
+    if world == 'threads':
+      return brutal.env('ranks',2)
+    elif world == 'gasnet':
+      return brutal.env('workers',2)+1
+  
   if PATH == brutal.here('src/devastator/threads.hxx'):
     impl = brutal.env('tmsg', 'spsc')
-    brutal.panic_unless(impl in ('spsc','mpsc'), '"thread_queue" must be one of "spsc","mpsc", not "{0}".', impl)
+    brutal.error_unless(impl in ('spsc','mpsc'), '"tmsg" must be one of ["spsc","mpsc"], not "{0}".', impl)
     
     cxt |= CodeContext(pp_defines={
       'DEVA_THREADS_MESSAGE_'+impl.upper(): 1
     })
   
+  if PATH == brutal.here('src/devastator/threads/message_spsc.hxx'):
+    tsigbits = brutal.env('tsigbits', 0)
+    brutal.error_unless(tsigbits in (0,8,16,32), '"tsigbits" must be one of [0,8,16,32], not "{0}".', tsigbits)
+
+    if tsigbits == 0:
+      tsigbits = 64*8/get_thread_n()
+      tsigbits = (8,16,32)[sum([x < tsigbits for x in (8,16)])]
+    
+    cxt |= CodeContext(pp_defines={
+      'DEVA_THREADS_MESSAGE_SIGNAL_BITS': tsigbits
+    })
+
   if PATH == brutal.here('src/devastator/threads/message_mpsc.hxx'):
     cxt |= CodeContext(pp_defines={
-      'DEVA_THREADS_MESSAGE_PORT_N': brutal.env('tports', 1)
+      'DEVA_THREADS_MESSAGE_RAIL_N': brutal.env('trails', 1)
     })
   
   elif PATH == brutal.here('src/devastator/world.hxx'):
-    world = brutal.env('world', default='threads')
+    world = get_world()
     cxt |= CodeContext(pp_defines={'DEVA_WORLD':1})
     
     if world == 'threads':
       cxt |= CodeContext(pp_defines={
         'DEVA_WORLD_THREADS': 1,
-        'DEVA_THREAD_N': brutal.env('ranks',2)
+        'DEVA_THREAD_N': get_thread_n()
       })
     
     elif world == 'gasnet':
@@ -111,7 +135,7 @@ def code_context(PATH):
         'DEVA_WORLD_GASNET': 1,
         'DEVA_PROCESS_N': brutal.env('procs',2),
         'DEVA_WORKER_N': brutal.env('workers',2),
-        'DEVA_THREAD_N': '((DEVA_WORKER_N)+1)'
+        'DEVA_THREAD_N': get_thread_n()
       })
     
   elif PATH == brutal.here('src/devastator/diagnostic.cxx'):
