@@ -10,8 +10,6 @@
 
 namespace deva {
 namespace threads {
-  static constexpr int rail_n = DEVA_THREADS_MESSAGE_RAIL_N;
-  
   struct message {
     std::atomic<message*> r_next; // next in reader's list (the actual queue)
     union {
@@ -20,16 +18,18 @@ namespace threads {
     };
   };
 
-  template<int>
+  template<int rn>
   class channels_r {
-    template<int wn, int rn, channels_r<rn>(*)[wn]>
+    template<int wn, int rn1, channels_r<rn1>(*)[wn]>
     friend struct channels_w;
+    
+    static constexpr int rail_n = rn == 1 ? 1 : DEVA_THREADS_MESSAGE_RAIL_N;
     
     struct alignas(64) rail_tail_t {
       std::atomic<message*> head0_{nullptr};
       std::atomic<std::atomic<message*>*> tailp_{&head0_};
     } tails_[rail_n];
-    
+
     alignas(64)
     std::atomic<message*> *headp_[rail_n];
     
@@ -100,11 +100,19 @@ namespace threads {
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::send(int w, message *m) {
-    auto *q = &(*chan_r)[w].tails_[(threads::thread_me() + w) % rail_n];
-    
     m->r_next.store(nullptr, std::memory_order_relaxed);
-    std::atomic<message*> *got = q->tailp_.exchange(&m->r_next, std::memory_order_relaxed);
-    got->store(m, std::memory_order_release);
+
+    if(rn > 1) {
+      auto *q = &(*chan_r)[w].tails_[(threads::thread_me() + w) % channels_r<rn>::rail_n];
+      std::atomic<message*> *got = q->tailp_.exchange(&m->r_next, std::memory_order_relaxed);
+      got->store(m, std::memory_order_release);
+    }
+    else { // we are only possible writer, do exchange non-atomically
+      auto *q = &(*chan_r)[w].tails_[0];
+      std::atomic<message*> *got = q->tailp_.load(std::memory_order_relaxed);
+      q->tailp_.store(&m->r_next, std::memory_order_relaxed);
+      got->store(m, std::memory_order_release);
+    }
     
     m->w_next = nullptr;
     *this->sent_tailp_ = m;
@@ -129,7 +137,7 @@ namespace threads {
       tailp[rail] = tails_[rail].tailp_.load(std::memory_order_relaxed);
     
     #if DEVA_THREADS_MESSAGE_RAIL_N > 1
-    {
+    if(rail_n > 1) {
       std::atomic<message*> *mp[rail_n];
       message *m[rail_n];
 
@@ -202,7 +210,7 @@ namespace threads {
     }
 
     #if DEVA_THREADS_MESSAGE_RAIL_N > 1
-    {
+    if(rail_n > 1) {
       while(true) {
         for(int rail=0; rail < rail_n; rail++) {
           if(!(mp[rail] != tailp[rail] && m[rail] != nullptr))
@@ -254,15 +262,17 @@ namespace threads {
         mp[rail] = headp_[rail];
       
       #if DEVA_THREADS_MESSAGE_RAIL_N > 1
-      while(n_par--) {
-        for(int rail=0; rail < rail_n; rail++) {
-          m[rail] = mp[rail]->load(std::memory_order_relaxed);
-          mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
-          mp[rail] = &m[rail]->r_next;
+      if(rail_n > 1) {
+        while(n_par--) {
+          for(int rail=0; rail < rail_n; rail++) {
+            m[rail] = mp[rail]->load(std::memory_order_relaxed);
+            mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
+            mp[rail] = &m[rail]->r_next;
+          }
         }
-      }
 
-      std::atomic_signal_fence(std::memory_order_acq_rel);
+        std::atomic_signal_fence(std::memory_order_acq_rel);
+      }
       #endif
       
       for(int rail=0; rail < rail_n; rail++) {
