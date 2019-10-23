@@ -91,10 +91,7 @@ def compile(PATH, compiler, pp_flags, cg_flags):
 
 @brutal.coroutine
 def discovery(main_src):
-  if sources_from_includes_enabled(main_src):
-    srcs_todo = [main_src]
-  else:
-    srcs_todo = []
+  srcs_todo = [main_src]
   srcs_seen = {main_src: None}
   incs_todo = []
   incs_seen = set()
@@ -127,16 +124,19 @@ def discovery(main_src):
       srcs_todo = []
       while srcs_temp:
         src = srcs_temp.pop()
-        incs = yield includes(src, memo_cxt[src].compiler(), pp_flags)
-        srcs_seen[src] = incs
-        incs = [inc for inc in incs if inc not in incs_seen]
-        incs_todo += incs
-        incs_seen |= set(incs)
-        for inc in incs:
-          for src1 in sources_for_include(inc):
-            if src1 not in srcs_seen:
-              srcs_todo += (src1,)
-              srcs_seen[src1] = None
+        if not sources_from_includes_enabled(src):
+          srcs_seen[src] = ()
+        else:
+          incs = yield includes(src, memo_cxt[src].compiler(), pp_flags)
+          srcs_seen[src] = incs
+          incs = [inc for inc in incs if inc not in incs_seen]
+          incs_todo += incs
+          incs_seen |= set(incs)
+          for inc in incs:
+            for src1 in sources_for_include(inc):
+              if src1 not in srcs_seen:
+                srcs_todo += (src1,)
+                srcs_seen[src1] = None
   
   for src in list(srcs_seen.keys()):
     cxt = memo_cxt[src]
