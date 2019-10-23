@@ -8,6 +8,15 @@
 #include <atomic>
 #include <cstdint>
 
+// enable to test "other" platform's algorithm (all algorithms are correct on all platforms)
+#define DEVA_ARCH_TSO_FLIP 1
+
+#ifdef __x86_64__
+  #define DEVA_ARCH_TSO (1^DEVA_ARCH_TSO_FLIP)
+#else
+  #define DEVA_ARCH_TSO (0^DEVA_ARCH_TSO_FLIP)
+#endif
+
 namespace deva {
 namespace threads {
   struct message {
@@ -75,24 +84,55 @@ namespace threads {
     message **mp = &sent_head_;
     int keeps = 0;
     bool did_something = false;
-    
-    while(*mp != nullptr) {
-      message *m = *mp;
-      if(m->r_next.load(std::memory_order_relaxed) == reinterpret_cast<message*>(0x1)) { 
-        *mp = m->w_next;
-        did_something = true;
-        
-        #if DEVA_OPNEW
-          opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(m);
-        #else
-          ::operator delete(m);
-        #endif
+
+    #if DEVA_ARCH_TSO
+      while(*mp != nullptr) {
+        message *m = *mp;
+        if(m->r_next.load(std::memory_order_acquire) == reinterpret_cast<message*>(0x1)) { 
+          *mp = m->w_next;
+          did_something = true;
+          
+          #if DEVA_OPNEW
+            opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(m);
+          #else
+            ::operator delete(m);
+          #endif
+        }
+        else if(++keeps < 4)
+          mp = &m->w_next;
+        else
+          break;
       }
-      else if(++keeps < 4)
-        mp = &m->w_next;
-      else
-        break;
-    }
+    #else
+      message *del_list = nullptr;
+      
+      while(*mp != nullptr) {
+        message *m = *mp;
+        if(m->r_next.load(std::memory_order_relaxed) == reinterpret_cast<message*>(0x1)) { 
+          *mp = m->w_next;
+          did_something = true;
+          m->w_next = del_list;
+          del_list = m;
+        }
+        else if(++keeps < 4)
+          mp = &m->w_next;
+        else
+          break;
+      }
+
+      if(del_list != nullptr)
+        std::atomic_thread_fence(std::memory_order_acquire);
+      
+      while(del_list != nullptr) {
+        message *next = del_list->w_next;
+        #if DEVA_OPNEW
+          opnew::template operator_delete</*known_size=*/0, /*known_local=*/true>(del_list);
+        #else
+          ::operator delete(del_list);
+        #endif
+        del_list = next;
+      }
+    #endif
     
     sent_tailp_ = &sent_head_;
     return did_something;
@@ -103,15 +143,15 @@ namespace threads {
     m->r_next.store(nullptr, std::memory_order_relaxed);
 
     if(rn > 1) {
-      auto *q = &(*chan_r)[w].tails_[(threads::thread_me() + w) % channels_r<rn>::rail_n];
-      std::atomic<message*> *got = q->tailp_.exchange(&m->r_next, std::memory_order_relaxed);
-      got->store(m, std::memory_order_release);
+      auto *q = &(*chan_r)[w].tails_[threads::thread_me() % channels_r<rn>::rail_n];
+      std::atomic<message*> *old_tailp = q->tailp_.exchange(&m->r_next, std::memory_order_release);
+      old_tailp->store(m, std::memory_order_relaxed);
     }
     else { // we are only possible writer, do exchange non-atomically
       auto *q = &(*chan_r)[w].tails_[0];
-      std::atomic<message*> *got = q->tailp_.load(std::memory_order_relaxed);
-      q->tailp_.store(&m->r_next, std::memory_order_relaxed);
-      got->store(m, std::memory_order_release);
+      std::atomic<message*> *old_tailp = q->tailp_.load(std::memory_order_relaxed);
+      q->tailp_.store(&m->r_next, std::memory_order_release);
+      old_tailp->store(m, std::memory_order_relaxed);
     }
     
     m->w_next = nullptr;
@@ -133,42 +173,52 @@ namespace threads {
     bool did_something = false;
     std::atomic<message*> *tailp[rail_n];
 
-    for(int rail=0; rail < rail_n; rail++)
+    for(int rail=0; rail < rail_n; rail++) {
       tailp[rail] = tails_[rail].tailp_.load(std::memory_order_relaxed);
+      did_something |= tailp[rail] != headp_[rail];
+    }
+
+    if(!did_something)
+      return false;
+    
+    std::atomic_thread_fence(std::memory_order_acquire);
     
     #if DEVA_THREADS_MESSAGE_RAIL_N > 1
     if(rail_n > 1) {
       std::atomic<message*> *mp[rail_n];
-      message *m[rail_n];
 
-      for(int rail=0; rail < rail_n; rail++) {
+      for(int rail=0; rail < rail_n; rail++)
         mp[rail] = headp_[rail];
-        m[rail] = mp[rail]->load(std::memory_order_relaxed);
-      }
 
       while(true) {
+        bool any_depleted = false;
         for(int rail=0; rail < rail_n; rail++)
-          if(!(mp[rail] != tailp[rail] && m[rail] != nullptr))
-            goto finish_parallel_rails;
+          any_depleted |= mp[rail] == tailp[rail];
+        if(any_depleted) break;
+        
+        message *m[rail_n];
+        while(true) {
+          bool any_null = false;
 
-        std::atomic_thread_fence(std::memory_order_acquire);
-        did_something = true;
-
+          std::atomic_signal_fence(std::memory_order_acq_rel);
+          for(int rail=0; rail < rail_n; rail++) {
+            m[rail] = mp[rail]->load(std::memory_order_relaxed);
+            any_null |= m[rail] == nullptr;
+          }
+          std::atomic_signal_fence(std::memory_order_acq_rel);
+          
+          if(!any_null) break;
+        }
+        
         for(int rail=0; rail < rail_n; rail++)
           rcv(m[rail]);
-
-        std::atomic_signal_fence(std::memory_order_acq_rel);
         
         for(int rail=0; rail < rail_n; rail++) {
           mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_release);
           mp[rail] = &m[rail]->r_next;
-          m[rail] = mp[rail]->load(std::memory_order_relaxed);
         }
-
-        std::atomic_signal_fence(std::memory_order_acq_rel);
       }
-
-    finish_parallel_rails:
+      
       for(int rail=0; rail < rail_n; rail++)
         headp_[rail] = mp[rail];
     }
@@ -176,21 +226,39 @@ namespace threads {
 
     for(int rail=0; rail < rail_n; rail++) {
       std::atomic<message*> *mp = headp_[rail];
-      message *m = mp->load(std::memory_order_relaxed);
-      
-      while(mp != tailp[rail] && m != nullptr) {
-        std::atomic_thread_fence(std::memory_order_acquire);
-        did_something = true;
-        rcv(m);
-        mp->store(reinterpret_cast<message*>(0x1), std::memory_order_release);
-        mp = &m->r_next;
-        m = mp->load(std::memory_order_relaxed);
-      }
 
+      #if DEVA_ARCH_TSO
+        while(mp != tailp[rail]) {
+          message *m;
+          do m = mp->load(std::memory_order_relaxed);
+          while(m == nullptr);
+          rcv(m);
+          mp->store(reinterpret_cast<message*>(0x1), std::memory_order_release);
+          mp = &m->r_next;
+        }
+      #else
+        while(mp != tailp[rail]) {
+          message *m;
+          do m = mp->load(std::memory_order_relaxed);
+          while(m == nullptr);
+          rcv(m);
+          mp = &m->r_next;
+        }
+
+        std::atomic_thread_fence(std::memory_order_release);
+        mp = headp_[rail];
+        
+        while(mp != tailp[rail]) {
+          message *m = mp->load(std::memory_order_relaxed);
+          mp->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
+          mp = &m->r_next;
+        }
+      #endif
+      
       headp_[rail] = mp;
     }
     
-    return did_something;
+    return true; // did_something
   }
   
   template<int rn>
@@ -198,66 +266,77 @@ namespace threads {
   bool channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch) {
     bool did_something = false;
     std::atomic<message*> *tailp[rail_n];
-    std::atomic<message*> *mp[rail_n];
-    message *m[rail_n];
     std::intptr_t n_par = 0;
     std::intptr_t n_seq[rail_n];
     
     for(int rail=0; rail < rail_n; rail++) {
       tailp[rail] = tails_[rail].tailp_.load(std::memory_order_relaxed);
-      mp[rail] = headp_[rail];
-      m[rail] = mp[rail]->load(std::memory_order_relaxed);
+      DEVA_ASSERT(tailp[rail] != nullptr);
+      did_something |= tailp[rail] != headp_[rail];
     }
 
-    #if DEVA_THREADS_MESSAGE_RAIL_N > 1
-    if(rail_n > 1) {
-      while(true) {
-        for(int rail=0; rail < rail_n; rail++) {
-          if(!(mp[rail] != tailp[rail] && m[rail] != nullptr))
-            goto finish_parallel_rcv;
+    if(did_something) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+
+      std::atomic<message*> *mp[rail_n];
+      for(int rail=0; rail < rail_n; rail++)
+        mp[rail] = headp_[rail];
+
+      #if DEVA_THREADS_MESSAGE_RAIL_N > 1
+      if(rail_n > 1) {
+        while(true) {
+          bool any_depleted = false;
+          for(int rail=0; rail < rail_n; rail++)
+            any_depleted |= mp[rail] == tailp[rail];
+          if(any_depleted) break;
+          
+          n_par += 1;
+
+          message *m[rail_n];
+          while(true) {
+            bool any_null = false;
+
+            std::atomic_signal_fence(std::memory_order_acq_rel);
+            for(int rail=0; rail < rail_n; rail++) {
+              m[rail] = mp[rail]->load(std::memory_order_relaxed);
+              any_null |= m[rail] == nullptr;
+            }
+            std::atomic_signal_fence(std::memory_order_acq_rel);
+            
+            if(!any_null) break;
+          }
+          
+          for(int rail=0; rail < rail_n; rail++)
+            rcv(m[rail]);
+          
+          for(int rail=0; rail < rail_n; rail++)
+            mp[rail] = &m[rail]->r_next;
         }
+      }
+      #endif
 
-        std::atomic_thread_fence(std::memory_order_acquire);
-
-        n_par += 1;
-        for(int rail=0; rail < rail_n; rail++)
-          rcv(m[rail]);
-
-        std::atomic_signal_fence(std::memory_order_acq_rel);
-
-        for(int rail=0; rail < rail_n; rail++) {
-          mp[rail] = &m[rail]->r_next;
-          m[rail] = mp[rail]->load(std::memory_order_relaxed);
+      for(int rail=0; rail < rail_n; rail++) {
+        std::intptr_t n = 0;
+        
+        while(mp[rail] != tailp[rail]) {
+          n += 1;
+          message *m;
+          do m = mp[rail]->load(std::memory_order_relaxed);
+          while(m == nullptr);
+          rcv(m);
+          mp[rail] = &m->r_next;
         }
-
-        std::atomic_signal_fence(std::memory_order_acq_rel);
+        
+        n_seq[rail] = n;
       }
-
-    finish_parallel_rcv:
-      did_something |= n_par != 0;
     }
-    #endif
-
-    for(int rail=0; rail < rail_n; rail++) {
-      std::intptr_t n = 0;
-      
-      while(mp[rail] != tailp[rail] && m[rail] != nullptr) {
-        n += 1;
-        std::atomic_thread_fence(std::memory_order_acquire);
-        rcv(m[rail]);
-        mp[rail] = &m[rail]->r_next;
-        m[rail] = mp[rail]->load(std::memory_order_relaxed);
-      }
-
-      n_seq[rail] = n;
-      did_something |= n != 0;
-    }
-
+    
     batch();
     
     if(did_something) {
       std::atomic_thread_fence(std::memory_order_release);
 
+      std::atomic<message*> *mp[rail_n];
       for(int rail=0; rail < rail_n; rail++)
         mp[rail] = headp_[rail];
       
@@ -265,9 +344,9 @@ namespace threads {
       if(rail_n > 1) {
         while(n_par--) {
           for(int rail=0; rail < rail_n; rail++) {
-            m[rail] = mp[rail]->load(std::memory_order_relaxed);
+            message *m = mp[rail]->load(std::memory_order_relaxed);
             mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
-            mp[rail] = &m[rail]->r_next;
+            mp[rail] = &m->r_next;
           }
         }
 
@@ -278,9 +357,9 @@ namespace threads {
       for(int rail=0; rail < rail_n; rail++) {
         std::intptr_t n = n_seq[rail];
         while(n--) {
-          m[rail] = mp[rail]->load(std::memory_order_relaxed);
+          message *m = mp[rail]->load(std::memory_order_relaxed);
           mp[rail]->store(reinterpret_cast<message*>(0x1), std::memory_order_relaxed);
-          mp[rail] = &m[rail]->r_next;
+          mp[rail] = &m->r_next;
         }
         headp_[rail] = mp[rail];
       }
