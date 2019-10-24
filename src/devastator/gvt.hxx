@@ -27,8 +27,8 @@ namespace deva {
     template<typename Fn, typename ...Arg>
     void send(int rank, std::uint64_t t, Fn &&fn, Arg &&...arg);
 
-    template<typename ProcFn>
-    void bcast_procs(std::uint64_t t_lb, std::int32_t credit_n, ProcFn const &proc_fn);
+    template<typename ProcFn1>
+    void bcast_procs(std::uint64_t t_lb, std::int32_t credit_n, ProcFn1 &&proc_fn);
     
     void advance();
 
