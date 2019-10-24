@@ -34,6 +34,7 @@ def cxx_compiler():
 
   text = brutal.process(cxx + ['--version'], show=0, capture_stdout=1)
   text = text.wait()
+  
   brutal.depend_fact('CXX --version', text)
   
   text = brutal.process(
@@ -88,9 +89,7 @@ def code_context(PATH):
   cxt = code_context_base()
 
   def get_world():
-    world = brutal.env('world', default='threads')
-    brutal.error_unless(world in ('threads','gasnet'), '"world" must be one of ["threads","gasnet"], not "{0}".', world)
-    return world
+    return brutal.env('world', universe=('threads','gasnet'))
   
   def get_thread_n():
     world = get_world()
@@ -100,28 +99,34 @@ def code_context(PATH):
       return brutal.env('workers',2)+1
   
   if PATH == brutal.here('src/devastator/threads.hxx'):
-    impl = brutal.env('tmsg', 'spsc')
-    brutal.error_unless(impl in ('spsc','mpsc'), '"tmsg" must be one of ["spsc","mpsc"], not "{0}".', impl)
-    
+    impl = brutal.env('tmsg', universe=('spsc','mpsc'))
     cxt |= CodeContext(pp_defines={
-      'DEVA_THREADS_MESSAGE_'+impl.upper(): 1
+      'DEVA_THREADS_'+impl.upper(): 1
     })
   
   if PATH == brutal.here('src/devastator/threads/message_spsc.hxx'):
-    tsigbits = brutal.env('tsigbits', 0)
-    brutal.error_unless(tsigbits in (0,8,16,32), '"tsigbits" must be one of [0,8,16,32], not "{0}".', tsigbits)
-
+    tsigbits = brutal.env('tsigbits', universe=(0,8,16,32))
     if tsigbits == 0:
       tsigbits = 64*8/get_thread_n()
       tsigbits = (8,16,32)[sum([x < tsigbits for x in (8,16)])]
+
+    tprefetch = brutal.env('tprefetch', universe=(0,1,2))
     
     cxt |= CodeContext(pp_defines={
-      'DEVA_THREADS_MESSAGE_SIGNAL_BITS': tsigbits
+      'DEVA_THREADS_SPSC_BITS': tsigbits,
+      'DEVA_THREADS_SPSC_PREFETCH': tprefetch
     })
 
-  if PATH == brutal.here('src/devastator/threads/message_mpsc.hxx'):
+  if PATH == brutal.here('src/devastator/threads/signal_slots.hxx'):
+    tsigreap = brutal.env('tsigreap', universe=('memcpy','simd','atom'))
+    
     cxt |= CodeContext(pp_defines={
-      'DEVA_THREADS_MESSAGE_RAIL_N': brutal.env('trails', 1)
+      'DEVA_THREADS_SIGNAL_REAP_'+tsigreap.upper(): 1
+    })
+  
+  elif PATH == brutal.here('src/devastator/threads/message_mpsc.hxx'):
+    cxt |= CodeContext(pp_defines={
+      'DEVA_THREADS_MPSC_RAIL_N': brutal.env('trails', 1)
     })
   
   elif PATH == brutal.here('src/devastator/world.hxx'):

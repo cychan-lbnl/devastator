@@ -15,9 +15,9 @@ namespace threads {
   class channels_w;
 }}
 
-#if DEVA_THREADS_MESSAGE_SPSC
+#if DEVA_THREADS_SPSC
   #include <devastator/threads/message_spsc.hxx>
-#elif DEVA_THREADS_MESSAGE_MPSC
+#elif DEVA_THREADS_MPSC
   #include <devastator/threads/message_mpsc.hxx>
 #endif
 

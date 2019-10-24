@@ -638,9 +638,18 @@ def _everything():
       def __getattr__(me, name):
         return lambda default=None: me(name, default)
       
-      def __call__(me, name, default=None):
-        result = env_result_and_digests(name, default)[0]
-        return result.value()
+      def __call__(me, name, default=None, universe=None):
+        if universe is not None:
+          universe = tuple(universe)
+          if default is None:
+            default = universe[0]
+
+        value = env_result_and_digests(name, default)[0].value()
+
+        if universe is not None and value not in universe:
+          brutal.error('Env var "{0}" must be one of: {1}'.format(name, ', '.join(map(str,universe))))
+
+        return value
     
     brutal.env = globals()['env'] = Env()
     # prevent deep hashing

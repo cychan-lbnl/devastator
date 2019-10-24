@@ -8,7 +8,7 @@
 namespace deva {
 namespace threads {
   template<int epochs>
-  class message_allocator {
+  class epoch_allocator {
     static constexpr std::intptr_t grain_size = 32;
     std::uint32_t capacity_;
     
@@ -17,13 +17,13 @@ namespace threads {
     std::uint32_t edge_[2*epochs];
     
   public:
-    message_allocator(std::size_t capacity);
+    epoch_allocator(std::size_t capacity);
     std::intptr_t allocate(std::size_t size, std::size_t align);
     void bump_epoch();
   };
 
   template<int epochs>
-  message_allocator<epochs>::message_allocator(std::size_t capacity) {
+  epoch_allocator<epochs>::epoch_allocator(std::size_t capacity) {
     capacity_ = std::min<std::size_t>(std::uint32_t(-1), capacity/grain_size);
     
     for(int ed=0; ed < 2*epochs; ed++)
@@ -37,7 +37,7 @@ namespace threads {
   }
 
   template<int epochs>
-  std::intptr_t message_allocator<epochs>::allocate(std::size_t size, std::size_t align) {
+  std::intptr_t epoch_allocator<epochs>::allocate(std::size_t size, std::size_t align) {
     size = (size + grain_size-1)/grain_size;
     align = (align + grain_size-1)/grain_size;
 
@@ -61,7 +61,7 @@ namespace threads {
   }
 
   template<int epochs>
-  void message_allocator<epochs>::bump_epoch() {
+  void epoch_allocator<epochs>::bump_epoch() {
     edge_[ed_] = bump_;
     
     const int lo = lo_[0];

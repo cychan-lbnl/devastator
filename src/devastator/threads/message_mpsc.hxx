@@ -32,7 +32,7 @@ namespace threads {
     template<int wn, int rn1, channels_r<rn1>(*)[wn]>
     friend struct channels_w;
     
-    static constexpr int rail_n = rn == 1 ? 1 : DEVA_THREADS_MESSAGE_RAIL_N;
+    static constexpr int rail_n = rn == 1 ? 1 : DEVA_THREADS_MPSC_RAIL_N;
     
     struct alignas(64) rail_tail_t {
       std::atomic<message*> head0_{nullptr};
@@ -183,7 +183,7 @@ namespace threads {
     
     std::atomic_thread_fence(std::memory_order_acquire);
     
-    #if DEVA_THREADS_MESSAGE_RAIL_N > 1
+    #if DEVA_THREADS_MPSC_RAIL_N > 1
     if(rail_n > 1) {
       std::atomic<message*> *mp[rail_n];
 
@@ -282,7 +282,7 @@ namespace threads {
       for(int rail=0; rail < rail_n; rail++)
         mp[rail] = headp_[rail];
 
-      #if DEVA_THREADS_MESSAGE_RAIL_N > 1
+      #if DEVA_THREADS_MPSC_RAIL_N > 1
       if(rail_n > 1) {
         while(true) {
           bool any_depleted = false;
@@ -340,7 +340,7 @@ namespace threads {
       for(int rail=0; rail < rail_n; rail++)
         mp[rail] = headp_[rail];
       
-      #if DEVA_THREADS_MESSAGE_RAIL_N > 1
+      #if DEVA_THREADS_MPSC_RAIL_N > 1
       if(rail_n > 1) {
         while(n_par--) {
           for(int rail=0; rail < rail_n; rail++) {
