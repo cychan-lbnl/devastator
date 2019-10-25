@@ -4,6 +4,7 @@
 #include <devastator/utility.hxx>
 
 #include <atomic>
+#include <cstring>
 
 namespace deva {
 namespace threads {

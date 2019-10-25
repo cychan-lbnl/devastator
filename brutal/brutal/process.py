@@ -109,7 +109,8 @@ def _everything():
 
         for fd in fds_w:
           rev_bufs, job = io_w[fd]
-          os.write(fd, rev_bufs.pop())
+          if len(rev_bufs) != 0:
+            os.write(fd, rev_bufs.pop())
           if len(rev_bufs) == 0:
             os.close(fd)
             del io_w[fd]
@@ -221,9 +222,8 @@ def _everything():
         stdout_r, stdout_w = os.pipe()
         set_nonblock(stdout_r)
 
-      if stdin:
-        stdin_r, stdin_w = os.pipe()
-        set_nonblock(stdout_w)
+      stdin_r, stdin_w = os.pipe()
+      set_nonblock(stdout_w)
       
       pid, ptfd = os.forkpty()
       
@@ -233,10 +233,9 @@ def _everything():
           os.dup2(stdout_w, 1)
           os.close(stdout_w)
 
-        if stdin:
-          os.close(stdin_w)
-          os.dup2(stdin_r, 0)
-          os.close(stdin_r)
+        os.close(stdin_w)
+        os.dup2(stdin_r, 0)
+        os.close(stdin_r)
         
         child_close_fds()
         
@@ -255,11 +254,10 @@ def _everything():
           
           io_r[ptfd] = ([], 'stderr', job)
           
-          if stdin:
-            job.wait_n += 1
-            os.close(stdin_r)
-            io_w[stdin_w] = (reversed_bufs(stdin), job)
-          
+          job.wait_n += 1
+          os.close(stdin_r)
+          io_w[stdin_w] = (reversed_bufs(stdin), job)
+        
           if 1 or capture_stdout:
             job.wait_n += 1
             os.close(stdout_w)

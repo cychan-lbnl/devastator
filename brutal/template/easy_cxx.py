@@ -6,9 +6,21 @@ from .code_context import CodeContext
 
 easy_cxx_is_root = True
 
-c_exts = ('.c',)
-cxx_exts = ('.cpp','.cxx','.c++','.C','.C++')
-source_exts = c_exts + cxx_exts
+source_exts_of_lang = {
+  'c'  : ('.c',),
+  'c++': ('.cpp','.cxx','.c++','.C','.C++')
+}
+
+lang_of_source_ext = {}
+for lang,exts in source_exts_of_lang.items():
+  for ext in exts:
+    lang_of_source_ext[ext] = lang
+
+def lang_of_source(path):
+  _, ext = brutal.os.path.splitext(path)
+  return lang_of_source_ext[ext]
+
+source_exts = source_exts_of_lang['c'] + source_exts_of_lang['c++']
 header_exts = ('.h','.hpp','.hxx','.h++')
 
 @brutal.rule
@@ -63,30 +75,58 @@ def sources_for_include(PATH):
   else:
     return set()
 
+@brutal.rule(traced=1)
+@brutal.coroutine
+def compiler_version_and_pp_defines(compiler, lang):
+  # get the --version text from the compiler
+  version = yield brutal.process(compiler + ['--version'], show=0, capture_stdout=1)
+
+  # ask the compiler to dump all predefined #define's
+  cmd = compiler + ['-x',lang,'-dM','-E','-']
+  lines = yield brutal.process(cmd, stdin='', show=0, capture_stdout=1)
+  lines = [line for line in lines.split('\n') if line]
+  defs = {}
+  import re
+  for line in lines:
+    m = re.match('#define ([A-Za-z0-9_]+) (.*)$', line)
+    if m: defs[m.group(1)] = m.group(2)
+  
+  yield version, defs
+
 @brutal.rule(caching='file')
 @brutal.coroutine
 def includes(PATH, compiler, pp_flags):
+  # we depend on the compiler
+  yield compiler_version_and_pp_defines(compiler, lang_of_source(PATH))
+  
+  # we depend on the source file
   brutal.depend_file(PATH)
+  
   cmd = compiler + pp_flags + ['-MM','-MT','x',PATH]
   mk = yield brutal.process(cmd, capture_stdout=True)
   mk = mk[mk.index(":")+1:]
   import shlex
   incs = shlex.split(mk.replace("\\\n",""))[1:] # first is source file
   incs = list(map(brutal.os.path.abspath, incs))
-  brutal.depend_file(*incs)
+  brutal.depend_file(*incs) # we depend on all included files
   incs = list(map(brutal.os.realpath, incs))
   yield incs
 
 @brutal.rule(caching='file')
 @brutal.coroutine
 def compile(PATH, compiler, pp_flags, cg_flags):
-  out = brutal.mkpath(PATH + '.o')
+  # we depend on the compiler
+  yield compiler_version_and_pp_defines(compiler, lang_of_source(PATH))
+  
+  # we depend on the source file
   brutal.depend_file(PATH)
+  
+  out = brutal.mkpath(PATH + '.o')
   incs = includes(PATH, compiler, pp_flags)
   cmd = compiler + pp_flags + cg_flags + ['-c',PATH,'-o',out]
   yield brutal.process(cmd)
   incs = yield incs
-  brutal.depend_file(*incs)
+  brutal.depend_file(*incs) # we depend on all included files
   yield out
 
 @brutal.coroutine

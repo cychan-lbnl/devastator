@@ -2,58 +2,34 @@ assert easy_cxx_is_root
 
 @brutal.rule(caching='memory', traced=1)
 def c_compiler():
-  while 1:
-    cc = brutal.env('CC', [])
-    if cc: break
-
-    NERSC_HOST = brutal.env('NERSC_HOST', None)
-    if NERSC_HOST:
-      cc = ['cc']
-      break
-
-    cc = ['gcc']
-    break
-
-  text = brutal.process(cc + ['--version'], show=0, capture_stdout=1)
-  text = text.wait()
+  cc = brutal.env('CC', [])
+  if cc: return cc
   
-  brutal.depend_fact('CC --version', text)
-  return cc
+  NERSC_HOST = brutal.env('NERSC_HOST', None)
+  if NERSC_HOST: return ['cc']
+  
+  return ['gcc']
 
 @brutal.rule(caching='memory', traced=1)
 def cxx_compiler():
-  while 1:
-    cxx = brutal.env('CXX', [])
-    if cxx: break
+  cxx = brutal.env('CXX', [])
+  if cxx: return cxx
 
-    NERSC_HOST = brutal.env('NERSC_HOST', None)
-    if NERSC_HOST:
-      cxx = ['CC']
-      break
+  NERSC_HOST = brutal.env('NERSC_HOST', None)
+  if NERSC_HOST: return ['CC']
 
-    cxx = ['g++']
-    break
+  return ['g++']
 
-  text = brutal.process(cxx + ['--version'], show=0, capture_stdout=1)
-  text = text.wait()
+@brutal.rule(caching='memory')
+def cxx14_flags():
+  cxx = cxx_compiler()
+  _, pp_defs = compiler_version_and_pp_defines(cxx, 'c++').wait()
   
-  brutal.depend_fact('CXX --version', text)
-  
-  text = brutal.process(
-    cxx + ['-x','c++','-E','-'],
-    stdin='__cplusplus', capture_stdout=1, show=0
-  )
-  text = text.wait()
-  
-  for line in text.split('\n'):
-    if line and not line.startswith('#'):
-      std_ver = int(line.rstrip('L'))
-      if std_ver < 201400:
-        return cxx + ['-std=c++14']
-      else:
-        return cxx
-
-  brutal.error('Invalid preprocessor output:', text)
+  std_ver = int(pp_defs['__cplusplus'].rstrip('L'))
+  if std_ver < 201400:
+    return ['-std=c++14']
+  else:
+    return []
 
 @brutal.rule
 def sources_from_includes_enabled(PATH):
@@ -71,11 +47,11 @@ def code_context_base():
   
   pp_misc = brutal.env('CXX_PPFLAGS', [])
   cg_misc = brutal.env('CXX_CGFLAGS', [])
-  
+
   return CodeContext(
     compiler = cxx_compiler(),
     pp_angle_dirs = [brutal.here('src')],
-    pp_misc = pp_misc,
+    pp_misc = cxx14_flags() + pp_misc,
     cg_optlev = optlev,
     cg_misc = (
         (['-flto'] if optlev == 3 else []) +
