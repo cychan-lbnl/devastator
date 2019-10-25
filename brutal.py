@@ -14,8 +14,10 @@ def c_compiler():
     cc = ['gcc']
     break
 
-  ver_text = brutal.process(cc + ['--version'], show=0, capture_stdout=1).wait()
-  brutal.depend_fact('CC --version', ver_text)
+  text = brutal.process(cc + ['--version'], show=0, capture_stdout=1)
+  text = text.wait()
+  
+  brutal.depend_fact('CC --version', text)
   return cc
 
 @brutal.rule(caching='memory', traced=1)
@@ -67,15 +69,19 @@ def code_context_base():
   syms = brutal.env('syms', 1 if debug else 0)
   opnew = brutal.env('opnew', 0 if debug else 1)
   
+  pp_misc = brutal.env('CXX_PPFLAGS', [])
+  cg_misc = brutal.env('CXX_CGFLAGS', [])
+  
   return CodeContext(
     compiler = cxx_compiler(),
     pp_angle_dirs = [brutal.here('src')],
+    pp_misc = pp_misc,
     cg_optlev = optlev,
     cg_misc = (
-      (['-flto'] if optlev == 3 else []) +
-      (['-g'] if syms else []) +
-      ['-Wno-unknown-warning-option','-Wno-aligned-new','-march=native']
-    ),
+        (['-flto'] if optlev == 3 else []) +
+        (['-g'] if syms else []) +
+        ['-Wno-unknown-warning-option','-Wno-aligned-new']
+      ) + cg_misc,
     ld_misc = ['-flto'] if optlev == 3 else [],
     pp_defines = {
       'DEBUG': 1 if debug else 0,
