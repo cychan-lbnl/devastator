@@ -1,17 +1,12 @@
 #include <devastator/diagnostic.hxx>
 #include <devastator/world.hxx>
-#include <devastator/pdes.hxx>
 #include <devastator/os_env.hxx>
 
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 using namespace std;
-
-namespace pdes = deva::pdes;
 
 using deva::rank_n;
 using deva::rank_me;
@@ -97,8 +92,6 @@ int main() {
     
     double wall_secs = std::chrono::duration<double>(wall_end - wall_begin).count();
     wall_secs = deva::reduce_min(wall_secs);
-    pdes::statistics stats = deva::reduce_sum(pdes::local_stats());
-
     tot_send_n = deva::reduce_sum(tot_send_n);
     
     if(deva::rank_me()==0) {
