@@ -93,10 +93,12 @@ def code_context(PATH):
       tsigbits = (8,16,32)[sum([x < tsigbits for x in (8,16)])]
 
     tprefetch = brutal.env('tprefetch', universe=(0,1,2))
+    torder = brutal.env('torder', universe=('dfs','bfs'))
     
     cxt |= CodeContext(pp_defines={
       'DEVA_THREADS_SPSC_BITS': tsigbits,
-      'DEVA_THREADS_SPSC_PREFETCH': tprefetch
+      'DEVA_THREADS_SPSC_PREFETCH': tprefetch,
+      'DEVA_THREADS_SPSC_ORDER_'+torder.upper(): 1
     })
 
   if PATH == brutal.here('src/devastator/threads/signal_slots.hxx'):

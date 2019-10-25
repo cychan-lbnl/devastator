@@ -152,28 +152,63 @@ namespace threads {
   template<int rn>
   template<typename Rcv>
   bool channels_r<rn>::receive(Rcv &&rcv) {
-    hot_slot<uint_signal_t> hot[rn];
-    int hot_n = this->slots_.reap(hot);
-    
-    prefetch(hot_n, hot);
-    
-    for(int i=0; i < hot_n; i++) {
-      channels_r::each *ch = &this->r_[hot[i].ix];
-      std::uint32_t msg_n = hot[i].delta;
-      message *m = ch->recv_last;
+    #if DEVA_THREADS_SPSC_ORDER_DFS
+      hot_slot<uint_signal_t> hot[rn];
+      int hot_n = this->slots_.reap(hot);
+      bool did_something = hot_n != 0;
       
-      //say()<<"rchan "<<hot[i].ix<<" of "<<rn<<" bumped "<<hot[i].old<<" -> "<<hot[i].old+hot[i].delta;
+      prefetch(hot_n, hot);
       
-      do {
-        m = m->next;
-        rcv(m);
-      } while(--msg_n != 0);
+      for(int i=0; i < hot_n; i++) {
+        channels_r::each *ch = &this->r_[hot[i].ix];
+        std::uint32_t msg_n = hot[i].delta;
+        message *m = ch->recv_last;
+        
+        //say()<<"rchan "<<hot[i].ix<<" of "<<rn<<" bumped "<<hot[i].old<<" -> "<<hot[i].old+hot[i].delta;
+        
+        do {
+          m = m->next;
+          rcv(m);
+        } while(--msg_n != 0);
 
-      ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
-      ch->recv_last = m;
-    }
+        ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
+        ch->recv_last = m;
+      }
+      
+    #elif DEVA_THREADS_SPSC_ORDER_BFS
+
+      hot_slot<uint_signal_t> hot[rn];
+      int hot_head = this->slots_.reap_circular(hot);
+      bool did_something = hot_head != -1;
+
+      if(did_something) {
+        int i_prev = hot_head;
+        int i = hot[hot_head].next;
+        
+        while(true) {
+          channels_r::each *ch = &this->r_[i];
+          message *m = ch->recv_last;
+          m = m->next;
+          ch->recv_last = m;
+          
+          rcv(m);
+          
+          if(0 == --hot[i].delta) {
+            ch->ack_slot->store(hot[i].now, std::memory_order_release);
+            if(i == hot[i].next)
+              break;
+            i = hot[i].next;
+            hot[i_prev].next = i;
+          }
+          else {
+            i_prev = i;
+            i = hot[i].next;
+          }
+        }
+      }
+    #endif
     
-    return hot_n != 0; // did something
+    return did_something;
   }
 
   template<int rn>

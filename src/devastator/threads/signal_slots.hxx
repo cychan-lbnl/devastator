@@ -10,8 +10,15 @@ namespace deva {
 namespace threads {
   template<typename Uint>
   struct hot_slot {
-    int ix;
-    Uint delta, old;
+    union {
+      int ix; // returned by reap()
+      int next; // returned by reap_circular()
+    };
+    Uint delta;
+    union {
+      Uint old; // returned by reap()
+      Uint now; // returned by reap_circular()
+    };
   };
   
   template<typename Uint, int n>
@@ -55,10 +62,12 @@ namespace threads {
     // Looks for slots with notifications in them. Fills in provided array with the
     // found "n" slots, "n" returned.
     int reap(hot_slot<Uint> hot[n]);
+    int reap_circular(hot_slot<Uint> hot[n]);
   };
 
   template<typename Uint, int n>
-  __attribute__((noinline)) int signal_slots<Uint,n>::reap(hot_slot<Uint> hot[n]) {
+  __attribute__((noinline))
+  int signal_slots<Uint,n>::reap(hot_slot<Uint> hot[n]) {
     int hot_n = 0;
     slots_t fresh;
 
@@ -91,6 +100,48 @@ namespace threads {
       std::atomic_thread_fence(std::memory_order_acquire);
     
     return hot_n;
+  }
+
+  template<typename Uint, int n>
+  __attribute__((noinline))
+  int signal_slots<Uint,n>::reap_circular(hot_slot<Uint> hot[n]) {
+    slots_t fresh;
+
+    std::atomic_signal_fence(std::memory_order_acq_rel);
+
+    #if DEVA_THREADS_SIGNAL_REAP_ATOM
+      for(int i=0; i < n; i++)
+        fresh.non_atom[i] = live.atom[i].load(std::memory_order_relaxed);
+    #elif DEVA_THREADS_SIGNAL_REAP_MEMCPY
+      std::memcpy(&fresh, &live, sizeof(live));
+    #elif DEVA_THREADS_SIGNAL_REAP_SIMD
+      for(int i=0; i < simd_n; i++)
+        fresh.simd[i] = live.simd[i];
+    #endif
+    
+    std::atomic_signal_fence(std::memory_order_acq_rel);
+    
+    int head = -1, tail = -1;
+    
+    for(int i=0; i < n; i++) {
+      if(fresh.non_atom[i] != shadow.non_atom[i]) {
+        hot[i].next = head;
+        if(head == -1) tail = i;
+        head = i;
+        
+        hot[i].delta = fresh.non_atom[i] - shadow.non_atom[i];
+        hot[i].now = fresh.non_atom[i];
+        
+        shadow.non_atom[i] = fresh.non_atom[i];
+      }
+    }
+    
+    if(head != -1) {
+      hot[tail].next = head; // circularize
+      std::atomic_thread_fence(std::memory_order_acquire);
+    }
+    
+    return head;
   }
 }}
 #endif
