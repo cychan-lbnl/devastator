@@ -87,6 +87,16 @@ namespace deva {
   }
   
   template<typename T>
+  T reduce_and(T val) {
+    return reduce(val, [](T &acc, T x) { acc &= x; });
+  }
+  
+  template<typename T>
+  T reduce_or(T val) {
+    return reduce(val, [](T &acc, T x) { acc |= x; });
+  }
+
+  template<typename T>
   T reduce_xor(T val) {
     return reduce(val, [](T &acc, T x) { acc ^= x; });
   }

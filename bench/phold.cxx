@@ -39,14 +39,14 @@ struct rng_state {
 
 int lp_n = 1000;
 int ray_n = 2*lp_n;
-double percent_remote = .5; // .5
+double fraction_remote = .5; // .5
 
 int lp_per_rank;
 
-thread_local std::unique_ptr<rng_state[]> state_cur;
+thread_local unique_ptr<rng_state[]> state_cur;
 
-thread_local std::chrono::steady_clock::time_point wall_begin;
-thread_local std::chrono::steady_clock::duration wall_cut;
+thread_local chrono::steady_clock::time_point wall_begin;
+thread_local chrono::steady_clock::duration wall_cut;
 
 struct bounce {
   int ray;
@@ -94,7 +94,7 @@ struct bounce {
     dt += 1;
     
     int lp_to;
-    if(rng() < uint64_t(percent_remote*double(-1ull)))
+    if(rng() < uint64_t(fraction_remote*double(-1ull)))
       lp_to = int(rng() % lp_n);
     else
       lp_to = lp;
@@ -112,12 +112,15 @@ struct bounce {
 };
 
 int main() {
+  double duration;
+  
   auto doit = [&]() {
     if(deva::rank_me_local() == 0) {
       lp_n = deva::os_env<int>("lp_n", 1000);
       ray_n = deva::os_env<int>("ray_n", 2*lp_n);
-      percent_remote = deva::os_env<double>("percent_remote", .5);
-      
+      fraction_remote = deva::os_env<double>("fraction_remote", .5);
+      duration = deva::os_env<double>("wall_secs", 10);
+
       lp_per_rank = (lp_n + rank_n-1)/rank_n;
     }
 
@@ -146,8 +149,8 @@ int main() {
       }
     }
 
-    wall_begin = std::chrono::steady_clock::now();
-    wall_cut = std::chrono::seconds(10);
+    wall_begin = chrono::steady_clock::now();
+    wall_cut = chrono::duration_cast<chrono::steady_clock::duration>(chrono::duration<double>(duration));
     
     pdes::drain();
     
@@ -159,9 +162,9 @@ int main() {
     pdes::statistics stats = deva::reduce_sum(pdes::local_stats());
     
     if(deva::rank_me()==0) {
-      std::cout<<"event/sec = "<<stats.executed_n/wall_secs<<'\n'
-               <<"commit/sec = "<<stats.committed_n/wall_secs<<'\n'
-               <<"deterministic = "<<stats.deterministic<<'\n';
+      std::cout<<"sample('event_per_rank_per_sec', "<<stats.executed_n/wall_secs/rank_n<<")\n"
+               <<"sample('commit_per_rank_per_sec', "<<stats.committed_n/wall_secs/rank_n<<")\n"
+               <<"sample('deterministic', "<<stats.deterministic<<")\n";
     }
   };
 
