@@ -1,4 +1,5 @@
 #include <devastator/diagnostic.hxx>
+#include <devastator/opnew.hxx>
 
 #if DEVA_WORLD
   #include <devastator/world.hxx>
@@ -70,4 +71,28 @@ deva::say::say() {
 deva::say::~say() {
   std::cerr<<"\n";
   lock_.unlock();
+}
+
+deva::datarow deva::describe() {
+  datarow ans;
+
+  ans &= datarow::x("git", DEVA_GIT_VERSION);
+  ans &= datarow::x("opnew", DEVA_OPNEW);
+  
+  #if DEVA_WORLD
+    ans &= datarow::x("world", DEVA_WORLD_THREADS ? "threads" : "gasnet" );
+    ans &= datarow::x("ranks", deva::rank_n);
+    #if DEVA_WORLD_GASNET
+      ans &= datarow::x("procs", deva::process_n);
+      ans &= datarow::x("workers", deva::worker_n);
+    #endif
+  #endif
+
+  ans &= datarow::x("tmsg", DEVA_THREADS_SPSC ? "spsc" : DEVA_THREADS_MPSC ? "mpsc" : "");
+
+  #if DEVA_THREADS_SPSC
+    ans &= datarow::x("tsigbits", DEVA_THREADS_SPSC_BITS);
+  #endif
+
+  return ans;
 }

@@ -3,6 +3,9 @@
 #include <devastator/pdes.hxx>
 #include <devastator/os_env.hxx>
 
+#include "util/report.hxx"
+#include "util/timer.hxx"
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -37,29 +40,26 @@ struct rng_state {
   }
 };
 
-int lp_n = 1000;
-int ray_n = 2*lp_n;
-double fraction_remote = .5; // .5
-
 int lp_per_rank;
+int ray_per_lp;
+double fraction_remote;
 
 thread_local unique_ptr<rng_state[]> state_cur;
 
-thread_local chrono::steady_clock::time_point wall_begin;
-thread_local chrono::steady_clock::duration wall_cut;
+thread_local deva::bench::timer begun;
+double cutoff;
 
 struct bounce {
   int ray;
   int lp;
   
   struct reverse {
-    int a;
     rng_state state_prev;
     
     void unexecute(pdes::event_context&, bounce &me) {
       //say() << "unexecute "<<me.lp;
-      int a = me.lp % lp_per_rank;
-      state_cur[a] = state_prev;
+      int cd = me.lp % lp_per_rank;
+      state_cur[cd] = state_prev;
     }
 
     void commit(pdes::event_context&, bounce&) {
@@ -68,24 +68,23 @@ struct bounce {
   };
   
   reverse execute(pdes::execute_context &cxt) {
-    int a = this->lp % lp_per_rank;
+    int cd = this->lp % lp_per_rank;
 
-    rng_state &rng = state_cur[a];
+    rng_state &rng = state_cur[cd];
     rng_state state_prev = rng;
 
     static __thread int skips = 0;
     if(skips < 0)
-      return reverse{a, state_prev};
+      return reverse{state_prev};
     else if(++skips == 100) {
       skips = 0;
-      auto dt = std::chrono::steady_clock::now() - wall_begin;
-      if(dt >= wall_cut) {
+      if(begun.elapsed() >= cutoff) {
         skips = -1;
-        return reverse{a, state_prev};
+        return reverse{state_prev};
       }
     }
 
-    constexpr double lambda = 100;
+    constexpr double lambda = 10000;
     #if 0
       uint64_t dt = lambda;
     #else
@@ -95,7 +94,7 @@ struct bounce {
     
     int lp_to;
     if(rng() < uint64_t(fraction_remote*double(-1ull)))
-      lp_to = int(rng() % lp_n);
+      lp_to = int(rng() % (lp_per_rank*rank_n));
     else
       lp_to = lp;
     
@@ -107,7 +106,7 @@ struct bounce {
     );
     
     // return the unexecute lambda
-    return reverse{a, state_prev};
+    return reverse{state_prev};
   }
 };
 
@@ -116,12 +115,10 @@ int main() {
   
   auto doit = [&]() {
     if(deva::rank_me_local() == 0) {
-      lp_n = deva::os_env<int>("lp_n", 1000);
-      ray_n = deva::os_env<int>("ray_n", 2*lp_n);
+      lp_per_rank = deva::os_env<int>("lp_per_rank", 1000);
+      ray_per_lp = deva::os_env<int>("ray_per_lp", 2);
       fraction_remote = deva::os_env<double>("fraction_remote", .5);
-      duration = deva::os_env<double>("wall_secs", 10);
-
-      lp_per_rank = (lp_n + rank_n-1)/rank_n;
+      cutoff = deva::os_env<double>("wall_secs", 10);
     }
 
     deva::barrier();
@@ -131,40 +128,39 @@ int main() {
     
     state_cur.reset(new rng_state[lp_per_rank]);
     
-    int lp_lb = rank_me()*lp_per_rank;
-    int lp_ub = std::min(lp_n, (rank_me()+1)*lp_per_rank);
-
-    for(int lp=lp_lb; lp < lp_ub; lp++) {
-      int cd = lp - lp_lb;
+    for(int cd=0; cd < lp_per_rank; cd++) {
+      int lp = rank_me()*lp_per_rank + cd;
       state_cur[cd] = rng_state{/*seed=*/lp};
       
       pdes::register_state(cd, &state_cur[cd]);
-    }
-    
-    for(int ray=0; ray < ray_n; ray++) {
-      int lp = ray % lp_n;
-      if(lp_lb <= lp && lp < lp_ub) {
-        int cd = lp - lp_lb;
+
+      for(int lp_ray=0; lp_ray < ray_per_lp; lp_ray++) {
+        int ray = lp*ray_per_lp + lp_ray;
         pdes::root_event(cd, ray, bounce{ray, lp});
       }
     }
 
-    wall_begin = chrono::steady_clock::now();
-    wall_cut = chrono::duration_cast<chrono::steady_clock::duration>(chrono::duration<double>(duration));
+    begun.reset();
     
     pdes::drain();
     
     auto wall_end = std::chrono::steady_clock::now();
     pdes::finalize();
     
-    double wall_secs = std::chrono::duration<double>(wall_end - wall_begin).count();
-    wall_secs = deva::reduce_min(wall_secs);
+    double wall_secs = deva::reduce_min(begun.elapsed());
     pdes::statistics stats = deva::reduce_sum(pdes::local_stats());
     
     if(deva::rank_me()==0) {
-      std::cout<<"sample('event_per_rank_per_sec', "<<stats.executed_n/wall_secs/rank_n<<")\n"
-               <<"sample('commit_per_rank_per_sec', "<<stats.committed_n/wall_secs/rank_n<<")\n"
-               <<"sample('deterministic', "<<stats.deterministic<<")\n";
+      deva::bench::report rep(__FILE__);
+      rep.emit(
+        deva::datarow::x("lp_per_rank", lp_per_rank) &
+        deva::datarow::x("ray_per_lp", ray_per_lp) &
+        deva::datarow::x("frac_remote", fraction_remote) &
+        
+        deva::datarow::y("execute_per_rank_per_sec", stats.executed_n/wall_secs/rank_n) &
+        deva::datarow::y("commit_per_rank_per_sec", stats.committed_n/wall_secs/rank_n) &
+        deva::datarow::y("deterministic", stats.deterministic)
+      );
     }
   };
 

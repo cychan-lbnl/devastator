@@ -44,10 +44,12 @@ def code_context_base():
   optlev = brutal.env('optlev', 0 if debug else 3)
   syms = brutal.env('syms', 1 if debug else 0)
   opnew = brutal.env('opnew', 0 if debug else 1)
+  asan = brutal.env('asan', 1 if debug else 0)
   
   pp_misc = brutal.env('CXX_PPFLAGS', [])
   cg_misc = brutal.env('CXX_CGFLAGS', [])
-
+  asan_flags = ['-fsanitize=address'] if asan else []
+  
   return CodeContext(
     compiler = cxx_compiler(),
     pp_angle_dirs = [brutal.here('src')],
@@ -56,9 +58,10 @@ def code_context_base():
     cg_misc = (
         (['-flto'] if optlev == 3 else []) +
         (['-g'] if syms else []) +
+        asan_flags +
         ['-Wno-unknown-warning-option','-Wno-aligned-new']
       ) + cg_misc,
-    ld_misc = ['-flto'] if optlev == 3 else [],
+    ld_misc = (['-flto'] if optlev == 3 else []) + asan_flags,
     pp_defines = {
       'DEBUG': 1 if debug else 0,
       'NDEBUG': None if debug else 1,

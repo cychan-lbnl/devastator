@@ -2,7 +2,9 @@
 #define _51ac0f50d1944c92bd0a16bfc7e4de62
 
 #include <cstdlib>
+#include <iostream>
 #include <sstream>
+#include <string>
 
 namespace deva {
   template<typename T>
@@ -20,7 +22,7 @@ namespace deva {
 
   template<typename T>
   T os_env(const char *name) {
-    char *s = getenv(name);
+    char *s = std::getenv(name);
     if(s && *s != 0) {
       std::stringstream ss(s);
       T val;
@@ -34,8 +36,8 @@ namespace deva {
   }
 
   template<>
-  std::string os_env<std::string>(const char *name, std::string deft) {
-    char *s = getenv(name);
+  inline std::string os_env<std::string>(const char *name, std::string deft) {
+    char *s = std::getenv(name);
     if(s && *s != 0)
       return std::string(s);
     else
@@ -43,8 +45,8 @@ namespace deva {
   }
 
   template<>
-  std::string os_env<std::string>(const char *name) {
-    char *s = getenv(name);
+  inline std::string os_env<std::string>(const char *name) {
+    char *s = std::getenv(name);
     if(s && *s != 0)
       return std::string(s);
     else {

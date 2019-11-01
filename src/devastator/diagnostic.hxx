@@ -1,6 +1,8 @@
 #ifndef _33b82d57a3f346d59a519f14e65d9323
 #define _33b82d57a3f346d59a519f14e65d9323
 
+#include <devastator/datarow.hxx>
+
 #include <iostream>
 #include <sstream>
 
@@ -34,6 +36,9 @@ namespace deva {
 #define DEVA_ASSERT_ALWAYS(...) DEVA_ASSERT_DISPATCH(__VA_ARGS__, DEVA_ASSERT_2, DEVA_ASSERT_1, _DUMMY)(__VA_ARGS__)
 
 namespace deva {
+  // Return key/value map dessribing configuration of devastator runtime.
+  datarow describe();
+  
   struct say {
     say();
     say(say const&) = delete;

@@ -4,11 +4,15 @@
 #ifndef _b562d0d1055e42598549ddbccfb1b879
 #define _b562d0d1055e42598549ddbccfb1b879
 
-#include <new>
+#ifndef DEVA_OPNEW
+  #define DEVA_OPNEW 0
+#endif
 
 #ifndef DEVA_OPNEW_DEBUG
   #define DEVA_OPNEW_DEBUG 0
 #endif
+
+#include <new>
 
 #if !DEVA_OPNEW
   namespace deva {

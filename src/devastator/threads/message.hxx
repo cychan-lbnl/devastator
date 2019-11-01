@@ -1,6 +1,14 @@
 #ifndef _4c4b7bd29c144176a52f5a915a928431
 #define _4c4b7bd29c144176a52f5a915a928431
 
+#ifndef DEVA_THREADS_SPSC
+  #define DEVA_THREADS_SPSC 0
+#endif
+
+#ifndef DEVA_THREADS_MPSC
+  #define DEVA_THREADS_MPSC 0
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////
 // Message & channel forward declaration
 

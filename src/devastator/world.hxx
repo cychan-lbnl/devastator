@@ -1,6 +1,14 @@
 #ifndef _ce62bf80793b40888f7e463dfa811c3d
 #define _ce62bf80793b40888f7e463dfa811c3d
 
+#ifndef DEVA_WORLD_THREADS
+  #define DEVA_WORLD_THREADS 0
+#endif
+
+#ifndef DEVA_WORLD_GASNET
+  #define DEVA_WORLD_GASNET 0
+#endif
+
 #include <devastator/opnew.hxx>
 #include <devastator/utility.hxx>
 
@@ -20,7 +28,7 @@ namespace deva {
   #if 0 // no way to forward decalre #define's
     #define SERIALIZED_FIELDS(...)
   #endif
-  
+
   void run(upcxx::detail::function_ref<void()> fn);
   void run_and_die(upcxx::detail::function_ref<void()> fn);
   
