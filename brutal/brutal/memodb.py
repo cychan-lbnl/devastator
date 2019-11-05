@@ -87,9 +87,31 @@ def _everything():
     
     empty_dict = {}
     empty_froset = frozenset()
+
+  DEBUG = os.environ.get('BRUTAL_DEBUG')
+  DEBUG = DEBUG and int(DEBUG)
+
+  DONT_REMOVE_TEMPS = DONT_REMOVE_TEMPS or DEBUG
   
-  if not DONT_REMOVE_TEMPS:
-    DONT_REMOVE_TEMPS = os.environ.get('BRUTAL_DEBUG', False)
+  if DEBUG:
+    from datetime import datetime
+    f = open('brutal_debug_log', 'a')
+    print('#'*50, file=f)
+    print('## brutal args', sys.argv[1:], file=f)
+    print('## opened at', datetime.now().strftime("%d/%m/%Y %H:%M:%S"), file=f)
+    
+    def debug_trace(*a):
+      print('='*50, file=f)
+      print(*a, file=f, flush=True)
+      return debug_trace
+    def subline(*a):
+      print('-'*50, file=f)
+      print(' ',*a, file=f, flush=True)
+      return debug_trace
+    debug_trace.subline = subline
+  else:
+    def debug_trace(*a): return debug_trace
+    debug_trace.subline = debug_trace
   
   class Db(object): pass
   the_db = Db()
@@ -731,10 +753,18 @@ def _everything():
             if node[0] == 1:
               panic('brutal internal error: Same trace and instance generated different full hashes.')
             do_prune = True
-          if 0:
-            print('failed, %s not in %r: '%(hexlify(name), [hexlify(x) for x in tip]),'\n',
-                  memo_fn.__name__,memo_args,'\n ',
-                  prev_node[2:5] if prev_node else None)
+
+          if DEBUG:
+            tr_name = ('<root call>',)
+            if prev_node:
+              tr_name = db_dedup_decode(prev_node[2])
+              if type(tr_name) is tuple:
+                tr_name = tr_name[0]
+              tr_name = (tr_name, db_dedup_decode(prev_node[3]), db_dedup_decode(prev_node[4]))
+            (debug_trace('replay MISS in',memo_fn.__name__, memo_args)
+                .subline(*(('traced fn id:',) + tr_name))
+            )
+          
           break # jump to execute
           
         elif tag == 1:
