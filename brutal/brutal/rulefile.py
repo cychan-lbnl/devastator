@@ -15,11 +15,7 @@ def _everything():
   import brutal
   panic_unless(brutal.coflow is coflow)
   
-  def export(fn):
-    globals()[fn.__name__] = fn
-    brutal.__dict__[fn.__name__] = fn
-    digest.by_name(fn)
-    return fn
+  export = digest.exporter(globals())
   
   __import__ = builtins.__import__
   AttributeError = builtins.AttributeError
@@ -62,6 +58,7 @@ def _everything():
   imported_files = []
   globals()['imported_files'] = imported_files
     
+  @digest.by_name
   class Finder(object):
     def find_module(me, name, path=None):
       #print('find_module',name,path,'here',me.here)
@@ -88,6 +85,7 @@ def _everything():
         else:
           return None
   
+  @digest.by_name
   def import_interposer(name, globals={}, locals={}, fromlist=[], level=0):
     here = globals.get('_brutal_here')
     if here is not None:
@@ -101,6 +99,7 @@ def _everything():
   
   builtins.__import__ = import_interposer
 
+  @digest.by_name
   class ChildModule(types.ModuleType):
     def __init__(me, name, here, parent_here):
       types.ModuleType.__init__(me, name)
@@ -116,6 +115,8 @@ def _everything():
 
   proxy_module_memo = {}
   child_module_memo = {}
+
+  @digest.by_name
   def brutal_module_proxy(here):
     if here not in proxy_module_memo:
       name = 'brutal_proxy_' + hexdigest_of(here)[:16]
@@ -153,6 +154,7 @@ def _everything():
     
     return proxy_module_memo[here]
 
+  @digest.by_name
   def import_child_module(submod):
     _, subdefs, _ = node_at(
       submod._brutal_here, 'brutal.py', None,
@@ -168,7 +170,8 @@ def _everything():
   def import_file(path, owner_package_name=None):
     _, _, m = node_at(path, owner_package_name=owner_package_name)
     return m
-  
+
+  @digest.by_name
   def node_at(path_rule, path_rule_add=None, owner_package_name=None, explicit_parent=None):
     panic_unless(not(owner_package_name and explicit_parent))
     
@@ -307,6 +310,7 @@ def _everything():
     fn = locate_rule_fn(fn_name, path_top, path, scoped)
     return (fn, args, kws)
 
+  @digest.by_name
   def rule(fn=None, caching=None, cli=None, traced=None):
     def make_rule(fn):
       fn_name = fn.__name__
@@ -338,20 +342,20 @@ def _everything():
         )
       rule_cli[fn_name] = cli or rule_cli.get(fn_name)
 
-      if caching == 'memory':
-        fn = coflow.memoized(fn)
-      elif caching == 'file':
-        fn = memodb.memoized(fn)
-      elif caching is None:
-        pass
-      else:
-        panic("brutal.rule(): invalid argument: caching=%r"%caching)
-
       if traced:
         if caching == 'file':
           panic("brutal.rule(): invalid argument: caching=%r, traced=%r"%(caching, traced))
         fn = memodb.traced(fn)
       else:
+        if caching == 'memory':
+          fn = coflow.memoized(fn)
+        elif caching == 'file':
+          fn = memodb.memoized(fn)
+        elif caching is None:
+          pass
+        else:
+          panic("brutal.rule(): invalid argument: caching=%r"%caching)
+        
         fn.as_named = lambda *a,**kw: memodb.Named(fn(*a,**kw))
       
       def make_resolving_proxy(fn, scoped):

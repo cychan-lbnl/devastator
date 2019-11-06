@@ -47,7 +47,7 @@ def code_context(PATH):
 def sources_from_includes_enabled(PATH):
   return False
 
-@brutal.rule(caching='memory', traced=1)
+@brutal.rule(traced=1)
 def dir_source_exts_by_noext(dir):
   ans = {}
   for m in brutal.os.listdir(dir):

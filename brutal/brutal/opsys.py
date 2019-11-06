@@ -3,6 +3,8 @@ def _everything():
   import shutil
   import stat
   import tempfile
+
+  from . import digest
   
   os_link = os.link
   os_listdir = os.listdir
@@ -79,9 +81,7 @@ def _everything():
     proxy.__wrapped__ = fn
     return proxy
   
-  def export(fn):
-    globals()[fn.__name__] = fn
-    return fn
+  export = digest.exporter(globals())
   
   with tempfile.NamedTemporaryFile(prefix='TmP') as f:
     is_case_sensitive = not os_path_exists(f.name.lower())

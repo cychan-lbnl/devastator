@@ -25,10 +25,7 @@ def _everything():
   from .panic import panic, panic_unless
   
   if 1: # export & common stuff
-    def export(x):
-      globals()[x.__name__] = x
-      brutal.__dict__[x.__name__] = x
-      return x
+    export = digest.exporter(globals())
     
     BaseException = builtins.BaseException
     dict = builtins.dict
@@ -99,14 +96,18 @@ def _everything():
     print('#'*50, file=f)
     print('## brutal args', sys.argv[1:], file=f)
     print('## opened at', datetime.now().strftime("%d/%m/%Y %H:%M:%S"), file=f)
-    
+
+    def tok(x):
+      if type(x) is bytes:
+        return '%s'%hexlify(x)
+      return x
     def debug_trace(*a):
       print('='*50, file=f)
-      print(*a, file=f, flush=True)
+      print(*map(tok,a), file=f, flush=True)
       return debug_trace
     def subline(*a):
       print('-'*50, file=f)
-      print(' ',*a, file=f, flush=True)
+      print(' ',*map(tok,a), file=f, flush=True)
       return debug_trace
     debug_trace.subline = subline
   else:
@@ -302,7 +303,6 @@ def _everything():
       db.size_tail = f.tell()
 
   @export
-  @digest.by_name
   @coflow.coroutine
   def save():
     db = the_db
@@ -390,8 +390,8 @@ def _everything():
   class TraceShadow(coflow.Shadow):
     def key_of(me, rec):
       return rec[3]
-    def emit(me, fn_id, args, kws, key, cname, cfull, ename, efull):
-      coflow.Shadow.emit(me, (fn_id, args, kws, key, cname, cfull, ename, efull))
+    def emit(me, fn_id, args, kws, key, name, full):
+      coflow.Shadow.emit(me, (fn_id, args, kws, key, name, full))
   TraceShadow = TraceShadow()
   
   @digest.by_name
@@ -416,20 +416,10 @@ def _everything():
         return next(iter(names.values()))
       return names[meat] if meat in names else None
   
-  @digest.by_name
-  def tree_digests(cname, cfull, ename, efull):
-    h = hashlib_sha1()
-    h.update(cname + ename)
-    name = h.digest()
-    h.update(cfull + efull)
-    full = h.digest()
-    return name, full
-  
   traced_hash_digest = binascii.unhexlify(b"b13b4fbd38684ba882c10426b457dc90")
   object__new__ = object.__new__
   
   @export
-  @digest.by_name
   class Named(object):
     def __new__(ty, value=None, name=None):
       if type(value) is ty:
@@ -472,7 +462,6 @@ def _everything():
         return 'Named(\value=%r,\nname=%r)' % (me.value, me.name)
   
   @export
-  @digest.by_name
   def traced(fn):
     tr_name = (fn.__module__, fn.__name__)
     tr_meat = digest_of(fn.__code__, fn.__closure__ or ())
@@ -498,58 +487,44 @@ def _everything():
               value_name = value.name
               value_full = value.value
               result = coflow_Result(value_full)
+              name, full = digest.digests_of(value_name, value_full)
             else:
-              value_name = value_full = value
+              name = full = digest.digest_of(value)
             
-            cname, cfull = digest.digests_of_run(value_name, value_full)
-
+            if DEBUG:
+              debug_trace('traced.result_and_digests',fn.__name__,args,kws).subline('name=',name,'full=',full)
+              
           elif result_ty is coflow_Failure:
-            cname = cfull = digest_of(result)
+            name = full = digest_of(result)
           
           else:
             panic()
           
-          elog = sorted(set([(r[6],r[7]) for r in log]))
-          elog_len = len(elog)
-
-          if elog_len == 0:
-            ename, efull = zero, zero
-          elif elog_len == 1:
-            ename, efull = elog[0]
-          else:
-            enames, efulls = zip(*elog)
-            h = hashlib_sha1()
-            h.update(b'%x.' % elog_len)
-            h.update(b''.join(enames))
-            ename = h.digest()
-            h.update(b''.join(efulls))
-            efull = h.digest()
-
-          return (result, cname, cfull, ename, efull)
+          return (result, name, full)
         
         memo[key] = result_and_digests
 
       @coflow.after(dict.__getitem__, memo, key)
       def answer(result_and_digests):
-        result, cname, cfull, ename, efull = answer = result_and_digests.value()
-        TraceShadow.emit(tr_id, args, kws, key, cname, cfull, ename, efull)
+        result, name, full = answer = result_and_digests.value()
+        TraceShadow.emit(tr_id, args, kws, key, name, full)
         return answer
       return answer
 
-    @digest.by_name(traced_hash_digest)
+    @digest.by_given_name(traced_hash_digest)
     def proxy(*args, **kws):
       @coflow.after(result_and_digests, args, kws)
       def result(result_and_digests):
-        result, cname, cfull, ename, efull = result_and_digests.value()
+        result, name, full = result_and_digests.value()
         value = result.value() # might explode
         return value.value if type(value) is Named else value
       return result
     
-    @digest.by_name(traced_hash_digest)
+    @digest.by_given_name(traced_hash_digest)
     def as_named(*args, **kws):
       @coflow.after(result_and_digests, args, kws)
       def result(result_and_digests):
-        result, cname, cfull, ename, efull = result_and_digests.value()
+        result, name, full = result_and_digests.value()
         return Named(result.value())
       return result
 
@@ -568,16 +543,15 @@ def _everything():
     def depend_apath_result_and_digests():
       dummy = coflow_Result(None)
       def depend_apath_result_and_digests(apath, _):
-        cname, cfull = query_file_digests(apath)
-        TraceShadow.emit('#apath', apath, None, ('#apath', apath), cname, cfull, zero, zero)
-        return (dummy, cname, cfull, zero, zero)
+        name, full = query_file_digests(apath)
+        TraceShadow.emit('#apath', apath, None, ('#apath', apath), name, full)
+        return (dummy, name, full)
       return depend_apath_result_and_digests
     depend_apath_result_and_digests = depend_apath_result_and_digests()
     
     builtin_traces['#apath'] = depend_apath_result_and_digests
     
     @export
-    @digest.by_name
     def depend_file(*paths):
       for p in paths:
         apath = os_path_abspath(p)
@@ -585,21 +559,6 @@ def _everything():
         if not opsys.path_within_any(apath, path_art):
           depend_apath_result_and_digests(apath, None)
   
-  if 1: # depend_fact
-    def depend_fact_result_and_digests(factdict, _):
-      efull = digest_of(factdict)
-      TraceShadow.emit('#fact', factdict, None, ('#fact', efull), zero, zero, efull, efull)
-      return (coflow_Result(None), zero, zero, efull, efull)
-    
-    builtin_traces['#fact'] = depend_fact_result_and_digests
-    
-    @export
-    @digest.by_name
-    def depend_fact(tag=None, val=None, **kws):
-      if tag is not None:
-        kws[tag] = val
-      depend_fact_result_and_digests(kws, None)
-
   if 1: # env
     def env_result_and_digests():
       memo = {}
@@ -643,11 +602,11 @@ def _everything():
             val = s
           
           full = digest_of(name, default, val)
-          memo[key] = (coflow_Result(val), full, full, zero, zero)
+          memo[key] = (coflow_Result(val), full, full)
 
         ans = memo[key]
         full = ans[1]
-        TraceShadow.emit('#env', name, default, ('#env', key), full, full, zero, zero)
+        TraceShadow.emit('#env', name, default, ('#env', key), full, full)
         return ans
 
       return env_result_and_digests
@@ -672,13 +631,12 @@ def _everything():
           brutal.error('Env var "{0}" must be one of: {1}'.format(name, ', '.join(map(str,universe))))
 
         return value
-    
+
+    # poor man's digest.by_name()
     brutal.env = globals()['env'] = Env()
-    # prevent deep hashing
     brutal.env._brutal_digest_memo = b'H\x97\xd4\x14DQ\x9b\xaf\xea=\xfa\x18\x9c\xfa\xc5\x92\x8f\xe0\x04\x84D'
   
   @export
-  @digest.by_name
   def mkpath(suffix=''):
     _, suffix = os.path.split(suffix)
     suffix = re.sub('^[0-9a-f]+%', '', suffix)
@@ -698,7 +656,6 @@ def _everything():
   all_temps = set()
   
   @export
-  @digest.by_name
   def mktemp(me, *mkstemp_args, **mkstemp_kws):
     import tempfile
     fd, path = tempfile.mkstemp(*mkstemp_args, **mkstemp_kws)
@@ -708,7 +665,6 @@ def _everything():
     return path
   
   @export
-  @digest.by_name
   def mkstemp(me, *mkstemp_args, **mkstemp_kws):
     import tempfile
     fd, path = tempfile.mkstemp(*mkstemp_args, **mkstemp_kws)
@@ -716,7 +672,6 @@ def _everything():
     return fd, path
   
   @export
-  @digest.by_name
   def mkdtemp(me):
     import tempfile
     path = tempfile.mkdtemp()
@@ -724,7 +679,6 @@ def _everything():
     return path
   
   @export
-  @digest.by_name
   def memoized(memo_fn):
     @coflow.coroutine
     @digest.by_other(memo_fn)
@@ -738,7 +692,6 @@ def _everything():
       tip = db.tree
       name = full = digest_of(memo_fn, memo_args, memo_kws)
       log = [(None, None, None, name, full)] # [(fn_id, arg1, arg2, name, full),...]
-      do_prune = False
 
       prev_node = None
       node = None
@@ -752,7 +705,6 @@ def _everything():
           if node is not None:
             if node[0] == 1:
               panic('brutal internal error: Same trace and instance generated different full hashes.')
-            do_prune = True
 
           if DEBUG:
             tr_name = ('<root call>',)
@@ -761,9 +713,8 @@ def _everything():
               if type(tr_name) is tuple:
                 tr_name = tr_name[0]
               tr_name = (tr_name, db_dedup_decode(prev_node[3]), db_dedup_decode(prev_node[4]))
-            (debug_trace('replay MISS in',memo_fn.__name__, memo_args)
-                .subline(*(('traced fn id:',) + tr_name))
-            )
+            (debug_trace('memoized',memo_fn.__name__, memo_args)
+              .subline(*(('replay MISS fn:',) + tr_name + ('prune=',node is not None))))
           
           break # jump to execute
           
@@ -775,8 +726,6 @@ def _everything():
           
         elif tag in (2,3):
           db_lock_release()
-          
-          #print('\n\nmemo result',memo_fn.__name__,memo_args)
           if tag == 2:
             _, _, res_vals, res_kws, _ = node
             res_vals = db_dedup_decode(res_vals)
@@ -796,22 +745,20 @@ def _everything():
           tr_result_and_digests = decode_fn_id(tr_id)
           
           if tr_result_and_digests is None:
-            do_prune = True
             break
           
           db_lock_release()
           
-          #if memo_fn.__name__ == 'executable':
-          #  print('\ntraced',tr_id,arg1,arg2)
-
-          _, cname, cfull, ename, efull = yield tr_result_and_digests(arg1, arg2)
-          name, full = tree_digests(cname, cfull, ename, efull)
+          _, name, full = yield tr_result_and_digests(arg1, arg2)
+          
+          DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+            .subline('replay',tr_id,arg1,arg2,'name=',name,'full=',full))
           
           db_lock_release = yield db.lock.acquire()
           tip = tip1
           log.append((tr_id, arg1, arg2, name, full))
       
-      if do_prune:
+      if node is not None:
         # commit prune record to file
         db_append_record(DB_TAG_PRUNE, tuple(zip(*log))[3])
         
@@ -824,16 +771,25 @@ def _everything():
           elif tag == 1:
             panic('brutal internal error: Same trace and instance generated different full hashes.')
           elif tag == 2:
+            DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+              .subline('artset pruned', node[4])
+            )
             for art_id in node[4]:
               if art_id not in db.arts:
                 panic('brutal internal error: assert art_id in db.arts')
               suf, refn = db.arts[art_id]
+              path_art = artifact_path(art_id, suf)
               if refn != 1:
+                DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+                  .subline('art decref', path_art)
+                )
                 db.arts[art_id] = (suf, refn-1)
               else:
+                DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+                  .subline('art pruned',path_art)
+                )
                 del db.arts[art_id]
                 suf = db_dedup_decode(suf)
-                path_art = artifact_path(art_id, suf)
                 opsys_rmtree(path_art)
         
         prune_arts(node)
@@ -847,15 +803,12 @@ def _everything():
 
       inserter_state = [tip, name, full]
       def inserter(rec):
-        fn_id, arg1, arg2, _, cname, cfull, ename, efull = rec
-        name1, full1 = tree_digests(cname, cfull, ename, efull)
+        fn_id, arg1, arg2, _, name1, full1 = rec
         
-        if fn_id == '#fact':
-          panic('`brutal.depend_fact` can only be called within a traced function.')
+        DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+          .subline('insert',fn_id,arg1,arg2,'name=',name1,'full=',full1)
+        )
 
-        #if fn_id=='#env':
-        #  print('insert',fn_id,arg1,arg2)
-        
         log.append((fn_id, arg1, arg2, name1, full1))
         
         tip0, name0, full0 = inserter_state
@@ -884,16 +837,16 @@ def _everything():
 
       tip, name, full = inserter_state
 
-      cfull = digest_of(result)
-      
       # finish tree
       db_lock_release = yield db.lock.acquire()
       db.pending_n -= 1
       #print('pending--',memo_fn.__name__,memo_args)
       
-      _, _, _, name, full = log[-1]
+      DEBUG and (debug_trace('memoized',memo_fn.__name__, memo_args)
+          .subline('finish','success=',isinstance(result, coflow_Result),'arts=',arts)
+        )
+      
       _, _, subtree_changed = tip[name]
-
       name = db_dedup_encode(name)
       full = db_dedup_encode(full)
       

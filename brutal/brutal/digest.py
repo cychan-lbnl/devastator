@@ -13,9 +13,8 @@ def _everything():
   import sys
   import types
 
-  if __name__ != '__main__':
-    from . import coflow
-    import brutal
+  from . import coflow
+  import brutal
 
   from .panic import panic, panic_unless, PanicError
   
@@ -40,39 +39,46 @@ def _everything():
   import os
   stdlib_dir = os.path.dirname(os.__file__) + os.path.sep
   sys_modules = sys.modules
+
+  by_name_types = (types.FunctionType, type)
+
+  def exporter(submodule_globals):
+    brutal_dict = brutal.__dict__
+    def export(obj, name=None):
+      if type(obj) in by_name_types:
+        name = name or obj.__name__
+        h = hashlib_sha1()
+        h.update(b'name(%r,%r)' % (obj.__module__, name))
+        obj._brutal_digest_memo = b'H' + h.digest()
+      submodule_globals[name] = obj
+      brutal_dict[name] = obj
+      return obj
+    return export
+
+  export = exporter(globals())
+  export(exporter)
   
-  def export(fn):
-    globals()[fn.__name__] = fn
-    if __name__ != '__main__':
-      brutal.__dict__[fn.__name__] = fn
+  @export
+  def by_given_name(salt):
+    def fn(fn_or_ty):
+      h = hashlib_sha1()
+      h.update(b'nameg(%r)' % salt)
+      fn_or_ty._brutal_digest_memo = b'H' + h.digest()
+      return fn_or_ty
     return fn
   
   @export
-  def by_name(*xs):
-    if len(xs) != 1 or isinstance(xs[0], (str, bytes)):
-      def fn(f):
-        panic_unless(type(f) in (types.FunctionType, type))
-        h = hashlib_sha1()
-        h.update(b'names(%r)' % (xs,))
-        f._brutal_digest_memo = b'H' + h.digest()
-        return f
-      return fn
-    else:
-      f = xs[0]
-      panic_unless(type(f) in (type, types.FunctionType))
-      h = hashlib_sha1()
-      f_name = f.__name__
-      f_mod = f.__module__
-      h.update(b'name(%r,%r)' % (f_mod, f_name))
-      f._brutal_digest_memo = b'H' + h.digest()
-      return f
-
+  def by_name(fn_or_ty):
+    h = hashlib_sha1()
+    h.update(b'name(%r,%r)' % (fn_or_ty.__module__, fn_or_ty.__name__))
+    fn_or_ty._brutal_digest_memo = b'H' + h.digest()
+    return fn_or_ty
+  
   destructurers = {}
   get_destructurer = destructurers.get
   default_destructurer = None # definition down below
   
   @export
-  @by_name
   def destructurer(ty):
     panic_unless(type(ty) is type)
     def register(fn):
@@ -81,7 +87,6 @@ def _everything():
     return register
   
   @export
-  @by_name
   def digest_sum(*xs):
     c = 0
     for x in xs:
@@ -93,7 +98,6 @@ def _everything():
     return unhexlify(c)
 
   @export
-  @by_name
   def digest_subtract(a, b):
     a = int(hexlify(a), 16)
     b = int(hexlify(b), 16)
@@ -105,7 +109,6 @@ def _everything():
     return unhexlify(c)
   
   @export
-  @by_name
   def indigestible_destructurer(x, buf, work):
     name = getattr(x, '__name__', '')
     if name:
@@ -113,7 +116,6 @@ def _everything():
     raise TypeError('Cannot digest value of type: '+str(type(x))+name)
 
   @export
-  @by_name
   def indigestible_type(ty):
     try: by_name(ty)
     except TypeError: pass
@@ -124,13 +126,11 @@ def _everything():
     pass
   
   @export
-  @by_name
   def indigestible_function(fn):
     fn._brutal_digest_memo = IndigestibleFunctionError()
     return fn
   
   @export
-  @by_name
   def by_other(other):
     def annotator(ty_or_fn):
       panic_unless(type(ty_or_fn) in (type, types.FunctionType))
@@ -150,7 +150,9 @@ def _everything():
     leaf_singletons[(i, int)] = chr(ord('0') + i).encode()
 
   persistent_memo_types = ()
-  counter = [0]
+
+  debugging = [0]
+  globals()['debugging'] = debugging
 
   def _ingest(hasher, values, buf=None, memo_map=None):
     try:
@@ -167,10 +169,6 @@ def _everything():
       memo_map = memo_map or {} # memo_map[id(x)] = (x, buf_begin_ix, buf_end_ix) | (x, bytes)
       memo_log = array('Q', []) # [id(value)]
       memo_log_append = memo_log.append
-      
-      if counter[0]:
-        print('ingest begin', counter)
-        counter[0]+=1
       
       while work_stack:
         val = work_stack_pop()
@@ -242,7 +240,7 @@ def _everything():
           if open_levs <= cy_lev:
             buf_len = len(buf)
             
-            if buf_len - buf_ix < 256:
+            if debugging[0] or buf_len - buf_ix < 256:
               memo_map[val_id] = (val, buf_ix, buf_len)
             else:
               h1 = hashlib_sha1()
@@ -268,7 +266,7 @@ def _everything():
             memo_log[memo_ix] = 0 # indicate that it wasn't memo'd
             if open_stack[-3] > cy_lev: # max parent's cycle depth with ours
               open_stack[-3] = cy_lev
-      
+
       if buf_origin:
         buf_mem = memoryview(buf)
         hasher.update(buf_mem[buf_origin:])
@@ -276,20 +274,31 @@ def _everything():
       else:
         hasher.update(buf)
       
-      if counter[0]:
-        print('ingest done')
-      
       return hasher
+      
     except Exception as e:
       raise PanicError() from e
 
   @export
-  @by_name
+  def debug_bytes_of(*values):
+    class ByteGrab(object):
+      def __init__(me):
+        me._b = bytearray()
+      def update(me, x):
+        me._b += x
+      def digest(me):
+        return bytes(me._b)
+    
+    debugging[0] = 1
+    ans = _ingest(ByteGrab(), values).digest()
+    debugging[0] = 0
+    return ans
+
+  @export
   def ingest(hasher, *values):
     return _ingest(hasher, values)
 
   @export
-  @by_name
   def digest_of(*values):
     """
     Produce a SHA1 digest of the given values.
@@ -297,7 +306,6 @@ def _everything():
     return _ingest(hashlib_sha1(), values).digest()
 
   @export
-  @by_name
   def hexdigest_of(*values):
     """
     Produce a SHA1 digest of the given values.
@@ -305,20 +313,11 @@ def _everything():
     return _ingest(hashlib_sha1(), values).hexdigest()
 
   @export
-  @by_name
   def digests_of(*values):
     buf = bytearray()
     memo_map = {}
     return [_ingest(hashlib_sha1(), (x,), buf, memo_map).digest() for x in values]
 
-  @export
-  @by_name
-  def digests_of_run(*values):
-    h = hashlib_sha1()
-    buf = bytearray()
-    memo_map = {}
-    return [_ingest(h, (x,), buf, memo_map).digest() for x in values]
-  
   @destructurer(list)
   def de(x, buf, work):
     if x:
@@ -558,7 +557,6 @@ def _everything():
       work += mbrs
 
   @export
-  @by_name
   def default_destructurer(x, buf, work):
     ty = type(x)
     ty_mod = ty.__module__

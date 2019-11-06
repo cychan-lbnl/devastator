@@ -7,20 +7,9 @@ def _everything():
   import sys
 
   import brutal
-
-  def by_name(x):
-    import hashlib
-    h = hashlib.sha1()
-    x_name = x.__name__
-    x_mod = x.__module__
-    h.update(('fn-name.%x.%x.%s%s' % (len(x_mod), len(x_name), x_mod, x_name)).encode('utf-8'))
-    x._brutal_digest_memo = h.digest()
-    return x
+  from . import digest
   
-  def export(obj):
-    globals()[obj.__name__] = obj
-    brutal.__dict__[obj.__name__] = obj
-    return by_name(obj)
+  export = digest.exporter(globals())
   
   RESET = '\x1b[0m'
   RED = '\x1b[31m'

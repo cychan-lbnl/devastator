@@ -13,12 +13,8 @@ def _everything():
   import brutal
   from . import digest
   from .panic import panic, panic_unless, PanicError
-  
-  def export(obj, name=None):
-    name = name or obj.__name__
-    globals()[name] = obj
-    brutal.__dict__[name] = obj
-    return obj
+
+  export = digest.exporter(globals())
   
   BaseException = builtins.BaseException
   dict = builtins.dict
@@ -41,7 +37,6 @@ def _everything():
   the_empty_dict = {}
 
   @export
-  @digest.by_name
   class Job(object):
     def __init__(me):
       me._cancelled = False
@@ -66,7 +61,6 @@ def _everything():
   export(concurrency_limit, 'concurrency_limit')
 
   @export
-  @digest.by_name
   def submit_job(job):
     ans = Promise()
     if len(jobs_launched) <= concurrency_limit:
@@ -258,7 +252,6 @@ def _everything():
       if fu is None: return
   
   @export
-  @digest.by_name
   class Shadow(object):
     def key_of(me, rec):
       return rec
@@ -287,7 +280,6 @@ def _everything():
       return flat, fu._shadows_changed(fush or the_empty_dict)
 
   @export
-  @digest.by_name
   def effect(sh, fn, keep_shadows):
     seen_trees = {}
     seen_keys = {}
@@ -321,7 +313,6 @@ def _everything():
     return consume
         
   @export
-  @digest.by_name
   class Future(object):
     """
     The base class for all future-like types. Futures represent an
@@ -412,7 +403,6 @@ def _everything():
       return wait(me)
   
   @export
-  @digest.by_name
   class Result(Future):
     """
     Future subclass representing a final-state positional value list
@@ -477,7 +467,6 @@ def _everything():
     work += (x._val_seq, x._val_kws)
   
   @export
-  @digest.by_name
   class Failure(Future):
     """
     Future subclass representing a final state exceptional value raised
@@ -491,6 +480,8 @@ def _everything():
       traceback. If `traceback` is absent or None, then it will be
       initialized to the current traceback in `sys.exc_info()`.
       """
+      panic_unless(isinstance(exception, BaseException), 'Not an exception: %r'%exception)
+      
       me._done = True
       me._result = me
       me._shadows = dict(top[0]) or the_empty_dict
@@ -618,7 +609,6 @@ def _everything():
       me._fire = fire1
 
   @export
-  @digest.by_name
   def mbind(*args, **kws):
     """
     Futurize the given arguments, when they are ready apply the decorated
@@ -639,7 +629,6 @@ def _everything():
     return proxy
   
   @export
-  @digest.by_name
   def mbind_wrapped(*args, **kws):
     """
     Futurize the given arguments, when that future is ready apply the
@@ -725,7 +714,6 @@ def _everything():
       me._fire = fire
 
   @export
-  @digest.by_name
   def coroutine(fn):
     """
     Convert the given generator function `fn` into a coroutine. The
@@ -747,7 +735,7 @@ def _everything():
     fn1.__wrapped__ = fn
     return fn1
 
-  @digest.by_name
+  @export
   @coroutine
   def when_all(*args, **kws):
     args1 = []
@@ -761,7 +749,6 @@ def _everything():
     yield Result(*args1, **kws1)
 
   @export
-  @digest.by_name
   def futurize(*args, **kws):
     """
     Wrap and collect the given function arguments into a single returned
@@ -789,7 +776,6 @@ def _everything():
     return when_all(*args, **kws)
   
   @export
-  @digest.by_name
   def wrapped(fn, *args, **kws):
     """
     Immediately evaluate `fn(*args,**kws)`. If it returns a future
@@ -806,7 +792,6 @@ def _everything():
     return ans
 
   @export
-  @digest.by_name
   def after(before, *args, **kws):
     def proxy(aft):
       try:
@@ -856,7 +841,6 @@ def _everything():
       enter_done(me, shs, dep)
   
   @export
-  @digest.by_name
   def capture_effects(effects, fn, *args, **kws):
     captures = set(e.shadow for e in effects)
     def proxy(aft):
@@ -867,9 +851,9 @@ def _everything():
       try:
         ans = fn(*args, **kws)
       except Exception as e:
-        for e in effects:
-          if not e.keep_shadows:
-            new_sh.pop(e.shadow, None)
+        for ef in effects:
+          if not ef.keep_shadows:
+            new_sh.pop(ef.shadow, None)
         ans = Failure(e) # captures new_sh as shadows from top
         top[:] = (old_sh, old_effs)
         return aft(ans)
@@ -965,7 +949,6 @@ def _everything():
   def ignore(_): pass
   
   @export
-  @digest.by_name
   def memoized(fn):
     memo = {}
     shs = Result()

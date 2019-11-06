@@ -24,11 +24,7 @@ def _everything():
   from . import noiselog
   from .panic import panic, panic_unless
   
-  def export(obj):
-    globals()[obj.__name__] = obj
-    brutal.__dict__[obj.__name__] = obj
-    digest.by_name(obj)
-    return obj
+  export = digest.exporter(globals())
 
   class Job(coflow.Job):
     def __init__(me, go):
