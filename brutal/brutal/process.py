@@ -81,11 +81,12 @@ def _everything():
           io_cond.wait()
           continue
         
-        io_cond.release()
-        
         fds_r = list(io_r.keys())
         fds_w = list(io_w.keys())
+
+        io_cond.release()
         fds_r, fds_w, _ = select.select(fds_r, fds_w, [])
+        io_cond.acquire()
         
         for fd in fds_r:
           try:
@@ -96,8 +97,8 @@ def _everything():
           chks, outname, job = io_r[fd]
           
           if len(buf) == 0:
-            os.close(fd)
             del io_r[fd]
+            os.close(fd)
             job.outputs[outname] = b''.join(chks).decode()
             job.satisfy()
           else:
@@ -108,11 +109,10 @@ def _everything():
           if len(rev_bufs) != 0:
             os.write(fd, rev_bufs.pop())
           if len(rev_bufs) == 0:
-            os.close(fd)
             del io_w[fd]
+            os.close(fd)
             job.satisfy()
 
-        io_cond.acquire()
       io_cond.release()
 
     except BaseException:
