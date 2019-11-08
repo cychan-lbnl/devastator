@@ -47,9 +47,12 @@ void bounce(rng_state rng) {
   if(terminating)
     return;
 
-  uint8_t x = rng() % 256;
-  for(int i=0; i < kbs_per_rank<<10; i++)
-    state[i] ^= x + state[i^x];
+  unsigned x = rng() % 256;
+  for(int i=0; i < kbs_per_rank; i++) {
+    int j = rng()%(kbs_per_rank<<10);
+    x += state[j];
+    state[j] ^= x;
+  }
 
   int dst = rng() % deva::rank_n;
   tot_send_n += 1;
@@ -95,11 +98,17 @@ int main() {
       
       deva::progress();
 
-      uint8_t x = rng1() % 256;
+      unsigned x = rng1() % 256;
       for(int i=0; i < false_misses; i++) {
         int j = rng1() % (128<<10);
         x ^= hugeness[j];
-        hugeness[j] = x;
+        hugeness[j] = uint8_t(x);
+      }
+
+      for(int i=0; i < (1024/64)*kbs_per_rank; i++) {
+        int j = rng1() % (kbs_per_rank<<10);
+        x += state[j];
+        state[j] ^= x;
       }
     }
 
