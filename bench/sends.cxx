@@ -38,10 +38,19 @@ thread_local int64_t tot_send_n = 0;
 thread_local int64_t tot_recv_n = 0;
 thread_local bool terminating = false;
 
+thread_local std::unique_ptr<uint8_t[]> state;
+std::unique_ptr<uint8_t[]> hugeness;
+int kbs_per_rank;
+int false_misses;
+
 void bounce(rng_state rng) {
   if(terminating)
     return;
-  
+
+  uint8_t x = rng() % 256;
+  for(int i=0; i < kbs_per_rank<<10; i++)
+    state[i] ^= x + state[i^x];
+
   int dst = rng() % deva::rank_n;
   tot_send_n += 1;
   deva::send(dst, [=]() {
@@ -52,17 +61,25 @@ void bounce(rng_state rng) {
 
 int main() {
   auto doit = [&]() {
-    int ray_per_rank = deva::os_env<int>("ray_per_rank", 100);
+    int msg_per_rank = deva::os_env<int>("msg_per_rank", 100);
 
-    if(deva::rank_me() == 0)
+    if(deva::rank_me() == 0) {
+      kbs_per_rank = deva::os_env<int>("kbs_per_rank", 1);
+      false_misses = deva::os_env<int>("false_misses", 0);
       cutoff = deva::os_env<double>("wall_secs", 10);
+
+      hugeness.reset(new uint8_t[128<<10]());
+    }
     
     deva::barrier();
-    
+
+    state.reset(new uint8_t[kbs_per_rank<<10]());
     begun.reset();
     
+    deva::barrier();
+
     rng_state rng1(deva::rank_me());
-    for(int r=0; r < ray_per_rank; r++) {
+    for(int r=0; r < msg_per_rank; r++) {
       rng_state rng2(rng1());
       bounce(rng2);
     }
@@ -77,6 +94,13 @@ int main() {
       }
       
       deva::progress();
+
+      uint8_t x = rng1() % 256;
+      for(int i=0; i < false_misses; i++) {
+        int j = rng1() % (128<<10);
+        x ^= hugeness[j];
+        hugeness[j] = x;
+      }
     }
 
     //deva::say()<<"local terminated";
@@ -97,7 +121,9 @@ int main() {
     if(deva::rank_me()==0) {
       deva::bench::report rep(__FILE__);
       rep.emit(
-        deva::datarow::x("ray_per_rank", ray_per_rank) &
+        deva::datarow::x("msg_per_rank", msg_per_rank) &
+        deva::datarow::x("kbs_per_rank", kbs_per_rank) &
+        deva::datarow::x("false_misses", false_misses) &
         deva::datarow::y("send_per_rank_per_sec", tot_send_n/wall_secs/rank_n)
       );
     }
