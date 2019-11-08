@@ -120,14 +120,16 @@ def _everything():
   
   path_cwd = os.getcwd()
   path_site = os.environ.get('BRUTAL_SITE', '') or path_cwd
-  path_db = os_path_join(path_site, '.brutal', 'db')
-  path_art = os_path_join(path_site, '.brutal', 'art')
+  path_dot_brutal = os_path_join(path_site, '.brutal')
+  path_db = os_path_join(path_dot_brutal, 'db')
+  path_art = os_path_join(path_dot_brutal, 'art')
   
   @digest.by_name
   def artifact_path(art_id, suf):
     suf = suf.replace('%','@')
     return os_path_join(path_art, '%x%%%s'%(art_id, suf))
   
+  DB_MAGIC = b'BRUTAL001\n'
   DB_TAG_BRANCH = 0
   DB_TAG_PRUNE = 1
   DB_TAG_FILE_DIGEST = 2
@@ -164,22 +166,32 @@ def _everything():
     db.quiesced = db.lock.make_condition(lambda: db.pending_n == 0)
     db.rule_files_seen = set()
     
-    try: os.makedirs(path_art)
-    except OSError: pass
-
     from . import rulefile
     
     db.dedup_decode = dedup.make_decoder({})
 
-    if not opsys.exists(path_db):
-      with open(path_db, 'wb') as f:
-        pickle.dump(rulefile.imported_files, f, protocol=2)
-        pickle.dump((db.dedup_encoder_table, db.tree, db.files, db.art_id_bump, db.arts), f, protocol=2)
+    try:
+      db_file = open(path_db, 'rb')
+      if db_file.read(len(DB_MAGIC)) != DB_MAGIC:
+        db_file.close()
+        opsys_rmtree(path_dot_brutal)
+        db_file = None
+    except FileNotFoundError:
+      db_file = None
+    
+    if db_file is None:
+      try: os.makedirs(path_art)
+      except OSError: pass
+      
+      with open(path_db, 'wb') as db_file:
+        db_file.write(DB_MAGIC)
+        pickle.dump(rulefile.imported_files, db_file, protocol=2)
+        pickle.dump((db.dedup_encoder_table, db.tree, db.files, db.art_id_bump, db.arts), db_file, protocol=2)
       db.dedup_encode = dedup.make_encoder(db.dedup_encoder_table)
       db.size_head = 0
       db.size_tail = 0
     else:
-      with open(path_db, 'rb') as f:
+      with db_file as f:
         pickle_load = pickle.load
 
         rule_files = pickle_load(f)
@@ -340,6 +352,7 @@ def _everything():
         sys.setrecursionlimit(1<<20)
         with open(path_db, 'wb') as f:
           try:
+            f.write(DB_MAGIC)
             pickle.dump(rulefile.imported_files, f, protocol=2)
             pickle.dump((db.dedup_encoder_table, db.tree, db.files, db.art_id_bump, db.arts), f, protocol=2)
           except TypeError:

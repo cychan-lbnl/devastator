@@ -188,21 +188,7 @@ def discovery(main_src):
 
 @brutal.rule(caching='file')
 @brutal.coroutine
-def linked_binary(name, cxt, objs):
-  ld = cxt.compiler()
-  ld_flags = cxt.ld_flags()
-  lib_flags = cxt.lib_flags()
-  
-  exe = brutal.mkpath(name + '.exe')
-  cmd = ld + ld_flags + ['-o',exe] + sorted(objs) + lib_flags
-  yield brutal.process(cmd)
-  yield exe
-
-@brutal.rule(caching='file', cli='exe')
-@brutal.coroutine
-def executable(PATH):
-  srcs, cxt_big = yield discovery(PATH)
-
+def compile_and_link(name, srcs, cxt_big):
   objs = {}
   for src in srcs:
     cxt = srcs[src]
@@ -213,4 +199,17 @@ def executable(PATH):
     objs[src] = yield objs[src]
   objs = frozenset(objs.values())
 
-  yield linked_binary(PATH, cxt_big, objs)
+  ld = cxt_big.compiler()
+  ld_flags = cxt_big.ld_flags()
+  lib_flags = cxt_big.lib_flags()
+  
+  exe = brutal.mkpath(name + '.exe')
+  cmd = ld + ld_flags + ['-o',exe] + sorted(objs) + lib_flags
+  yield brutal.process(cmd)
+  yield exe
+
+@brutal.rule(caching='file', cli='exe')
+@brutal.coroutine
+def executable(PATH):
+  srcs, cxt_big = yield discovery(PATH)
+  yield compile_and_link(PATH, srcs, cxt_big)
