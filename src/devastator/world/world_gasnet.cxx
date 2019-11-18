@@ -60,7 +60,6 @@ namespace {
   void master_pump();
 
   struct remote_in_messages: threads::message {
-    int header_size;
     int count;
   };
 }
@@ -106,7 +105,7 @@ void deva::run(upcxx::detail::function_ref<void()> fn) {
         }
       #endif
       
-      threads::barrier(/*deaf=*/true);
+      threads::barrier(nullptr/*like deaf*/);
     }
 
     if(tme == 0) {
@@ -172,40 +171,41 @@ namespace {
 }
 
 namespace {
-  bool burst_remote_recv(bool deaf) {
+  void burst_remote_recv(deva::threads::progress_state &ps) {
     int tme = threads::thread_me();
-    bool did_something = deva::remote_send_chan_w[tme].steward();
-    
-    if(!deaf) {
-      did_something |= deva::remote_recv_chan_r[tme].receive(
-        [](threads::message *m) {
-          auto *ms = static_cast<remote_in_messages*>(m);
-          
-          serialization_reader r(ms);
-          r.unplace(ms->header_size, 1);
-          
-          int n = ms->count;
-          while(n--) {
-            r.unplace(0, 8);
-            command::execute(r);
-          }
-        }
-      );
-    }
 
-    return did_something;
+    deva::remote_send_chan_w[tme].reclaim(ps);
+    
+    ps.did_something |= deva::remote_recv_chan_r[tme].receive(
+      [](threads::message *m) {
+        auto *ms = static_cast<remote_in_messages*>(m);
+        
+        serialization_reader r(ms);
+        r.unplace(sizeof(remote_in_messages), 1);
+        
+        int n = ms->count;
+        while(n--) {
+          r.unplace(0, 8);
+          command::execute(r);
+        }
+      },
+      ps.epoch_bumped, ps.epoch_old
+    );
   }
 }
 
-void deva::progress(bool spinning, bool deaf) {
-  bool did_something = threads::progress(deaf);
-
-  did_something |= burst_remote_recv(deaf);
+void deva::progress(bool spinning) {
+  threads::progress_state ps;
+  do {
+    threads::progress_begin(ps);
+    burst_remote_recv(ps);
+    threads::progress_end(ps);
+  } while(ps.backlogged);
   
   #if GASNET_CONDUIT_SMP || GASNET_CONDUIT_UDP
     static thread_local int nothings = 0;
     
-    if(!spinning || did_something)
+    if(!spinning || ps.did_something)
       nothings = 0;
     else if(++nothings == 10) {
       nothings = 0;
@@ -234,10 +234,12 @@ void deva::barrier(bool deaf) {
   
   wbar_l_.begin(wbar_g_, wme);
 
-  while(!wbar_l_.try_end(wbar_g_, wme))
-    deva::progress(/*spinning=*/true, deaf);
-
-  uint64_t e = wbar_l_.epoch64();
+  while(!wbar_l_.try_end(wbar_g_, wme)) {
+    if(!deaf)
+      deva::progress(/*spinning=*/true);
+  }
+  
+  uint64_t e = wbar_l_.epoch();
 
   if(wme == 0) {
     threads::send(0, [=]() {
@@ -246,8 +248,10 @@ void deva::barrier(bool deaf) {
     });
   }
 
-  while(bigbar_epoch_.load(std::memory_order_relaxed) != e)
-    deva::progress(/*spinning=*/true, deaf);
+  while(bigbar_epoch_.load(std::memory_order_relaxed) != e) {
+    if(!deaf)
+      deva::progress(/*spinning=*/true);
+  }
 }
 
 void deva::bcast_remote_sends_(int proc_root, void const *cmd, size_t cmd_size) {
@@ -315,7 +319,7 @@ namespace {
     int32_t offset8;
   };
   
-  struct alignas(8) remote_in_chunked_message: remote_in_messages {
+  struct alignas(8) remote_in_chunked_message: threads::message {
     int proc_from;
     uint32_t nonce;
     int thread;
@@ -353,12 +357,9 @@ namespace {
         size_t offset = 8*size_t(hdr.offset8);
         
         if(m == nullptr) {
-          void *mem = operator new(sizeof(remote_in_chunked_message) + total_size);
-          m = new(mem) remote_in_chunked_message;
+          void *mem = ::operator new(sizeof(remote_in_chunked_message) + total_size);
+          m = ::new(mem) remote_in_chunked_message;
           DEVA_ASSERT_ALWAYS((void*)m == mem);
-          
-          m->header_size = sizeof(remote_in_chunked_message);
-          m->count = 1;
           
           m->proc_from = proc_from;
           m->nonce = hdr.nonce;
@@ -367,11 +368,17 @@ namespace {
         }
         
         std::memcpy((char*)(m+1) + offset, r.unplace(part_size, 8), part_size);
-
+        
         m->waiting_size8 -= hdr.part_size8;
         
         if(m->waiting_size8 == 0) {
-          deva::remote_recv_chan_w.send(thread, m);
+          threads::send(thread, [m]() {
+            serialization_reader r(m);
+            r.unplace(sizeof(remote_in_chunked_message), 1);
+            r.unplace(0, 8);
+            command::execute(r);
+            ::operator delete(m);
+          });
           m = nullptr; // removes m from table
         }
         return m;
@@ -403,11 +410,10 @@ namespace {
         auto ub = upcxx::storage_size_of<remote_in_messages>()
                   .cat(size, 8);
         
-        void *buf = operator new(ub.size);
+        void *buf = threads::alloc_message(ub.size, 8);
         upcxx::detail::serialization_writer</*bounded=*/true> w(buf);
-
+        
         auto *m = w.place_new<remote_in_messages>();
-        m->header_size = sizeof(remote_in_messages);
         m->count = hdr.middle_msg_n;
 
         std::memcpy(w.place(size, 8), r.unplace(size, 8), size);
@@ -442,14 +448,16 @@ namespace {
     
     while(!leave_pump.load(std::memory_order_relaxed)) {
       gasnet_AMPoll();
+
+      threads::progress_state ps;
+
+      threads::progress_begin(ps);
       
-      bool did_something = threads::progress();
+      deva::remote_recv_chan_w.reclaim(ps);
       
-      did_something |= deva::remote_recv_chan_w.steward();
+      burst_remote_recv(ps);
       
-      did_something |= burst_remote_recv(false);
-      
-      did_something |= deva::remote_send_chan_r[0].receive_batch(
+      ps.did_something |= deva::remote_send_chan_r[0].receive_batch(
         // lambda called to receive each message
         [&](threads::message *m) {
           auto *rm = static_cast<remote_out_message*>(m);
@@ -644,12 +652,15 @@ namespace {
               gasnet_AMPoll();
             }
           }
-        }
+        },
+        ps.epoch_bumped, ps.epoch_old
       );
-      
+
+      threads::progress_end(ps);
+    
       static thread_local int consecutive_nothings = 0;
 
-      if(did_something)
+      if(ps.did_something)
         consecutive_nothings = 0;
       else if(++consecutive_nothings == 10) {
         consecutive_nothings = 0;

@@ -41,7 +41,7 @@ namespace deva {
   constexpr int process_rank_lo(int proc = process_me());
   constexpr int process_rank_hi(int proc = process_me());
   
-  void progress(bool spinning=false, bool deaf=false);
+  void progress(bool spinning=false);
 
   void barrier(bool deaf=false);
   

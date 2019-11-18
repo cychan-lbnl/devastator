@@ -11,13 +11,15 @@ using deva::rank_me;
 
 __thread bool done = false;
 
+constexpr int round_end = 500;
+
 void bounce(int round) {
-  //deva::say()<<"bounce "<<round;
+  //if(round%100 == 0) deva::say()<<"bounce "<<round;
   
-  if(round >= 50)
+  if(round >= round_end)
     done = true;
     
-  if(round < 50 + rank_n) {
+  if(round < round_end + rank_n) {
     deva::send((rank_me()+1)%rank_n,
       [=]() {
         bounce(round+1);
@@ -34,7 +36,7 @@ int main() {
     while(!done)
       deva::progress();
     
-    //deva::say()<<"leaving";
+    deva::say()<<"leaving";
 
     for(int i=0; i < 4; i++)
       deva::barrier(true);

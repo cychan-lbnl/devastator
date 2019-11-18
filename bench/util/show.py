@@ -40,6 +40,7 @@ dimvals = {}
 
 tab.xdims['opnew'] = dict(title='Allocator')
 tab.xdims['ranks'] = dict(title='Ranks',rank=3)
+tab.xdims['false_misses'] = dict(title='False Misses', rank=4)
 
 for arg in sys.argv[1:]:
   if arg.startswith('-'):
@@ -63,7 +64,7 @@ for arg in sys.argv[1:]:
       try: return int(s)
       except: return s
     y = map(lambda y: intify(y.strip()), y)
-    dimvals[x] = y
+    dimvals[x] = list(y)
 
 tabs = {}
 for report in reportfiles:
@@ -79,7 +80,8 @@ for report in reportfiles:
         fact1[x] = xys[x]
         tabs[x] = tabs.get(x, [])
         tabs[x].append(fact1)
-
+    else:
+      pass#print('discard',xs)
   exec(open(report).read(), dict(row=row))
 
 for name in list(tabs.keys()):

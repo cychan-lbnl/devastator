@@ -1,5 +1,5 @@
 #include <devastator/diagnostic.hxx>
-#include <devastator/threads/message_allocator.hxx>
+#include <devastator/threads/epoch_allocator.hxx>
 
 #include <random>
 #include <map>
@@ -10,7 +10,9 @@ using namespace std;
 
 template<int epochs>
 void test() {
-  deva::threads::message_allocator<epochs> ma(1<<20);
+  deva::threads::epoch_allocator<epochs> ma;
+  ma.init(nullptr, 1<<20);
+  
   map<uintptr_t, uintptr_t> liveset;
   deque<vector<uintptr_t>> live_at(epochs);
   default_random_engine rng(0);
@@ -19,7 +21,7 @@ void test() {
     int q = rng() % 10;
     for(int m=0; m < q; m++) {
       size_t sz = 1 + (rng() % 256);
-      uintptr_t p = ma.allocate(sz, 1);
+      uintptr_t p = reinterpret_cast<uintptr_t>(ma.allocate(sz, 1));
 
       auto bef = liveset.lower_bound(p);
       auto aft = liveset.lower_bound(p + sz);

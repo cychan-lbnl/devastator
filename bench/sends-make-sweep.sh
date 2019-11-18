@@ -7,19 +7,28 @@ function loudly() {
   "$@"
 }
 
-> sends-sweep.sh
+wall_secs=3
 
-for c in {1..16}; do
-  c=$((2*c))
+echo "#!/bin/bash" > sends-sweep.sh
+echo "#SBATCH --qos=regular" >> sends-sweep.sh
+echo "#SBATCH --constraint=haswell" >> sends-sweep.sh
+echo "#SBATCH --nodes=1" >> sends-sweep.sh
+echo "#SBATCH --time=$((1 + 4*2*2*3*4*(8 + wall_secs)/60))" >> sends-sweep.sh
+echo >> sends-sweep.sh
+
+echo "export wall_secs=$wall_secs" >> sends-sweep.sh
+
+for c in 8 16 24 32; do
   for tmsg in spsc mpsc; do
     exe=$(loudly brutal ranks=$c tmsg=$tmsg exe sends.cxx)
-    for msgs in 16 64 128; do
-    for kbs in 8 16 32 64 128; do
-    for miss in {0..8}; do
-      miss=$((8*miss))
+    for msgs in 16 128; do
+    for kbs in 8 32 128; do
+    for miss in 0 16 32 64; do
       env="msg_per_rank=$msgs kbs_per_rank=$kbs false_misses=$miss"
-      echo echo $env srun -n 1 -c $c $exe >> sends-sweep.sh
-      echo      $env srun -n 1 -c $c $exe >> sends-sweep.sh
+      echo echo $env srun -N 1 -n 1 -c $c $exe >> sends-sweep.sh
+      echo      $env srun -N 1 -n 1 -c $c $exe >> sends-sweep.sh
     done; done; done
   done
 done
+
+chmod a+x sends-sweep.sh

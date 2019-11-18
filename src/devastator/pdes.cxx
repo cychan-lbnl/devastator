@@ -673,6 +673,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
       gvt::advance();
       
       if(gvt::coll_ended()) {
+        //if(deva::rank_me()==0) deva::say()<<"gvt="<<gvt_old<<" coll";
         rxs_acc.reduce_with(gvt::coll_reducibles());
 
         // delete near-sent events which were committed in previous collective round

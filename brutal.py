@@ -85,11 +85,13 @@ def code_context(PATH):
   
   if PATH == brutal.here('src/devastator/threads.hxx'):
     impl = brutal.env('tmsg', universe=('spsc','mpsc'))
+    talloc = brutal.env('talloc', universe=('opnew-sym','opnew-asym','epoch'))
     cxt |= CodeContext(pp_defines={
-      'DEVA_THREADS_'+impl.upper(): 1
+      'DEVA_THREADS_'+impl.upper(): 1,
+      'DEVA_THREADS_ALLOC_' + talloc.replace('-','_').upper(): 1
     })
   
-  if PATH == brutal.here('src/devastator/threads/message_spsc.hxx'):
+  elif PATH == brutal.here('src/devastator/threads/message_spsc.hxx'):
     tsigbits = brutal.env('tsigbits', universe=(0,8,16,32))
     if tsigbits == 0:
       tsigbits = 64*8/get_thread_n()
@@ -104,7 +106,7 @@ def code_context(PATH):
       'DEVA_THREADS_SPSC_ORDER_'+torder.upper(): 1
     })
 
-  if PATH == brutal.here('src/devastator/threads/signal_slots.hxx'):
+  elif PATH == brutal.here('src/devastator/threads/signal_slots.hxx'):
     tsigreap = brutal.env('tsigreap', universe=('memcpy','simd','atom'))
     
     cxt |= CodeContext(pp_defines={

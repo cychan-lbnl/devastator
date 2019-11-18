@@ -72,7 +72,7 @@ void tmain() {
       break;
     
     if(gvt::coll_ended()) {
-      //say()<<"gvt="<<gvt::epoch_gvt();
+      //if(deva::rank_me()==0) deva::say()<<"gvt="<<gvt::epoch_gvt();
       uint64_t lvt = lvts.empty() ? uint64_t(-1) : *lvts.begin();
       gvt::coll_begin(lvt, {});
     }

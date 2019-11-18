@@ -2,12 +2,16 @@
 
 #include <sched.h>
 
-void deva::progress(bool spinning, bool deaf) {
-  bool did_something = threads::progress(deaf);
+void deva::progress(bool spinning) {
+  threads::progress_state ps;
+  do {
+    threads::progress_begin(ps);
+    threads::progress_end(ps);
+  } while(ps.backlogged);
   
   static __thread int nothings = 0;
   
-  if(!spinning || did_something)
+  if(!spinning || ps.did_something)
     nothings = 0;
   else if(++nothings == 10) {
     nothings = 0;

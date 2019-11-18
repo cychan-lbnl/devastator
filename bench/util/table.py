@@ -210,12 +210,9 @@ class Table(object):
     grps = {}
     for tdims,(rows,vals) in me._tabs.items():
       gdims = dims & tdims
-      gdimstup = tuple(gdims)
+      gdimstup = tuple(sorted(gdims))
       for r,v in zip(rows,vals):
         g = (gdims, gdimstup, tuple(map(r.__getitem__, gdimstup)))
-        if g not in grps:
-          grps[g] = {}
-        
         if g not in grps:
           grps[g] = {}
         grp = grps[g]

@@ -41,7 +41,7 @@ namespace threads {
       i(0), or_acc{0, 0}, e64(0) {
     }
     
-    std::uint64_t epoch64() const { return e64; }
+    std::uint64_t epoch() const { return e64; }
     bool or_result() const { return 0 != or_acc[1-(e64 & 1)]; }
     
     void begin(barrier_state_global<thread_n> &g, int me, bool or_in=false);

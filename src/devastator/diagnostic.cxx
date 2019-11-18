@@ -62,14 +62,21 @@ void deva::assert_failed(const char *file, int line, const char *msg) {
 }
 
 deva::say::say() {
-  lock_.lock();
   #if DEVA_WORLD
-    std::cerr<<"["<<deva::rank_me()<<"] ";
+    ss<<"["<<deva::rank_me()<<"] ";
   #endif
 }
 
 deva::say::~say() {
-  std::cerr<<"\n";
+  lock_.lock();
+
+  ss<<"\n";
+
+  #if 0 && DEVA_WORLD
+  if(deva::rank_me() == 0)
+  #endif
+  std::cerr<<ss.str();
+
   lock_.unlock();
 }
 

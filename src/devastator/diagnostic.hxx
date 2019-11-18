@@ -40,13 +40,15 @@ namespace deva {
   datarow describe();
   
   struct say {
+    std::stringstream ss;
+    
     say();
     say(say const&) = delete;
     ~say();
 
     template<typename T>
     say& operator<<(T &&x) {
-      std::cerr << x;
+      ss << x;
       return *this;
     }
   };

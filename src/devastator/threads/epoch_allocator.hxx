@@ -10,20 +10,26 @@ namespace threads {
   template<int epochs>
   class epoch_allocator {
     static constexpr std::intptr_t grain_size = 32;
+
+    char *base_;
     std::uint32_t capacity_;
     
     std::uint32_t ed_, bump_, wall_;
     std::int8_t lo_[epochs];
     std::uint32_t edge_[2*epochs];
-    
+
   public:
-    epoch_allocator(std::size_t capacity);
-    std::intptr_t allocate(std::size_t size, std::size_t align);
+    static constexpr int epoch_n = epochs;
+    
+    void init(void *base, std::size_t capacity);
+    void* allocate(std::size_t size, std::size_t align);
+    void deallocate_debug(void *o);
     void bump_epoch();
   };
 
   template<int epochs>
-  epoch_allocator<epochs>::epoch_allocator(std::size_t capacity) {
+  void epoch_allocator<epochs>::init(void *base, std::size_t capacity) {
+    base_ = (char*)base;
     capacity_ = std::min<std::size_t>(std::uint32_t(-1), capacity/grain_size);
     
     for(int ed=0; ed < 2*epochs; ed++)
@@ -37,14 +43,14 @@ namespace threads {
   }
 
   template<int epochs>
-  std::intptr_t epoch_allocator<epochs>::allocate(std::size_t size, std::size_t align) {
+  void* epoch_allocator<epochs>::allocate(std::size_t size, std::size_t align) {
     size = (size + grain_size-1)/grain_size;
     align = (align + grain_size-1)/grain_size;
 
     std::uint32_t bump1 = (bump_ + align-1) & -align;
     if(bump1 + size > wall_) {
       if(wall_ == capacity_)
-        return -1;
+        return nullptr;
       
       edge_[ed_] = bump_;
       wall_ = capacity_;
@@ -52,8 +58,8 @@ namespace threads {
       bump_ = edge_[ed_-1];
       bump1 = (bump_ + align-1) & -align;
     }
-    
-    std::intptr_t ans = std::intptr_t(bump1)*grain_size;
+
+    void *ans = base_ + std::intptr_t(bump1)*grain_size;
     //deva::say()<<"allocd "<<bump1*grain_size;
     DEVA_ASSERT(bump_ <= bump1 + size && bump1 + size <= wall_);
     bump_ = bump1 + size;
@@ -99,7 +105,7 @@ namespace threads {
     wall_ = edge_[ed_];
     
     lo_[epochs-1] = ed_;
-    
+
     #if 0
     {
       std::cout<<"after removal: bump="<<grain_size*bump_<<" wall="<<grain_size*wall_<<" | ";

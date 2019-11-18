@@ -54,7 +54,7 @@ namespace deva {
   constexpr int process_rank_lo(int proc) { return proc*worker_n; }
   constexpr int process_rank_hi(int proc) { return (proc+1)*worker_n; }
 
-  void progress(bool spinning, bool deaf);
+  void progress(bool spinning);
 
   void barrier(bool deaf);
 
@@ -71,7 +71,8 @@ namespace deva {
       w.place(0,8);
       DEVA_ASSERT(w.align() <= 8);
       std::size_t w_size = w.size();
-      void *buf = operator new(w_size);
+
+      void *buf = threads::alloc_message(w_size, 8);
       w.compact_and_invalidate(buf);
       auto *rm = new(buf) remote_out_message;
       rm->size8 = (w_size - sizeof(remote_out_message))/8;
@@ -80,7 +81,7 @@ namespace deva {
     
     template<typename Fn, typename Ub>
     static remote_out_message* make_help(Fn &&fn, Ub ub, std::true_type ub_valid) {
-      void *buf = operator new(ub.size_aligned(8));
+      void *buf = threads::alloc_message(ub.size_aligned(8), 8);
       upcxx::detail::serialization_writer<true> w(buf);
       auto *rm = w.template place_new<remote_out_message>();
       upcxx::detail::command::serialize(w, ub.size, static_cast<Fn&&>(fn));
@@ -107,7 +108,8 @@ namespace deva {
         upcxx::template storage_size_of<remote_out_message>()
         .cat(cmd_size, 8)
         .size_aligned(8);
-      void *buf = operator new(buf_size);
+
+      void *buf = threads::alloc_message(buf_size, 8);
       auto *rm = new(buf) remote_out_message;
       rm->rank = rank;
       rm->size8 = (cmd_size + 7)/8;
@@ -186,7 +188,7 @@ namespace deva {
     threads::send(0, [relay_fn(std::move(relay_fn))]() mutable {
       auto *rm = remote_out_message::make(0xdeadbeef, relay_fn);
       std::move(relay_fn)((void*)(rm+1), 8*std::size_t(rm->size8));
-      operator delete((void*)rm);
+      threads::dealloc_message((void*)rm);
     });
   }
 }

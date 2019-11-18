@@ -48,7 +48,10 @@ namespace deva {
   constexpr int process_rank_hi(int proc) { return rank_n; }
   
   inline void barrier(bool deaf) {
-    threads::barrier(/*deaf=*/deaf);
+    threads::barrier(
+      deaf ? nullptr
+           : (void(*)(threads::progress_state&))[](threads::progress_state&){}
+    );
   }
   
   template<typename Fn, typename ...B>
