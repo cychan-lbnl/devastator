@@ -4,9 +4,17 @@ def gasnet_source(url):
   src_dir = brutal.untar(tgz)
   return src_dir
 
+
+
+
+# ENABLE DEBUG BUILD
+
+
+
+
 @brutal.rule(caching='file')
 @brutal.coroutine
-def gasnet_configured(url, cross, cc, cxx):
+def gasnet_configured(url, cross, cc, cxx, debug):
   src_dir = yield gasnet_source(url)
   build_dir = brutal.mkpath('gasnet-build')
   brutal.os.mkdir(build_dir)
@@ -16,16 +24,18 @@ def gasnet_configured(url, cross, cc, cxx):
     brutal.os.symlink(brutal.os.path.join(src_dir,'other','contrib',cross), script)
   else:
     script = brutal.os.path.join(src_dir, 'configure')
-  
+
   flags = ['--disable-parsync','--disable-mpi']
   flags += ['--with-aries-max-medium=64896']
+  flags += ['--enable-debug'] if debug else []
+
   yield brutal.process([script] + flags, cwd=build_dir, env_add={'CC':cc, 'CXX':cxx})
   yield build_dir
 
 @brutal.rule(caching='file')
 @brutal.coroutine
-def gasnet_context(url, cross, conduit, sync, cc, cxx):
-  build_dir = yield gasnet_configured(url, cross, cc, cxx)
+def gasnet_context(url, cross, conduit, sync, cc, cxx, debug):
+  build_dir = yield gasnet_configured(url, cross, cc, cxx, debug)
 
   cmd = ['make','-j', brutal.concurrency_limit]
   yield brutal.process(cmd, cwd=brutal.os.path.join(build_dir, '%s-conduit'%conduit))

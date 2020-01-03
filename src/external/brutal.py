@@ -14,7 +14,8 @@ def code_context(PATH):
     gasnet = yield gasnet_context(
       url, cross, conduit, sync,
       cc = c_compiler(),
-      cxx = cxx_compiler()
+      cxx = cxx_compiler(),
+      debug = brutal.env('debug', 0)
     )
     dependencies += (gasnet,)
     kws['pp_defines'] = {'DEVA_GASNET_PRESENT':1}
