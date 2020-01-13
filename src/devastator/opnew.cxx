@@ -1,7 +1,7 @@
 #include <devastator/opnew.hxx>
 #include <devastator/diagnostic.hxx>
 
-#if DEVA_OPNEW // contains whole file
+#if DEVA_OPNEW_DEVA // contains whole file
 
 #include <algorithm>
 #include <array>

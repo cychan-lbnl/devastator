@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <new>
 
-#if DEVA_THREADS_ALLOC_EPOCH
+#if 0 && DEVA_THREADS_ALLOC_EPOCH
   #error "talloc=epoch not supported with tmsg=spsc"
 #endif
 
@@ -47,9 +47,15 @@ namespace threads {
     friend class channels_w;
   
     struct each {
+    #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
       message *recv_last;
-    #if DEVA_THREADS_ALLOC_OPNEW_SYM
-      std::atomic<uint_signal_t> *ack_slot;
+      #if DEVA_THREADS_ALLOC_OPNEW_SYM
+        std::atomic<uint_signal_t> *ack_slot;
+      #endif
+    #elif DEVA_THREADS_ALLOC_EPOCH
+      message *head[3]{reinterpret_cast<message*>(0xbeefbeef),reinterpret_cast<message*>(0xbeefbeef),reinterpret_cast<message*>(0xbeefbeef)};
+      std::atomic<message**> tailp_live[3]{{&head[0]},{&head[1]},{&head[2]}};
+      message **tailp_shadow[3]{&head[0],&head[1],&head[2]};
     #endif
     } r_[rn];
     
@@ -58,9 +64,9 @@ namespace threads {
     
   public:
     template<typename Rcv>
-    bool receive(Rcv &&rcv, bool epoch_bumped, std::uint64_t old_epoch);
+    void receive(Rcv &&rcv, threads::progress_state &st);
     template<typename Rcv, typename Batch>
-    bool receive_batch(Rcv &&rcv, Batch &&batch, bool epoch_bumped, std::uint64_t old_epoch);
+    void receive_batch(Rcv &&rcv, Batch &&batch, threads::progress_state &st);
 
   private:
     void prefetch(int hot_n, hot_slot<uint_signal_t> hot[]);
@@ -69,14 +75,23 @@ namespace threads {
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   class channels_w {
     struct each {
-      message *sent_last;
-      message *ack_head;
-      std::atomic<uint_signal_t> *recv_slot;
+      #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
+        message *sent_last;
+        #if DEVA_THREADS_ALLOC_OPNEW_SYM
+          message *ack_head;
+        #endif
+      #elif DEVA_THREADS_ALLOC_EPOCH
+        message **tailp;
+      #endif
+      
+      std::int32_t recv_slot;
       std::uint32_t recv_bump = 0;
       #if DEVA_THREADS_SPSC_BITS < 32
-        std::uint32_t recv_bump_wall = 1<<signal_bits;
-        #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-          uint_signal_t epoch_ack_bump[4] = {0,0,0,0};
+        #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
+          std::uint32_t recv_bump_wall = 1<<signal_bits;
+          #if !DEVA_THREADS_ALLOC_OPNEW_SYM
+            uint_signal_t epoch_ack_bump[4] = {0,0,0,0};
+          #endif
         #endif
       #endif
     } w_[wn];
@@ -84,7 +99,7 @@ namespace threads {
     #if DEVA_THREADS_ALLOC_OPNEW_SYM
       signal_slots<uint_signal_t, wn> ack_slots_;
     #endif
-    
+
   public:
     channels_w() = default;
     
@@ -99,13 +114,13 @@ namespace threads {
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::destroy() {
     for(int i=0; i < wn; i++) {
-      #if DEVA_THREADS_ALLOC_OPNEW_SYM
-        while(w_[i].ack_head != w_[i].sent_last) {
-          threads::progress_state ps;
-          reclaim(ps);
-        }
-        threads::dealloc_message(w_[i].sent_last);
-      #elif DEVA_THREADS_ALLOC_OPNEW_ASYM
+      #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
+        #if DEVA_THREADS_ALLOC_OPNEW_SYM
+          while(w_[i].ack_head != w_[i].sent_last) {
+            threads::progress_state ps;
+            reclaim(ps);
+          }
+        #endif
         threads::dealloc_message(w_[i].sent_last);
       #endif
     }
@@ -116,232 +131,56 @@ namespace threads {
     for(int w_id=0; w_id < wn; w_id++) {
       message *dummy = ::new(threads::alloc_message(sizeof(message), alignof(message))) message;
       channels_r<rn> *rs = &(*chan_r)[w_id];
-      int r_id = rs->slot_next_.fetch_add(1);
+      int slot = rs->slot_next_.fetch_add(1);
+      w_[w_id].recv_slot = slot;
       
-      rs->r_[r_id].recv_last = dummy;
-      w_[w_id].sent_last = dummy;
-      
-      #if DEVA_THREADS_ALLOC_OPNEW_SYM
-        rs->r_[r_id].ack_slot = &ack_slots_.live.atom[w_id];
-        w_[w_id].ack_head = dummy;
+      #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
+        rs->r_[slot].recv_last = dummy;
+        w_[w_id].sent_last = dummy;
+        #if DEVA_THREADS_ALLOC_OPNEW_SYM
+          rs->r_[slot].ack_slot = &ack_slots_.live.atom[w_id];
+          w_[w_id].ack_head = dummy;
+        #endif
+      #elif DEVA_THREADS_ALLOC_EPOCH
+        w_[w_id].tailp = &rs->r_[slot].head[0];
       #endif
-      
-      w_[w_id].recv_slot = &rs->recv_slots_.live.atom[r_id];
     }
   }
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::send(int id, message *m) {
     auto *w = &this->w_[id];
-    w->sent_last->next = m;
-    w->sent_last = m;
     w->recv_bump += 1;
-    #if DEVA_THREADS_SPSC_BITS < 32
+    #if DEVA_THREADS_ALLOC_OPNEW_SYM || DEVA_THREADS_ALLOC_OPNEW_ASYM
+      w->sent_last->next = m;
+      w->sent_last = m;
+    #else
+      const int e3 = threads::epoch_mod3();
+      *w->tailp = m;
+      w->tailp = &m->next;
+      (*chan_r)[id].r_[w->recv_slot].tailp_live[e3].store(&m->next, std::memory_order_release);
+    #endif
+
+    constexpr auto bump_mo = DEVA_THREADS_ALLOC_EPOCH ? std::memory_order_relaxed : std::memory_order_release;
+
+    #if !DEVA_THREADS_ALLOC_EPOCH && DEVA_THREADS_SPSC_BITS < 32
       if(u32_less(w->recv_bump, w->recv_bump_wall))
-        w->recv_slot->store(w->recv_bump, std::memory_order_release);
+        (*chan_r)[id].recv_slots_.live.atom[w->recv_slot].store(w->recv_bump, bump_mo);
       //else
       //  deva::say()<<"BACKPRESSURED";
     #else
-      w->recv_slot->store(w->recv_bump, std::memory_order_release);
+      (*chan_r)[id].recv_slots_.live.atom[w->recv_slot].store(w->recv_bump, bump_mo);
     #endif
-    //say()<<"wchan "<<id<<" of "<<n<<" bumped "<<w->recv_bump-1<<" -> "<<w->recv_bump;
-  }
-  
-  template<int rn>
-  __attribute__((noinline))
-  void channels_r<rn>::prefetch(int hot_n, hot_slot<uint_signal_t> hot[]) {
-    #if DEVA_THREADS_SPSC_PREFETCH >= 1
-      std::atomic_signal_fence(std::memory_order_acq_rel);
-      
-      message **mp[rn];
-      
-      for(int i=0; i < hot_n; i++) {
-        mp[i] = &r_[hot[i].ix].recv_last->next;
-        #if DEVA_THREADS_SPSC_PREFETCH == 1
-          __builtin_prefetch(mp[i]);
-        #else
-          __builtin_prefetch(*mp[i]);
-        #endif
-      }
-      
-      std::atomic_signal_fence(std::memory_order_acq_rel);
-    #endif
-  }
-  
-  template<int rn>
-  template<typename Rcv>
-  bool channels_r<rn>::receive(Rcv &&rcv, bool epoch_bumped, std::uint64_t old_epoch) {
-    #if DEVA_THREADS_SPSC_ORDER_DFS
-      hot_slot<uint_signal_t> hot[rn];
-      int hot_n = this->recv_slots_.reap(hot);
-      bool did_something = hot_n != 0;
-      
-      prefetch(hot_n, hot);
-      
-      for(int i=0; i < hot_n; i++) {
-        channels_r::each *ch = &this->r_[hot[i].ix];
-        std::uint32_t msg_n = hot[i].delta;
-        message *m = ch->recv_last;
-        
-        //say()<<"rchan "<<hot[i].ix<<" of "<<rn<<" bumped "<<hot[i].old<<" -> "<<hot[i].old+hot[i].delta;
-        
-        do {
-          message *m1 = m->next;
-          #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-            threads::dealloc_message(m);
-          #endif
-          rcv(m1);
-          m = m1;
-        } while(--msg_n != 0);
-
-        #if DEVA_THREADS_ALLOC_OPNEW_SYM
-          ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
-        #endif
-        ch->recv_last = m;
-      }
-      
-    #elif DEVA_THREADS_SPSC_ORDER_BFS
-
-      hot_slot<uint_signal_t> hot[rn];
-      int hot_head = this->recv_slots_.reap_circular(hot);
-      bool did_something = hot_head != -1;
-
-      if(did_something) {
-        int i_prev = hot_head;
-        int i = hot[hot_head].next;
-        
-        while(true) {
-          channels_r::each *ch = &this->r_[i];
-          message *m = ch->recv_last->next;
-          #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-            threads::dealloc_message(ch->recv_last);
-          #endif
-          ch->recv_last = m;
-          rcv(m);
-          
-          if(0 == --hot[i].delta) {
-            #if DEVA_THREADS_ALLOC_OPNEW_SYM
-              ch->ack_slot->store(hot[i].now, std::memory_order_release);
-            #endif
-            if(i == hot[i].next)
-              break;
-            i = hot[i].next;
-            hot[i_prev].next = i;
-          }
-          else {
-            i_prev = i;
-            i = hot[i].next;
-          }
-        }
-      }
-    #endif
-    
-    return did_something;
-  }
-
-  template<int rn>
-  template<typename Rcv, typename Batch>
-  bool channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch, bool epoch_bumped, std::uint64_t old_epoch) {
-    hot_slot<uint_signal_t> hot[rn];
-    int hot_n = this->recv_slots_.reap(hot);
-    
-    prefetch(hot_n, hot);
-    
-    for(int i=0; i < hot_n; i++) {
-      channels_r::each *ch = &this->r_[hot[i].ix];
-      std::uint32_t msg_n = hot[i].delta;
-      message *m = ch->recv_last;
-      
-      do {
-        message *m1 = m->next;
-        #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-          threads::dealloc_message(m);
-        #endif
-        rcv(m1);
-        m = m1;
-      } while(--msg_n != 0);
-      
-      ch->recv_last = m;
-    }
-
-    batch();
-    
-    #if DEVA_THREADS_ALLOC_OPNEW_SYM
-      for(int i=0; i < hot_n; i++) {
-        channels_r::each *ch = &this->r_[hot[i].ix];
-        ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
-      }
-    #endif
-    
-    return hot_n != 0; // did something
   }
 
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
   void channels_w<wn,rn,chan_r>::reclaim(threads::progress_state &ps) {
-  #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-    #if DEVA_THREADS_SPSC_BITS >= 32
-      // nop
-    #else
-      if(ps.epoch_bumped) {
-        bool backlogged = false;
-        //std::stringstream ss_acks;
-        
-        for(int i=0; i < wn; i++) {
-          channels_w::each *w = &this->w_[i];
-          std::uint32_t acks = w->epoch_ack_bump[0];
-
-          //ss_acks<<"creds="<<(u32_less_eq(w->recv_bump_wall, w->recv_bump) ? -int(w->recv_bump - w->recv_bump_wall+1) : int(w->recv_bump_wall-1 - w->recv_bump));
-          //ss_acks<<" [";
-          //for(int e=0; e < 4; e++)
-          //  ss_acks<<int(w->epoch_ack_bump[e])<<' ';
-          //ss_acks<<"] ";
-
-          std::uint32_t held = 0;
-          for(int e=0; e < 3; e++) {
-            held += w->epoch_ack_bump[e+1];
-            w->epoch_ack_bump[e] = w->epoch_ack_bump[e+1];
-          }
-
-          std::int32_t backlog;
-          if(u32_less_eq(w->recv_bump_wall + acks, w->recv_bump)) {
-            w->epoch_ack_bump[3] = ((1<<signal_bits)-1) - held;
-            backlog = w->recv_bump - (w->recv_bump_wall + acks);
-          }
-          else {
-            w->epoch_ack_bump[3] = ((1<<signal_bits)-1) - held - (w->recv_bump_wall+acks-1 - w->recv_bump);
-            backlog = -((w->recv_bump_wall + acks) - w->recv_bump);
-          }
-
-          backlogged |= backlog >= 1<<signal_bits;
-
-          //DEVA_ASSERT_ALWAYS(
-          //  w->epoch_ack_bump[3] + w->epoch_ack_bump[2] + w->epoch_ack_bump[1] + w->epoch_ack_bump[0] <= (1<<signal_bits)-1,
-          //  "held="<<0+w->epoch_ack_bump[0]<<','<<0+w->epoch_ack_bump[1]<<','<<0+w->epoch_ack_bump[2]<<','<<0+w->epoch_ack_bump[3]
-          //);
-          
-          if(u32_less_eq(w->recv_bump_wall + acks-1, w->recv_bump))
-            w->recv_slot->store(w->recv_bump_wall + acks-1, std::memory_order_release);
-          else if(u32_less_eq(w->recv_bump_wall, w->recv_bump))
-            w->recv_slot->store(w->recv_bump, std::memory_order_release);
-          
-          w->recv_bump_wall += acks;
-
-          DEVA_ASSERT(u32_less_eq(w->recv_bump_wall-(1<<signal_bits), w->recv_bump));
-        }
-        
-        //if(threads::epoch()%1000 == 0) {
-        //  deva::say()<<"epoch="<<threads::epoch()<<" backlogged="<<backlogged<<" acks="<<ss_acks.str();
-        //}
-        
-        ps.backlogged |= backlogged;
-      }
-    #endif
-  #else
+  #if DEVA_THREADS_ALLOC_OPNEW_SYM
     hot_slot<uint_signal_t> hot[wn];
     int hot_n = this->ack_slots_.reap(hot);
     
     for(int i=0; i < hot_n; i++) {
-      channels_w::each *w = &this->w_[hot[i].ix];
+      channels_w::each *w = &this->w_[hot[i].ix_xor_i ^ i];
       std::uint32_t acks = hot[i].delta;
       
       #if DEVA_THREADS_SPSC_BITS < 32
@@ -364,6 +203,232 @@ namespace threads {
     }
 
     ps.did_something |= hot_n != 0;
+
+  #elif DEVA_THREADS_ALLOC_OPNEW_ASYM
+  
+    if(ps.epoch_bumped) {
+      bool backlogged = false;
+      
+      for(int i=0; i < wn; i++) {
+        channels_w::each *w = &this->w_[i];
+        
+        #if DEVA_THREADS_SPSC_BITS < 32
+          std::uint32_t acks = w->epoch_ack_bump[0];
+          std::uint32_t held = 0;
+          
+          for(int e=0; e < 3; e++) {
+            held += w->epoch_ack_bump[e+1];
+            w->epoch_ack_bump[e] = w->epoch_ack_bump[e+1];
+          }
+
+          std::int32_t backlog;
+          if(u32_less_eq(w->recv_bump_wall + acks, w->recv_bump)) {
+            w->epoch_ack_bump[3] = ((1<<signal_bits)-1) - held;
+            backlog = w->recv_bump - (w->recv_bump_wall + acks);
+          }
+          else {
+            w->epoch_ack_bump[3] = ((1<<signal_bits)-1) - held - (w->recv_bump_wall+acks-1 - w->recv_bump);
+            backlog = -((w->recv_bump_wall + acks) - w->recv_bump);
+          }
+
+          backlogged |= backlog >= 1<<signal_bits;
+
+          //DEVA_ASSERT_ALWAYS(
+          //  w->epoch_ack_bump[3] + w->epoch_ack_bump[2] + w->epoch_ack_bump[1] + w->epoch_ack_bump[0] <= (1<<signal_bits)-1,
+          //  "held="<<0+w->epoch_ack_bump[0]<<','<<0+w->epoch_ack_bump[1]<<','<<0+w->epoch_ack_bump[2]<<','<<0+w->epoch_ack_bump[3]
+          //);
+
+          auto *slot = &(*chan_r)[i].recv_slots_.live.atom[w->recv_slot];
+          if(u32_less_eq(w->recv_bump_wall + acks-1, w->recv_bump))
+            slot->store(w->recv_bump_wall + acks-1, std::memory_order_release);
+          else if(u32_less_eq(w->recv_bump_wall, w->recv_bump))
+            slot->store(w->recv_bump, std::memory_order_release);
+          
+          w->recv_bump_wall += acks;
+
+          DEVA_ASSERT(u32_less_eq(w->recv_bump_wall-(1<<signal_bits), w->recv_bump));
+        #endif
+      }
+      
+      //if(threads::epoch()%1000 == 0) {
+      //  deva::say()<<"epoch="<<threads::epoch()<<" backlogged="<<backlogged<<" acks="<<ss_acks.str();
+      //}
+      
+      ps.backlogged |= backlogged;
+    }
+    
+  #elif DEVA_THREADS_ALLOC_EPOCH
+  
+    if(ps.epoch_bumped) {
+      int e3 = threads::epoch_mod3();
+      for(int i=0; i < wn; i++) {
+        channels_w::each *w = &this->w_[i];
+        w->tailp = &(*chan_r)[i].r_[w->recv_slot].head[e3];
+      }
+    }
+
+  #endif
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  
+  template<int rn>
+  __attribute__((noinline))
+  void channels_r<rn>::prefetch(int hot_n, hot_slot<uint_signal_t> hot[]) {
+    #if DEVA_THREADS_SPSC_PREFETCH >= 1
+      #if DEVA_THREADS_ALLOC_EPOCH
+        #error "Can't prefetch with talloc=epoch"
+      #endif
+      
+      std::atomic_signal_fence(std::memory_order_acq_rel);
+      
+      message **mp[rn];
+      
+      for(int i=0; i < hot_n; i++) {
+        mp[i] = &r_[hot[i].ix].recv_last->next;
+        #if DEVA_THREADS_SPSC_PREFETCH == 1
+          __builtin_prefetch(mp[i]);
+        #else
+          __builtin_prefetch(*mp[i]);
+        #endif
+      }
+      
+      std::atomic_signal_fence(std::memory_order_acq_rel);
+    #endif
+  }
+  
+  template<int rn>
+  template<typename Rcv>
+  void channels_r<rn>::receive(Rcv &&rcv, threads::progress_state &ps) {
+    hot_slot<uint_signal_t> hot[rn];
+    int hot_n;
+    int hot_stride_mask; // 0 or -1
+    
+    #if DEVA_THREADS_ALLOC_EPOCH
+    int e3_q; // quiesced epoch
+    if(ps.epoch_bumped) {
+      hot_n = rn;
+      hot_stride_mask = 0;
+      hot[0].ix_xor_i = 0;
+      e3_q = threads::template epoch3_inc<-1>(ps.epoch3_old);
+    }
+    else
+    #endif
+    {
+      hot_n = this->recv_slots_.template reap</*acquire=*/!DEVA_THREADS_ALLOC_EPOCH, /*peek=*/DEVA_THREADS_ALLOC_EPOCH>(hot);
+      hot_stride_mask = -1;
+    }
+    
+    bool did_something = hot_n != 0;
+    
+    prefetch(hot_n, hot);
+    
+    for(int i=0; i < hot_n; i++) {
+      channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
+      
+      #if DEVA_THREADS_ALLOC_OPNEW_ASYM || DEVA_THREADS_ALLOC_OPNEW_SYM
+        std::uint32_t msg_n = hot[i].delta;
+        message *m = ch->recv_last;
+        
+        //say()<<"rchan "<<hot[i].ix<<" of "<<rn<<" bumped "<<hot[i].old<<" -> "<<hot[i].old+hot[i].delta;
+        
+        do {
+          message *m1 = m->next;
+          #if DEVA_THREADS_ALLOC_OPNEW_ASYM
+            threads::dealloc_message(m);
+          #endif
+          rcv(m1);
+          m = m1;
+        } while(--msg_n != 0);
+
+        #if DEVA_THREADS_ALLOC_OPNEW_SYM
+          ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
+        #endif
+        ch->recv_last = m;
+        
+      #elif DEVA_THREADS_ALLOC_EPOCH
+
+        message **mp[3], **mp_live[3];
+        did_something = false;
+        
+        for(int e3=0; e3 < 3; e3++) {
+          mp[e3] = ch->tailp_shadow[e3];
+          mp_live[e3] = ch->tailp_live[e3].load(std::memory_order_relaxed);
+          ch->tailp_shadow[e3] = mp_live[e3];
+          did_something |= mp[e3] != mp_live[e3];
+        }
+
+        if(ps.epoch_bumped) {
+          ch->tailp_live[e3_q].store(&ch->head[e3_q], std::memory_order_relaxed);
+          ch->tailp_shadow[e3_q] = &ch->head[e3_q];
+        }
+
+        if(did_something) {
+          std::atomic_thread_fence(std::memory_order_acquire);
+          
+          int n = 0;
+          for(int e3=0; e3 < 3; e3++) {
+            while(mp[e3] != mp_live[e3]) {
+              n += 1;
+              message *m = *mp[e3];
+              rcv(m);
+              mp[e3] = &m->next;
+            }
+          }
+                    
+          this->recv_slots_.shadow.non_atom[hot[i & hot_stride_mask].ix_xor_i ^ i] += n;
+
+          std::atomic_signal_fence(std::memory_order_acq_rel);
+        }
+      #endif
+    }
+    
+    ps.did_something |= did_something;
+  }
+
+  template<int rn>
+  template<typename Rcv, typename Batch>
+  void channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch, threads::progress_state &ps) {
+  #if DEVA_THREADS_ALLOC_EPOCH
+    this->receive(static_cast<Rcv&&>(rcv), ps);
+    static_cast<Batch&&>(batch)();
+  #else
+    hot_slot<uint_signal_t> hot[rn];
+    int hot_n = this->recv_slots_.template reap</*acquire=*/!DEVA_THREADS_ALLOC_EPOCH>(hot);
+    constexpr int hot_stride_mask = -1;
+    
+    bool did_something = hot_n != 0;
+    
+    prefetch(hot_n, hot);
+
+    for(int i=0; i < hot_n; i++) {
+      channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
+
+      std::uint32_t msg_n = hot[i].delta;
+      message *m = ch->recv_last;
+      
+      do {
+        message *m1 = m->next;
+        #if DEVA_THREADS_ALLOC_OPNEW_ASYM
+          threads::dealloc_message(m);
+        #endif
+        rcv(m1);
+        m = m1;
+      } while(--msg_n != 0);
+      
+      ch->recv_last = m;
+    }
+
+    batch();
+    
+    #if DEVA_THREADS_ALLOC_OPNEW_SYM
+      for(int i=0; i < hot_n; i++) {
+        channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
+        ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
+      }
+    #endif
+    
+    ps.did_something |= did_something;
   #endif
   }
 }}

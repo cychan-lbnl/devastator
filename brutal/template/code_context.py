@@ -11,6 +11,15 @@ def _merge_flags(a, b):
   else:
     return b
 
+def _merge_revflags(a, b):
+  if a and a is not b:
+    if b:
+      return [x for x in a if x not in b] + b
+    else:
+      return a
+  else:
+    return b
+
 def _merge_ppdefs(a, b):
   if a and a is not b:
     if b:
@@ -58,7 +67,6 @@ class CodeContext(object):
     'cg_optlev',
     'cg_misc',
     'ld_misc',
-    'lib_paths',
     'lib_misc'
   )
   
@@ -72,6 +80,8 @@ class CodeContext(object):
                cg_optlev='',
                cg_misc=_empty_list,
                ld_misc=_empty_list,
+               lib_dirs=_empty_list,
+               lib_names=_empty_list,
                lib_paths=_empty_list,
                lib_misc=_empty_list):
 
@@ -85,6 +95,16 @@ class CodeContext(object):
       }
     
     cg_optlev = str(cg_optlev)
+
+    if lib_dirs or lib_names or lib_paths:
+      lib_misc = list(lib_misc)
+      lib_dirs = list(lib_dirs)
+      lib_names = list(lib_names)
+      path_dirs, path_names = ((),()) if not lib_paths else zip(*[brutal.os.path.split(p) for p in lib_paths])
+      lib_dirs += path_dirs
+      lib_names += [nm[3:-2] for nm in path_names]
+      lib_misc += ['-L'+dir for dir in lib_dirs]
+      lib_misc += ['-l'+lib for lib in lib_names]
     
     fields = CodeContext._state_fields
     me.__dict__.update(zip(fields, map(locals().__getitem__, fields)))
@@ -100,8 +120,7 @@ class CodeContext(object):
       cg_optlev = _merge_optlev(a.cg_optlev, b.cg_optlev),
       cg_misc = _merge_flags(a.cg_misc, b.cg_misc),
       ld_misc = _merge_flags(a.ld_misc, b.ld_misc),
-      lib_paths = _merge_flags(a.lib_paths, b.lib_paths),
-      lib_misc = _merge_flags(a.lib_misc, b.lib_misc)
+      lib_misc = _merge_revflags(a.lib_misc, b.lib_misc)
     )
   
   def with_dependencies(me, *dependencies):
@@ -194,12 +213,7 @@ class CodeContext(object):
     return me.ld_misc
 
   def lib_flags(me):
-    dirs, names = ((),()) if not me.lib_paths else zip(*[brutal.os.path.split(path) for path in me.lib_paths])
-    dirs = list(dirs)
-    names = list(names)
-    for nm in names:
-      brutal.error_unless(nm[:3]=='lib' and nm[-2:]=='.a', 'Malformed library name (ought to be like lib*.a): '+nm)
-    return me.lib_misc + ['-L'+dir for dir in dirs] + ['-l'+nm[3:-2] for nm in names]
+    return me.lib_misc
 
   def __str__(me):
     return repr(me)

@@ -35,37 +35,44 @@ void threads::progress_begin(threads::progress_state &ps) {
   int const me = thread_me_;
 
   ps.epoch_old = epoch_barrier_l_.epoch();
+  ps.epoch3_old = epoch_mod3_;
   ps.epoch_bumped = epoch_barrier_l_.try_end(epoch_barrier_g_, me);
   
   if(ps.epoch_bumped) {    
-    epoch_mod3_ += 1;
-    if(epoch_mod3_ == 3)
-      epoch_mod3_ = 0;
+    epoch_mod3_ = epoch3_inc<+1>(epoch_mod3_);
 
+    //if(me==0) deva::say()<<"epoch="<<ps.epoch_old;
+    
     #if DEVA_THREADS_ALLOC_EPOCH
       msg_arena_.bump_epoch();
     #endif
     
     ps.backlogged = false;
   }
-  
-  opnew::progress();
+}
 
+void threads::progress_stage1_reclaims(threads::progress_state &ps) {
+  int const me = thread_me_;
   ams_w[me].reclaim(ps);
+}
 
-  ps.did_something |= ams_r[me].receive(
+void threads::progress_stage2_recieves(threads::progress_state &ps) {
+  int const me = thread_me_;
+  ams_r[me].receive(
     [](message *m) {
       auto *am = static_cast<active_message*>(m);
       am->execute_and_destruct(am);
     },
-    ps.epoch_bumped, ps.epoch_old
+    ps
   );
 }
-
+  
 void threads::progress_end(threads::progress_state ps) {
   if(ps.epoch_bumped) {
     epoch_barrier_l_.begin(epoch_barrier_g_, thread_me_);
   }
+
+  opnew::progress();
 }
 
 void threads::barrier(void(*progress_work)(threads::progress_state&)) {
@@ -75,9 +82,9 @@ void threads::barrier(void(*progress_work)(threads::progress_state&)) {
   while(!barrier_l_.try_end(barrier_g_, thread_me_)) {
     if(progress_work != nullptr) {
       progress_state ps;
-      threads::progress_begin(ps);
+      progress_begin(ps);
       progress_work(ps);
-      threads::progress_end(ps);
+      progress_end(ps);
     }
     
     if(++spun == 100) {

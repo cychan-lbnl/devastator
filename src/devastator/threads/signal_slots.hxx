@@ -11,7 +11,7 @@ namespace threads {
   template<typename Uint>
   struct hot_slot {
     union {
-      int ix; // returned by reap()
+      int ix_xor_i; // returned by reap()
       int next; // returned by reap_circular()
     };
     Uint delta;
@@ -61,11 +61,14 @@ namespace threads {
 
     // Looks for slots with notifications in them. Fills in provided array with the
     // found "n" slots, "n" returned.
+    template<bool acquire=true, bool peek=false>
     int reap(hot_slot<Uint> hot[n]);
+    
     int reap_circular(hot_slot<Uint> hot[n]);
   };
 
   template<typename Uint, int n>
+  template<bool acquire, bool peek>
   __attribute__((noinline))
   int signal_slots<Uint,n>::reap(hot_slot<Uint> hot[n]) {
     int hot_n = 0;
@@ -87,16 +90,16 @@ namespace threads {
     
     for(int i=0; i < n; i++) {
       if(fresh.non_atom[i] != shadow.non_atom[i]) {
-        hot[hot_n].ix = i;
+        hot[hot_n].ix_xor_i = i ^ hot_n;
         hot[hot_n].delta = fresh.non_atom[i] - shadow.non_atom[i];
         hot[hot_n].old = shadow.non_atom[i];
         hot_n += 1;
         
-        shadow.non_atom[i] = fresh.non_atom[i];
+        if(!peek) shadow.non_atom[i] = fresh.non_atom[i];
       }
     }
     
-    if(hot_n != 0)
+    if(acquire && hot_n != 0)
       std::atomic_thread_fence(std::memory_order_acquire);
     
     return hot_n;

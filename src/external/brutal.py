@@ -1,4 +1,5 @@
 from .gasnet import gasnet_context
+from .jemalloc import jemalloc_context
 
 @brutal.rule
 @brutal.coroutine
@@ -20,6 +21,11 @@ def code_context(PATH):
     dependencies += (gasnet,)
     kws['pp_defines'] = {'DEVA_GASNET_PRESENT':1}
 
+  elif PATH == brutal.here('jemalloc.h'):
+    jemalloc = yield jemalloc_context()
+    dependencies += (jemalloc,)
+    kws['pp_defines'] = {'DEVA_JEMALLOC_PRESENT':1}
+
   yield CodeContext(**kws).with_dependencies(*dependencies)
 
 @brutal.rule
@@ -34,4 +40,3 @@ def gasnet_opts():
   conduit = brutal.env('DEVA_GASNET_CONDUIT', conduit)
   sync = 'seq'
   return (url, cross, conduit, sync)
-

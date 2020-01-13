@@ -61,6 +61,7 @@ namespace threads {
       if(rn > 1) {
         auto *q = &this->tails_[threads::thread_me() % rail_n];
         auto *old_tailp = q->tailp.exchange(&m->r_next, std::memory_order_acq_rel);
+        //deva::say()<<old_tailp<<" -> "<<&m->next;
         old_tailp->store(m, std::memory_order_relaxed);
       }
       else { // we are only possible writer, do exchange non-atomically
@@ -113,9 +114,9 @@ namespace threads {
     
   public:
     template<typename Rcv>
-    bool receive(Rcv &&rcv, bool epoch_bumped, std::uint64_t epoch_old);
+    void receive(Rcv &&rcv, threads::progress_state &st);
     template<typename Rcv, typename Batch>
-    bool receive_batch(Rcv &&rcv, Batch &&batch, bool epoch_bumped, std::uint64_t epoch_old);
+    void receive_batch(Rcv &&rcv, Batch &&batch, threads::progress_state &st);
   };
   
   template<int wn, int rn, channels_r<rn>(*chan_r)[wn]>
@@ -228,20 +229,21 @@ namespace threads {
 
   template<int rn>
   template<typename Rcv>
-  bool channels_r<rn>::receive(Rcv &&rcv, bool epoch_bumped, std::uint64_t epoch_old) {
+  void channels_r<rn>::receive(Rcv &&rcv, threads::progress_state &ps) {
     static constexpr int rail_n = channels_r<rn>::rail_n;
 
-    std::uint64_t epoch_new = epoch_old + (epoch_bumped ? 1 : 0);
+    std::uint64_t epoch_new = ps.epoch_old + 1;
     bool did_something = false;
     std::atomic<message*> *headp[rail_n];
     std::atomic<message*> *tailp[rail_n];
     
-    if(DEVA_THREADS_ALLOC_EPOCH && rn > 1 && epoch_bumped) {
+    if(DEVA_THREADS_ALLOC_EPOCH && rn > 1 && ps.epoch_bumped) {
       for(int rail=0; rail < rail_n; rail++) {
         headp[rail] = this->headp_[rail];
         this->headp_[rail] = &this->tails_[rail].head[epoch_new%2];
         this->headp_[rail]->store(nullptr, std::memory_order_relaxed);
         tailp[rail] = this->tails_[rail].tailp.exchange(this->headp_[rail], std::memory_order_release);
+        //deva::say()<<this->headp_[rail]<<" <- null\n"<<tailp[rail]<<" -> HEAD["<<epoch_new%2<<"]";
         did_something |= tailp[rail] != headp[rail];
       }
     }
@@ -341,31 +343,30 @@ namespace threads {
       }
     }
 
-    if(DEVA_THREADS_ALLOC_EPOCH && rn == 1 && epoch_bumped) {
+    if(DEVA_THREADS_ALLOC_EPOCH && rn == 1 && ps.epoch_bumped) {
       DEVA_ASSERT_ALWAYS(rail_n == 3);
-      int e3_dead = threads::epoch_mod3() + 1;
-      if(e3_dead == 3) e3_dead = 0;
-      this->tails_[e3_dead].head[0].store(nullptr, std::memory_order_relaxed);
-      this->tails_[e3_dead].tailp.store(&this->tails_[e3_dead].head[0], std::memory_order_relaxed);
-      this->headp_[e3_dead] = &this->tails_[e3_dead].head[0];
+      int e3_q = threads::template epoch3_inc<+1>(threads::epoch_mod3());
+      this->tails_[e3_q].head[0].store(nullptr, std::memory_order_relaxed);
+      this->tails_[e3_q].tailp.store(&this->tails_[e3_q].head[0], std::memory_order_relaxed);
+      this->headp_[e3_q] = &this->tails_[e3_q].head[0];
     }
     
-    return did_something;
+    ps.did_something |= did_something;
   }
 
   template<int rn>
   template<typename Rcv, typename Batch>
-  bool channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch, bool epoch_bumped, std::uint64_t epoch_old) {
+  void channels_r<rn>::receive_batch(Rcv &&rcv, Batch &&batch, threads::progress_state &ps) {
     static constexpr int rail_n = channels_r<rn>::rail_n;
     
-    std::uint64_t epoch_new = epoch_old + (epoch_bumped ? 1 : 0);
+    std::uint64_t epoch_new = ps.epoch_old + 1;
     bool did_something = false;
     std::atomic<message*> *headp[rail_n];
     std::atomic<message*> *tailp[rail_n];
     std::intptr_t n_par = 0;
     std::intptr_t n_seq[rail_n];
 
-    if(DEVA_THREADS_ALLOC_EPOCH && rn > 1 && epoch_bumped) {
+    if(DEVA_THREADS_ALLOC_EPOCH && rn > 1 && ps.epoch_bumped) {
       for(int rail=0; rail < rail_n; rail++) {
         headp[rail] = this->headp_[rail];
         this->headp_[rail] = &this->tails_[rail].head[epoch_new%2];
@@ -484,16 +485,15 @@ namespace threads {
     }
     #endif
 
-    if(DEVA_THREADS_ALLOC_EPOCH && rn == 1 && epoch_bumped) {
+    if(DEVA_THREADS_ALLOC_EPOCH && rn == 1 && ps.epoch_bumped) {
       DEVA_ASSERT_ALWAYS(rail_n == 3);
-      int e3_dead = threads::epoch_mod3() + 1;
-      if(e3_dead == 3) e3_dead = 0;
-      this->tails_[e3_dead].head[0].store(nullptr, std::memory_order_relaxed);
-      this->tails_[e3_dead].tailp.store(&this->tails_[e3_dead].head[0], std::memory_order_relaxed);
-      this->headp_[e3_dead] = &this->tails_[e3_dead].head[0];
+      int e3_q = threads::template epoch3_inc<+1>(threads::epoch_mod3());
+      this->tails_[e3_q].head[0].store(nullptr, std::memory_order_relaxed);
+      this->tails_[e3_q].tailp.store(&this->tails_[e3_q].head[0], std::memory_order_relaxed);
+      this->headp_[e3_q] = &this->tails_[e3_q].head[0];
     }
     
-    return did_something;
+    ps.did_something |= did_something;
   }
 }}
 #endif

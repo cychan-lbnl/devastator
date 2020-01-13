@@ -141,24 +141,21 @@ def _everything():
 
   @export
   @coflow.coroutine
-  def process(args, show=True, capture_stdout=False, stdin='', cwd=None, env=None, env_add=None):
+  def process(args, show=True, stdin='', cwd=None, env=None, env_add=None):
     """
     Execute the `args` list of strings as a command with appropriate
     `os.execvp` variant. The stderr output of the process will be
     captured in a pseudo-terminal (not just a pipe) into a string
-    buffer and logged with `noiselog` appropriately. If `capture_stdout`
-    is `True`, then the child's stdout will be captured in a pipe and
-    later returned, otherwise stdout will be intermingled with the
-    logged stderr. If `cwd` is present and not `None` it is the
-    directory path in which to execute the child. If `env` or `env_add` are
-    present and not `None` they must be a dictionary of string to stringable
-    (via str(x)) representing the environment in which to execute the child.
+    buffer and logged with `noiselog` appropriately. If `cwd` is present and
+    not `None` it is the directory path in which to execute the child. If `env`
+    or `env_add` are present and not `None` they must be a dictionary of string
+    to stringable (via str(x)) representing the environment in which to execute
+    the child.
     
     This function returns a future representing the termination of
     the child process. If the child has a return code of zero, then the
-    future will contain the empty or stdout string depending on the
-    value of `capture_stdout`. If the return code is non-zero then the
-    future will be exceptional of type `noiselog.LoggedError`, thus
+    future will contain the stdout string. If the return code is non-zero then
+    the future will be exceptional of type `noiselog.LoggedError`, thus
     indicating an aborting execution.
     """
 
@@ -176,8 +173,6 @@ def _everything():
     except:
       print('args',args)
       raise
-
-    capture_stdout = capture_stdout or force_mute
 
     if env is not None or env_add:
       def fmt(x):
@@ -214,9 +209,8 @@ def _everything():
         msg += '\n'*2
         sys.stderr.write(msg)
 
-      if 1 or capture_stdout:
-        stdout_r, stdout_w = os.pipe()
-        set_nonblock(stdout_r)
+      stdout_r, stdout_w = os.pipe()
+      set_nonblock(stdout_r)
 
       stdin_r, stdin_w = os.pipe()
       set_nonblock(stdout_w)
@@ -224,10 +218,9 @@ def _everything():
       pid, ptfd = os.forkpty()
       
       if pid == 0: # i am child
-        if 1 or capture_stdout:
-          os.close(stdout_r)
-          os.dup2(stdout_w, 1)
-          os.close(stdout_w)
+        os.close(stdout_r)
+        os.dup2(stdout_w, 1)
+        os.close(stdout_w)
 
         os.close(stdin_w)
         os.dup2(stdin_r, 0)
@@ -254,19 +247,13 @@ def _everything():
           os.close(stdin_r)
           io_w[stdin_w] = (reversed_bufs(stdin), job)
         
-          if 1 or capture_stdout:
-            job.wait_n += 1
-            os.close(stdout_w)
-            io_r[stdout_r] = ([], 'stdout', job)
-          else:
-            job.outputs['stdout'] = ''
+          job.wait_n += 1
+          os.close(stdout_w)
+          io_r[stdout_r] = ([], 'stdout', job)
           
           io_cond.notify()
 
     status, out, err = yield coflow.submit_job(Job(go))
-    
-    if not capture_stdout:
-      out = ''
     
     if status == 0:
       if show and not force_mute and len(err) != 0:

@@ -48,9 +48,13 @@ namespace deva {
   constexpr int process_rank_hi(int proc) { return rank_n; }
   
   inline void barrier(bool deaf) {
-    threads::barrier(
-      deaf ? nullptr
-           : (void(*)(threads::progress_state&))[](threads::progress_state&){}
+    threads::barrier(deaf
+      ? nullptr
+      : (void(*)(threads::progress_state&))
+        [](threads::progress_state &ps) {
+          threads::progress_stage1_reclaims(ps);
+          threads::progress_stage2_recieves(ps);
+        }
     );
   }
   

@@ -39,15 +39,31 @@ def sources_from_includes_enabled(PATH):
     brutal.here('test')
   )
 
-def code_context_base():
+def base_env():
   debug = brutal.env('debug', 0)
   optlev = brutal.env('optlev', 0 if debug else 3)
   syms = brutal.env('syms', 1 if debug else 0)
-  opnew = brutal.env('opnew', 0 if debug else 1)
+  opnew = brutal.env('opnew', 'libc' if debug else 'deva', universe=['libc','deva','jemalloc'])
   asan = brutal.env('asan', 1 if debug else 0)
-  
-  pp_misc = brutal.env('CXX_PPFLAGS', [])
+  return debug, optlev, syms, opnew, asan
+
+@brutal.rule
+def base_cg_flags():
+  debug, optlev, syms, opnew, asan = base_env()
+
+  asan_flags = ['-fsanitize=address'] if asan else []
   cg_misc = brutal.env('CXX_CGFLAGS', [])
+
+  return (
+      (['-flto'] if optlev == 3 else []) +
+      (['-g'] if syms else []) +
+      asan_flags
+    ) + cg_misc
+
+def code_context_base():
+  debug, optlev, syms, opnew, asan = base_env()
+
+  pp_misc = brutal.env('CXX_PPFLAGS', [])
   asan_flags = ['-fsanitize=address'] if asan else []
   
   return CodeContext(
@@ -55,17 +71,12 @@ def code_context_base():
     pp_angle_dirs = [brutal.here('src')],
     pp_misc = cxx14_flags() + pp_misc,
     cg_optlev = optlev,
-    cg_misc = (
-        (['-flto'] if optlev == 3 else []) +
-        (['-g'] if syms else []) +
-        asan_flags +
-        ['-Wno-unknown-warning-option','-Wno-aligned-new']
-      ) + cg_misc,
+    cg_misc = base_cg_flags() + ['-Wno-unknown-warning-option','-Wno-aligned-new'],
     ld_misc = (['-flto'] if optlev == 3 else []) + asan_flags,
     pp_defines = {
       'DEBUG': 1 if debug else 0,
       'NDEBUG': None if debug else 1,
-      'DEVA_OPNEW': opnew
+      'DEVA_OPNEW_'+opnew.upper(): 1
     }
   )
 

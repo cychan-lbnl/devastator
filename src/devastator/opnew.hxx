@@ -4,8 +4,14 @@
 #ifndef _b562d0d1055e42598549ddbccfb1b879
 #define _b562d0d1055e42598549ddbccfb1b879
 
-#ifndef DEVA_OPNEW
-  #define DEVA_OPNEW 0
+#ifndef DEVA_OPNEW_DEVA
+  #define DEVA_OPNEW_DEVA 0
+#endif
+#ifndef DEVA_OPNEW_LIBC
+  #define DEVA_OPNEW_LIBC 0
+#endif
+#ifndef DEVA_OPNEW_JEMALLOC
+  #define DEVA_OPNEW_JEMALLOC 0
 #endif
 
 #ifndef DEVA_OPNEW_DEBUG
@@ -14,7 +20,10 @@
 
 #include <new>
 
-#if !DEVA_OPNEW
+#if DEVA_OPNEW_LIBC || DEVA_OPNEW_JEMALLOC
+  #if DEVA_OPNEW_JEMALLOC
+    #include <external/jemalloc.h>
+  #endif
   namespace deva {
   namespace opnew {
     inline void progress() {}
@@ -29,7 +38,7 @@
       ::operator delete(obj);
     }
   }}
-#else
+#elif DEVA_OPNEW_DEVA
   namespace deva {
   namespace opnew {
     void* operator_new(std::size_t);
@@ -38,6 +47,7 @@
     void operator_delete(void *obj) noexcept;
   }}
 #endif
+
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -46,7 +56,7 @@
 #ifndef _1fa947340f884819abb443776c659c8a
 #define _1fa947340f884819abb443776c659c8a
 
-#if DEVA_OPNEW
+#if DEVA_OPNEW_DEVA
 
 #include <devastator/diagnostic.hxx>
 #include <devastator/threads.hxx>

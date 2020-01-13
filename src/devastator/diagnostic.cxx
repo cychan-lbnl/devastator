@@ -84,7 +84,12 @@ deva::datarow deva::describe() {
   datarow ans;
 
   ans &= datarow::x("git", DEVA_GIT_VERSION);
-  ans &= datarow::x("opnew", DEVA_OPNEW);
+  ans &= datarow::x("opnew",
+    DEVA_OPNEW_DEVA ? "deva" :
+    DEVA_OPNEW_LIBC ? "libc" :
+    DEVA_OPNEW_JEMALLOC ? "jemalloc" :
+    nullptr
+  );
   
   #if DEVA_WORLD
     ans &= datarow::x("world", DEVA_WORLD_THREADS ? "threads" : "gasnet" );

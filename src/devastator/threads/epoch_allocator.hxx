@@ -60,6 +60,7 @@ namespace threads {
     }
 
     void *ans = base_ + std::intptr_t(bump1)*grain_size;
+    DEVA_ASSERT(base_ <= (char*)ans && (char*)ans + size <= base_ + capacity_*grain_size);
     //deva::say()<<"allocd "<<bump1*grain_size;
     DEVA_ASSERT(bump_ <= bump1 + size && bump1 + size <= wall_);
     bump_ = bump1 + size;

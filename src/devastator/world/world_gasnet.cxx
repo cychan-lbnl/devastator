@@ -171,12 +171,9 @@ namespace {
 }
 
 namespace {
-  void burst_remote_recv(deva::threads::progress_state &ps) {
+  void progress_remote_stage2_recieves(deva::threads::progress_state &ps) {
     int tme = threads::thread_me();
-
-    deva::remote_send_chan_w[tme].reclaim(ps);
-    
-    ps.did_something |= deva::remote_recv_chan_r[tme].receive(
+    deva::remote_recv_chan_r[tme].receive(
       [](threads::message *m) {
         auto *ms = static_cast<remote_in_messages*>(m);
         
@@ -189,16 +186,24 @@ namespace {
           command::execute(r);
         }
       },
-      ps.epoch_bumped, ps.epoch_old
+      ps
     );
   }
 }
 
 void deva::progress(bool spinning) {
+  const int tme = threads::thread_me();
+
   threads::progress_state ps;
   do {
     threads::progress_begin(ps);
-    burst_remote_recv(ps);
+
+    threads::progress_stage1_reclaims(ps);
+    deva::remote_send_chan_w[tme].reclaim(ps);
+
+    threads::progress_stage2_recieves(ps);
+    progress_remote_stage2_recieves(ps);
+
     threads::progress_end(ps);
   } while(ps.backlogged);
   
@@ -445,6 +450,8 @@ namespace {
     int bun_head = -1;
     
     uint32_t nonce_bump = 0;
+
+    const int tme = threads::thread_me();
     
     while(!leave_pump.load(std::memory_order_relaxed)) {
       gasnet_AMPoll();
@@ -452,12 +459,15 @@ namespace {
       threads::progress_state ps;
 
       threads::progress_begin(ps);
-      
+
+      threads::progress_stage1_reclaims(ps);
       deva::remote_recv_chan_w.reclaim(ps);
+      deva::remote_send_chan_w[tme].reclaim(ps);
+
+      threads::progress_stage2_recieves(ps);
+      progress_remote_stage2_recieves(ps);
       
-      burst_remote_recv(ps);
-      
-      ps.did_something |= deva::remote_send_chan_r[0].receive_batch(
+      deva::remote_send_chan_r[tme].receive_batch(
         // lambda called to receive each message
         [&](threads::message *m) {
           auto *rm = static_cast<remote_out_message*>(m);
@@ -653,7 +663,7 @@ namespace {
             }
           }
         },
-        ps.epoch_bumped, ps.epoch_old
+        ps
       );
 
       threads::progress_end(ps);

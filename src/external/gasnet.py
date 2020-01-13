@@ -4,14 +4,6 @@ def gasnet_source(url):
   src_dir = brutal.untar(tgz)
   return src_dir
 
-
-
-
-# ENABLE DEBUG BUILD
-
-
-
-
 @brutal.rule(caching='file')
 @brutal.coroutine
 def gasnet_configured(url, cross, cc, cxx, debug):
@@ -54,7 +46,7 @@ def gasnet_context(url, cross, conduit, sync, cc, cxx, debug):
       brutal.error('Makefile %s not found.'%makefile)
     val = val.decode().strip(' \t\n')
     return shlex.split(val)
-  
+
   yield CodeContext(
     compiler = cxx,
     ld_misc = extract('GASNET_LDFLAGS'),

@@ -126,8 +126,8 @@ def _everything():
   
   @digest.by_name
   def artifact_path(art_id, suf):
-    suf = suf.replace('%','@')
-    return os_path_join(path_art, '%x%%%s'%(art_id, suf))
+    suf = re.sub(r'^[0-9a-f]+@', '', suf)
+    return os_path_join(path_art, '%x@%s'%(art_id, suf))
   
   DB_MAGIC = b'BRUTAL001\n'
   DB_TAG_BRANCH = 0
@@ -652,7 +652,7 @@ def _everything():
   @export
   def mkpath(suffix=''):
     _, suffix = os.path.split(suffix)
-    suffix = re.sub('^[0-9a-f]+%', '', suffix)
+    suffix = re.sub(r'^[0-9a-f]+@', '', suffix)
     
     db = _db()
     art_id = db.art_id_bump

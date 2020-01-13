@@ -28,6 +28,16 @@ namespace threads {
   constexpr int thread_n = DEVA_THREAD_N;
   constexpr int log2_thread_n = log_up(thread_n, 2);
 
+  template<int delta>
+  inline int epoch3_inc(int e) {
+    switch(((delta%3) + 3)%3) {
+    case 1: return e + (e==2 ? -2 : 1);
+    case 2: return e + (e==0 ? 2 : -1);
+    case 0:
+    default: return e;
+    }
+  }
+
   int const& thread_me();
 
   std::uint64_t epoch();
@@ -40,10 +50,13 @@ namespace threads {
     bool did_something = false;
     bool backlogged = false;
     bool epoch_bumped;
+    std::int32_t epoch3_old;
     std::uint64_t epoch_old;
   };
 
   void progress_begin(progress_state &ps);
+  void progress_stage1_reclaims(progress_state &ps);
+  void progress_stage2_recieves(progress_state &ps);
   void progress_end(progress_state ps);
   
   void barrier(void(*progress_work)(threads::progress_state&));
@@ -119,11 +132,7 @@ namespace threads {
     #if 1 && DEVA_THREADS_ALLOC_EPOCH
       // nop
     #else
-      #if DEVA_OPNEW
-        opnew::template operator_delete</*known_size=*/0, /*known_local=*/DEVA_THREADS_ALLOC_OPNEW_SYM>(m);
-      #else
-        ::operator delete(m);
-      #endif
+      opnew::template operator_delete</*known_size=*/0, /*known_local=*/DEVA_THREADS_ALLOC_OPNEW_SYM>(m);
     #endif
   }
 

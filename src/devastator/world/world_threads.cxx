@@ -6,6 +6,8 @@ void deva::progress(bool spinning) {
   threads::progress_state ps;
   do {
     threads::progress_begin(ps);
+    threads::progress_stage1_reclaims(ps);
+    threads::progress_stage2_recieves(ps);
     threads::progress_end(ps);
   } while(ps.backlogged);
   

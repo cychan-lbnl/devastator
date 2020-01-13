@@ -79,11 +79,11 @@ def sources_for_include(PATH):
 @brutal.coroutine
 def compiler_version_and_pp_defines(compiler, lang):
   # get the --version text from the compiler
-  version = yield brutal.process(compiler + ['--version'], show=0, capture_stdout=1)
+  version = yield brutal.process(compiler + ['--version'], show=0)
 
   # ask the compiler to dump all predefined #define's
   cmd = compiler + ['-x',lang,'-dM','-E','-']
-  lines = yield brutal.process(cmd, stdin='', show=0, capture_stdout=1)
+  lines = yield brutal.process(cmd, stdin='', show=0)
   lines = [line for line in lines.split('\n') if line]
   defs = {}
   import re
@@ -103,7 +103,7 @@ def includes(PATH, compiler, pp_flags):
   brutal.depend_file(PATH)
   
   cmd = compiler + pp_flags + ['-MM','-MT','x',PATH]
-  mk = yield brutal.process(cmd, capture_stdout=True)
+  mk = yield brutal.process(cmd)
   mk = mk[mk.index(":")+1:]
   import shlex
   incs = shlex.split(mk.replace("\\\n",""))[1:] # first is source file
@@ -167,6 +167,10 @@ def discovery(main_src):
         if not sources_from_includes_enabled(src):
           srcs_seen[src] = ()
         else:
+          try: memo_cxt[src].compiler()
+          except:
+            import sys
+            print('bad cxt',src,memo_cxt[src],file=sys.stderr)
           incs = yield includes(src, memo_cxt[src].compiler(), pp_flags)
           srcs_seen[src] = incs
           incs = [inc for inc in incs if inc not in incs_seen]

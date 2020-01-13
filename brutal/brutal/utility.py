@@ -50,6 +50,6 @@ def untar(path_tar):
 def git_describe(cwd):
   version = process(
       ['git','describe','--dirty','--always','--tags'],
-      cwd=cwd, capture_stdout=1, show=0
+      cwd=cwd, show=0
     ).wait().strip()
   return memodb.Named(version, '')
