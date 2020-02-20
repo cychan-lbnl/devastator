@@ -13,7 +13,7 @@
 namespace opnew = deva::opnew;
 namespace threads = deva::threads;
 
-__thread int threads::thread_me_ = DEVA_THREAD_N == 1 ? 0 : -1;
+__thread int threads::thread_me_ = -1;
 __thread int threads::epoch_mod3_ = 0;
 __thread threads::barrier_state_local<threads::thread_n> threads::barrier_l_;
 __thread threads::barrier_state_local<threads::thread_n> threads::epoch_barrier_l_;
