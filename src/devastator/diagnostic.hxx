@@ -13,6 +13,12 @@ namespace deva {
   void dbgbrk(bool *aborting=nullptr);
 }
 
+#if DEBUG
+  #define DEVA_DEBUG_ONLY(...) __VA_ARGS__
+#else
+  #define DEVA_DEBUG_ONLY(...)
+#endif
+
 #define DEVA_ASSERT_1(ok) \
   (!!(ok) || (::deva::assert_failed(__FILE__, __LINE__, "Failed condition: " #ok), 0))
 

@@ -74,6 +74,10 @@ namespace {
     uint64_t seq_id_bumper, seq_id_bumper_rewind;
     fridge *fridge_head = nullptr;
 
+    #if DEBUG
+    std::function<std::uint64_t()> checksummer;
+    #endif
+    
     std::pair<std::uint64_t/*time+1*/,std::uint64_t/*subtime*/>
       last_commit_t, rewind_commit_t;
     
@@ -287,6 +291,13 @@ void detail::register_state(int cd_ix, fridge *fr) {
   cd_state *cd = &sim_me.cds[cd_ix];
   fr->next = cd->fridge_head;
   cd->fridge_head = fr;
+}
+
+void pdes::register_checksum_if_debug(int32_t cd_ix, std::function<uint64_t()> &&fn) {
+#if DEBUG
+  cd_state *cd = &sim_me.cds[cd_ix];
+  cd->checksummer = std::move(fn);
+#endif
 }
 
 void detail::root_event(int32_t cd_ix, event *e) {
@@ -573,7 +584,7 @@ namespace {
         cxt.cd = cd->cd_ix;
         cxt.time = se.time;
         cxt.subtime = se.subtime;
-        se.e->vtbl_on_target->unexecute(se.e, cxt, do_delete);
+        se.e->vtbl_on_target->unexecute(se.e, cxt, DEVA_DEBUG_ONLY(cd->checksummer,) do_delete);
       }
 
       cd->undo_n_hi = 0;
@@ -785,6 +796,10 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
 
         int32_t origin_cd = cd->cd_ix;
         event *sent_near; {
+          #if DEBUG
+          se.e->entry_checksum = cd->checksummer ? cd->checksummer() : 0;
+          #endif
+          
           execute_context_impl cxt;
           cxt.cd = origin_cd;
           cxt.time = se.time;

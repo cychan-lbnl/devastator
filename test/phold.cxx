@@ -163,6 +163,10 @@ int main() {
 
       pdes::register_state(cd, &state_cur[cd]);
       pdes::register_state(cd, &check[cd]);
+
+      pdes::register_checksum_if_debug(cd, [=]()->uint64_t {
+        return state_cur[cd].a ^ state_cur[cd].b;
+      });
     }
     
     for(int ray=0; ray < ray_n; ray++) {

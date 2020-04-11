@@ -7,6 +7,7 @@
 #include <devastator/queue.hxx>
 
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <utility>
 
@@ -76,6 +77,13 @@ namespace pdes {
 
   template<typename T>
   void register_state(std::int32_t cd, T *address);
+
+  /* register_checksum_if_debug: Set a checksum function for the given cd that will
+   * be called after each unexecute() and internally asserted to ensure the
+   * checksum matches as it was upon event's entry. Checksums are ignored without the
+   * presence of DEBUG.
+   */
+  void register_checksum_if_debug(std::int32_t cd, std::function<std::uint64_t()> &&fn);
   
   /* drain: Collective wrt all arguments. Advances the simulation by processing
    * all events with a timestamp strictly less than `t_end`. If `rewindable=true`
@@ -155,7 +163,9 @@ namespace pdes {
     struct event_vtable {
       void(*destruct_and_delete)(event*);
       void(*execute)(event *me, execute_context &cxt);
-      void(*unexecute)(event *me, event_context cxt, bool should_delete);
+      void(*unexecute)(event *me, event_context cxt,
+                       DEVA_DEBUG_ONLY(std::function<uint64_t()> const &checksummer,)
+                       bool should_delete);
       void(*commit)(event *me, event_context cxt, bool should_delete);
     };
 
@@ -194,6 +204,9 @@ namespace pdes {
                    future_not_past:1, // bool
                    remove_after_undo:1; // bool
       std::int32_t future_ix;
+      #if DEBUG
+        std::uint64_t entry_checksum;
+      #endif
       
       event_on_target():
         existence(0),
@@ -401,11 +414,15 @@ namespace pdes {
         ::new(&me->exec_ret) ExecRet{me->user.execute(cxt)};
       }
       
-      static void unexecute(event *me1, event_context cxt, bool should_delete) {
+      static void unexecute(event *me1, event_context cxt,
+                            DEVA_DEBUG_ONLY(std::function<std::uint64_t()> const &checksummer,)
+                            bool should_delete) {
         auto *me = static_cast<event_impl<E>*>(me1);
         event_unexecute_dispatch<E, ExecRet>()(cxt, me->user, me->exec_ret);
-        me->exec_ret.~ExecRet();
 
+        DEVA_ASSERT(!checksummer || checksummer() == me->entry_checksum, "Checksum mismatch after unexecute. Point debugger here and inspect `me->user` (your event) and `me->exec_ret` (your event reverser).");
+        
+        me->exec_ret.~ExecRet();
         if(should_delete)
           delete me;
       }
@@ -683,7 +700,7 @@ namespace pdes {
   }
   
   //////////////////////////////////////////////////////////////////////////////
-  
+
   namespace detail {
     // Wraps an event pointer and stores its time & subtime redundantly so consumers don't
     // have to reach in to the creator's cache line to see that info.
