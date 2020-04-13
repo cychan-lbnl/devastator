@@ -4,6 +4,7 @@
 #include <devastator/intrusive_map.hxx>
 #include <devastator/intrusive_min_heap.hxx>
 #include <devastator/queue.hxx>
+#include <devastator/random.hxx>
 
 #include <atomic>
 #include <chrono>
@@ -673,6 +674,10 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   }
 
   bool spinning = false;
+
+  #if DEBUG
+  rng_xoshiro256ss rng(deva::rank_me());
+  #endif
   
   while(true) {
     deva::progress(spinning);
@@ -779,9 +784,22 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     }
     
     { // execute one event
-      cd_state *cd = sim_me.cds_by_now.peek_least().cd;
-      stamped_event se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
-
+      cd_state *cd;
+      stamped_event se;
+      
+      #if DEBUG
+        // pick a random cd, and 25% of time a random event
+        cd = &sim_me.cds[rng() % sim_me.local_cd_n];
+        if(rng() % 4 == 0 && cd->future_events.size() != 0)
+          se = cd->future_events.at(rng() % cd->future_events.size());
+        else
+          se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
+      #else
+        // pick least event
+        cd = sim_me.cds_by_now.peek_least().cd;
+        se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
+      #endif
+      
       spinning = true;
       if(se.time < look_t_ub) {
         spinning = false;
@@ -789,7 +807,11 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         DEVA_ASSERT(se.e->future_not_past);
         se.e->future_not_past = false;
         
-        cd->future_events.pop_least();
+        #if DEBUG
+          cd->future_events.erase(se);
+        #else
+          cd->future_events.pop_least();
+        #endif
         sim_me.cds_by_now.increased({cd, cd->now()});
         
         insert_past(cd, se);
