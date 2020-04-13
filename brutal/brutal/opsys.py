@@ -135,6 +135,15 @@ def _everything():
     return stat_S_ISLNK(lstat(path).st_mode)
   
   @export
+  def symlink(src, dst):
+    try:
+      os_symlink(src, dst)
+    except FileExistsError as e:
+      s = lstat(dst)
+      if not stat_S_ISLNK(s.st_mode) or os_readlink(dst) != src:
+        raise e
+  
+  @export
   @memoize
   def unsym_once(path):
     """
