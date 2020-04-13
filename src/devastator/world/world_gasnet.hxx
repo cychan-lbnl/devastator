@@ -66,7 +66,7 @@ namespace deva {
     static remote_out_message* make_help(Fn &&fn, Ub ub, std::false_type ub_valid) {
       typename std::aligned_storage<512,64>::type tmp;
       upcxx::detail::serialization_writer<false> w(&tmp, 512);
-      w.template place_new<remote_out_message>();
+      ::new(w.place(sizeof(remote_out_message), alignof(remote_out_message))) remote_out_message;
       upcxx::detail::command::serialize(w, ub.size, static_cast<Fn&&>(fn));
       w.place(0,8);
       DEVA_ASSERT(w.align() <= 8);
@@ -83,7 +83,7 @@ namespace deva {
     static remote_out_message* make_help(Fn &&fn, Ub ub, std::true_type ub_valid) {
       void *buf = threads::alloc_message(ub.size_aligned(8), 8);
       upcxx::detail::serialization_writer<true> w(buf);
-      auto *rm = w.template place_new<remote_out_message>();
+      auto *rm = ::new(w.place(sizeof(remote_out_message), alignof(remote_out_message))) remote_out_message;
       upcxx::detail::command::serialize(w, ub.size, static_cast<Fn&&>(fn));
       DEVA_ASSERT(w.align() <= 8);
       w.place(0,8);
@@ -194,5 +194,6 @@ namespace deva {
 }
 
 #define SERIALIZED_FIELDS UPCXX_SERIALIZED_FIELDS
+#define SERIALIZED_VALUES UPCXX_SERIALIZED_VALUES
 
 #endif

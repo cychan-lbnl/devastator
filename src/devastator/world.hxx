@@ -27,6 +27,7 @@ namespace deva {
 
   #if 0 // no way to forward decalre #define's
     #define SERIALIZED_FIELDS(...)
+    #define SERIALIZED_VALUES(...)
   #endif
 
   void run(upcxx::detail::function_ref<void()> fn);

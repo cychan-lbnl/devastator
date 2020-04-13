@@ -23,7 +23,7 @@ namespace detail {
 
     static void execute(detail::serialization_reader &r) {
       char const *head_before = r.head();
-      executor_wire_t exec = r.template pop_trivial<executor_wire_t>();
+      executor_wire_t exec = r.template read_trivial<executor_wire_t>();
       UPCXX_ASSERT(exec.u_ != 0);
       exec.fnptr_non_null()(r, head_before);
     }
@@ -48,7 +48,7 @@ namespace detail {
       
       executor_wire_t exec = executor_wire_t(&the_executor<Fn>);
       
-      w.template push_trivial<executor_wire_t>(exec);
+      w.template write_trivial<executor_wire_t>(exec);
       
       serialization_traits<Fn>::serialize(w, fn);
       

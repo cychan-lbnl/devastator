@@ -22,6 +22,7 @@ namespace deva {
   constexpr int log2up_rank_n = log_up(rank_n, 2);
 
   #define SERIALIZED_FIELDS(...) /*nothing*/
+  #define SERIALIZED_VALUES(...) /*nothing*/
   
   inline void run(upcxx::detail::function_ref<void()> fn) {
     threads::run(fn);

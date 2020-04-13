@@ -2,8 +2,10 @@
 #define _661bba4d_9f90_4fbe_b617_4474e1ed8cab
 
 #include <upcxx/diagnostic.hpp>
+#include <upcxx/upcxx_config.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -11,8 +13,26 @@
 #include <sstream>
 #include <tuple>
 #include <utility>
+#include <new> // launder
 
-#include <cstdlib> // std::aligned_alloc, posix_memalign
+// RTTI support
+#ifndef UPCXX_HAVE_RTTI
+#define UPCXX_HAVE_RTTI (__GXX_RTTI || __cpp_rtti)
+#endif
+#if UPCXX_HAVE_RTTI
+#include <typeinfo> // typeid
+#endif
+
+#include <cstdlib> // posix_memalign
+
+// UPCXX_RETURN_DECLTYPE(type): use this inplace of "-> decltype(type)" so that
+// for compilers which choke on such return types (icc) it can be elided in
+// the presence of C++14.
+#if !defined(__INTEL_COMPILER) || __cplusplus <= 201199L
+  #define UPCXX_RETURN_DECLTYPE(...) -> decltype(__VA_ARGS__)
+#else
+  #define UPCXX_RETURN_DECLTYPE(...)
+#endif
 
 namespace upcxx {
 namespace detail {
@@ -133,14 +153,29 @@ namespace detail {
 
   template<std::size_t align>
   inline void memcpy_aligned(void *dst, void const *src, std::size_t sz) noexcept {
+  #if UPCXX_HAVE___BUILTIN_ASSUME_ALIGNED
     std::memcpy(__builtin_assume_aligned(dst, align),
                 __builtin_assume_aligned(src, align), sz);
+  #else
+    std::memcpy(dst, src, sz);
+  #endif
   }
 
   //////////////////////////////////////////////////////////////////////////////
-  // detail::launder
+  // detail::launder & detail::launder_unconstructed
 
-  #if __cplusplus >= 201703L
+  // *Hopefully*, make it impossible for the compiler to prove to itself that
+  // that `p` doesn't point to an object of type T. This can be used when you
+  // know the underlying bytes encode a valid T, but it hasn't been actually
+  // constructed as such.
+  template<typename T>
+  T* launder_unconstructed(T *p) noexcept {
+    asm("" : "+rm"(p) : "rm"(p) :);
+    return p;
+  }
+
+  #if __cpp_lib_launder >= 201606 /* std::launder is not reliably available in C++17 (eg clang 8) */ \
+      && !__PGI /* issue #289/#297: std::launder broken for all known versions of PGI */
     template<typename T>
     constexpr T* launder(T *p) {
       return std::launder(p);
@@ -148,8 +183,7 @@ namespace detail {
   #else
     template<typename T>
     T* launder(T *p) noexcept {
-      asm("" : "+rm"(p) : "rm"(p) :);
-      return p;
+      return launder_unconstructed(p);
     }
   #endif
   
@@ -164,7 +198,7 @@ namespace detail {
     }
     template<typename T>
     T* construct_default(void *spot, std::false_type deft_ctor) {
-      return detail::template launder<T>(reinterpret_cast<T*>(spot));
+      return detail::template launder_unconstructed<T>(reinterpret_cast<T*>(spot));
     }
   }
   
@@ -184,41 +218,45 @@ namespace detail {
   namespace help {
     template<typename T>
     T* construct_trivial(void *dest, const void *src, std::true_type deft_ctor, std::true_type triv_copy) {
-      T *ans = reinterpret_cast<T*>(::new(dest) T);
-      detail::template memcpy_aligned<alignof(T)>(ans, src, sizeof(T));
+      using T1 = typename std::remove_const<T>::type;
+      T1 *ans = reinterpret_cast<T1*>(::new(dest) T1);
+      detail::template memcpy_aligned<alignof(T1)>(ans, src, sizeof(T1));
       return ans;
     }
     template<typename T>
     T* construct_trivial(void *dest, const void *src, std::true_type deft_ctor, std::false_type triv_copy) {
-      ::new(dest) T;
-      detail::template memcpy_aligned<alignof(T)>(dest, src, sizeof(T));
-      return detail::template launder<T>(reinterpret_cast<T*>(dest));
+      using T1 = typename std::remove_const<T>::type;
+      ::new(dest) T1;
+      detail::template memcpy_aligned<alignof(T1)>(dest, src, sizeof(T1));
+      return detail::template launder<T1>(reinterpret_cast<T1*>(dest));
     }
     template<typename T, bool any>
     T* construct_trivial(void *dest, const void *src, std::false_type deft_ctor, std::integral_constant<bool,any> triv_copy) {
       detail::template memcpy_aligned<alignof(T)>(dest, src, sizeof(T));
-      return detail::launder(reinterpret_cast<T*>(dest));
+      return detail::launder_unconstructed(reinterpret_cast<T*>(dest));
     }
     
     template<typename T>
     T* construct_trivial(void *dest, const void *src, std::size_t n, std::true_type deft_ctor, std::true_type triv_copy) {
-      T *ans = nullptr;
+      using T1 = typename std::remove_const<T>::type;
+      T1 *ans = nullptr;
       for(std::size_t i=n; i != 0;)
-        ans = ::new((T*)dest + --i) T;
-      detail::template memcpy_aligned<alignof(T)>(ans, src, n*sizeof(T));
+        ans = ::new((T1*)dest + --i) T1;
+      detail::template memcpy_aligned<alignof(T1)>(ans, src, n*sizeof(T1));
       return ans;
     }
     template<typename T>
     T* construct_trivial(void *dest, const void *src, std::size_t n, std::true_type deft_ctor, std::false_type triv_copy) {
+      using T1 = typename std::remove_const<T>::type;
       for(std::size_t i=n; i != 0;)
-        ::new((T*)dest + --i) T;
-      detail::template memcpy_aligned<alignof(T)>(dest, src, n*sizeof(T));
-      return detail::template launder<T>(reinterpret_cast<T*>(dest));
+        ::new((T1*)dest + --i) T1;
+      detail::template memcpy_aligned<alignof(T1)>(dest, src, n*sizeof(T1));
+      return detail::template launder<T1>(reinterpret_cast<T1*>(dest));
     }
     template<typename T, bool any>
     T* construct_trivial(void *dest, const void *src, std::size_t n, std::false_type deft_ctor, std::integral_constant<bool,any> triv_copy) {
       detail::template memcpy_aligned<alignof(T)>(dest, src, n*sizeof(T));
-      return detail::launder(reinterpret_cast<T*>(dest));
+      return detail::launder_unconstructed(reinterpret_cast<T*>(dest));
     }
   }
   
@@ -243,32 +281,108 @@ namespace detail {
   // detail::destruct
 
   template<typename T>
-  void destruct(T &x) noexcept { x.~T(); }
-  
+  struct destruct_dispatch {
+    void operator()(T &x) const noexcept { x.~T(); }
+  };
   template<typename T, std::size_t n>
-  void destruct(T (&x)[n]) noexcept {
-    for(std::size_t i=0; i != n; i++)
-      destruct(x[i]);
-  }
+  struct destruct_dispatch<T[n]> {
+    void operator()(T (&x)[n]) const noexcept {
+      for(std::size_t i=0; i != n; i++)
+        destruct_dispatch<T>()(x[i]);
+    }
+  };
+  
+  template<typename T>
+  void destruct(T &x) noexcept { destruct_dispatch<T>()(x); }
   
   //////////////////////////////////////////////////////////////////////////////
   // detail::alloc_aligned
 
   inline void* alloc_aligned(std::size_t size, std::size_t align) noexcept {
-  #if __cplusplus >= 201703L
-    void *p = std::aligned_alloc(align, size);
-    UPCXX_ASSERT(p != nullptr, "std::aligned_alloc returned nullptr");
-    return p;
-  #else
+    UPCXX_ASSERT(
+      align != 0 && (align & (align-1)) == 0,
+      "upcxx::detail::alloc_aligned: Invalid align="<<align
+    );
+
+    // Note: do not use std::aligned_alloc (C++17) since it does not *portably*
+    // support extended alignments (those greater than std::max_align_t), and
+    // thus is no better than ::operator new().
+
+    // Make align = max(align, sizeof(void*))
+    align -= 1;
+    align |= sizeof(void*)-1;
+    align += 1;
+    // Round size up to a multiple of alignment
+    size = (size + align-1) & -align;
+    
     void *p;
     int err = posix_memalign(&p, align, size);
-    if(err != 0) UPCXX_ASSERT(false, "posix_memalign failed with return="<<err);
+    UPCXX_ASSERT_ALWAYS(err == 0,
+      "upcxx::detail::alloc_aligned: posix_memalign(align="<<align<<", size="<<size<<"): failed with return="<<err
+    );
     return p;
-  #endif
   }
 
   //////////////////////////////////////////////////////////////////////////////
-  // detail::raw_storage<T>: Like std::aligned_storage, except more convenient.
+  // detail::is_aligned
+
+  inline bool is_aligned(void const *x, std::size_t align) {
+    UPCXX_ASSERT((align & (align-1)) == 0, "align must be a power of 2");
+    return 0 == (reinterpret_cast<std::uintptr_t>(x) & (align-1));
+  }
+  
+  //////////////////////////////////////////////////////////////////////////////
+  // xaligned_storage: like std::aligned_storage::type except:
+  //   1. Supports extended alignemnts greater than alignof(std::max_align_t)
+  //   2. Does not guarantee that `sizeof(xaligned_storage<S,A>::type) == S` since it might
+  //      include padding space to achieve the alignemnt dynamically.
+  //   3. Does not guarantee to be a trivial type.
+  //   4. Access to the aligned memory is provided by the `storage()` member,
+  //      alignment of the xaligned_storage object itself is unspecified.
+  //
+  // The intenteded use case is for small stack-allocated serialization buffers.
+  // The other potential use case is to hold overly-aligned types, but currently
+  // we have none so for that usage we stick to `std::aligned_storage<>::type`.
+  
+  template<std::size_t size, std::size_t align,
+           bool valid = 0 == (align & (align-1)),
+           bool extended = (align > alignof(std::max_align_t))>
+  struct xaligned_storage;
+
+  template<std::size_t size, std::size_t align>
+  struct xaligned_storage<size, align, /*valid=*/true, /*extended=*/false> {
+    typename std::aligned_storage<(size + align-1) & -align, align>::type storage_;
+
+    void const* storage() const noexcept { return &storage_; }
+    void*       storage()       noexcept { return &storage_; }
+  };
+  
+  template<std::size_t size, std::size_t align>
+  struct xaligned_storage<size, align, /*valid=*/true, /*extended=*/true> {
+    char xbuf_[size + align-1];
+    
+    void const* storage() const noexcept {
+      std::uintptr_t u = reinterpret_cast<std::uintptr_t>(&xbuf_);
+      return &xbuf_[-u & (align-1)];
+    }
+    void*       storage()       noexcept {
+      std::uintptr_t u = reinterpret_cast<std::uintptr_t>(&xbuf_);
+      return &xbuf_[-u & (align-1)];
+    }
+
+    xaligned_storage() noexcept = default;
+    xaligned_storage(xaligned_storage const &that) noexcept {
+      detail::memcpy_aligned<align>(this->storage(), that.storage(), size);
+    }
+    xaligned_storage& operator=(xaligned_storage const &that) noexcept {
+      if(this != &that)
+        detail::memcpy_aligned<align>(this->storage(), that.storage(), size);
+      return *this;
+    }
+  };
+
+  //////////////////////////////////////////////////////////////////////////////
+  // detail::raw_storage<T>: Like std::aligned_storage<>::type, except more convenient.
   // The typed value exists in the `value()` member, but isnt implicitly
   // constructed. Construction should be done by user with placement new like:
   //   `::new(&my_storage) T(...)`.
@@ -276,11 +390,16 @@ namespace detail {
   // responsibility.
 
   template<typename T>
-  struct raw_storage {
-    typename std::aligned_storage<sizeof(T), alignof(T)>::type raw;
+  class raw_storage {
+    typename std::aligned_storage<sizeof(T), alignof(T)>::type raw_;
 
+  public:
+    void* raw() noexcept {
+      return &raw_;
+    }
+    
     T& value() noexcept {
-      return *detail::launder(reinterpret_cast<T*>(&raw));
+      return *detail::launder(reinterpret_cast<T*>(&raw_));
     }
     
     // Invoke value's destructor.
@@ -392,9 +511,9 @@ namespace detail {
   template<int n>
   using make_index_sequence = typename help::make_index_sequence<n>::type;
 
-  //////////////////////////////////////////////////////////////////////
-  // add_lref_if_nonref: Add a lvalue-reference (&) to type T if T isn't
-  // already a reference (& or &&) type.
+  //////////////////////////////////////////////////////////////////////////////
+  // add_lref_if_nonref: Add a lvalue-reference (&) to type T if T isn't already
+  // a reference (& or &&) type.
   
   template<typename T>
   struct add_lref_if_nonref { using type = T&; };
@@ -404,6 +523,32 @@ namespace detail {
   
   template<typename T>
   struct add_lref_if_nonref<T&&> { using type = T&&; };
+
+  //////////////////////////////////////////////////////////////////////////////
+  // add_clref_if_nonref: Add a const-lvalue-reference (const &) to type T if T
+  // isn't already a reference (& or &&) type.
+  
+  template<typename T>
+  struct add_clref_if_nonref { using type = T const&; };
+  
+  template<typename T>
+  struct add_clref_if_nonref<T&> { using type = T&; };
+  
+  template<typename T>
+  struct add_clref_if_nonref<T&&> { using type = T&&; };
+
+  //////////////////////////////////////////////////////////////////////////////
+  // add_rref_if_nonref: Add a rvalue-reference (&&) to type T if T isn't
+  // already a reference (& or &&) type.
+  
+  template<typename T>
+  struct add_rref_if_nonref { using type = T&&; };
+  
+  template<typename T>
+  struct add_rref_if_nonref<T&> { using type = T&; };
+  
+  template<typename T>
+  struct add_rref_if_nonref<T&&> { using type = T&&; };
   
   //////////////////////////////////////////////////////////////////////
 
@@ -611,6 +756,15 @@ namespace detail {
   }
   
   //////////////////////////////////////////////////////////////////////
+  // forward_as_tuple_decay_rrefs: like std::forward_as_tuple, but drops
+  // rvalue-refs (&&) from components, lvalues (&, const&) are preserved.
+  
+  template<typename ...T>
+  std::tuple<T...> forward_as_tuple_decay_rrefs(T &&...refs) {
+    return std::tuple<T...>(static_cast<T&&>(refs)...);
+  }
+    
+  //////////////////////////////////////////////////////////////////////
   // apply_tupled: Apply a callable against an argument list wrapped
   // in a tuple.
   
@@ -619,8 +773,8 @@ namespace detail {
     inline auto apply_tupled(
         Fn &&fn, Tup &&args, index_sequence<i...>
       )
-      -> decltype(fn(std::get<i>(args)...)) {
-      return fn(std::get<i>(args)...);
+      -> decltype(static_cast<Fn&&>(fn)(std::get<i>(static_cast<Tup&&>(args))...)) {
+      return static_cast<Fn&&>(fn)(std::get<i>(static_cast<Tup&&>(args))...);
     }
   }
   
@@ -637,6 +791,33 @@ namespace detail {
       make_index_sequence<std::tuple_size<Tup>::value>()
     );
   }
+
+  //////////////////////////////////////////////////////////////////////
+  // align_of<T>(): returns alignof(T) or 0 for incomplete types
+
+  template <typename T, std::size_t align = alignof(T)>
+  constexpr size_t align_of_(T *_) { return align; }
+  constexpr size_t align_of_(...) { return 0; }
+
+  template<typename T>
+  constexpr size_t align_of() { return align_of_((T*)nullptr); }
+
+  //////////////////////////////////////////////////////////////////////
+  // typename_of<T>(): returns typeid(T).name() or null for incomplete types
+
+  template <typename T, std::size_t x = sizeof(T)>
+  inline const char *typename_of_(T *_) { 
+    #if UPCXX_HAVE_RTTI
+      return typeid(T).name(); 
+    #else
+      return "";
+    #endif
+  }
+  inline const char *typename_of_(...) { return nullptr; }
+
+  template<typename T>
+  inline const char *typename_of() { return typename_of_((T*)nullptr); }
+
 } // namespace detail
 } // namespace upcxx
 #endif

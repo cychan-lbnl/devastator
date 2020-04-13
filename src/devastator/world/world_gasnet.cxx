@@ -350,7 +350,7 @@ namespace {
     chunked_by_key;
   
   void recv_part(int proc_from, int thread, upcxx::detail::serialization_reader &r) {
-    am_thread_part_header hdr = r.template pop_trivial<am_thread_part_header>();
+    am_thread_part_header hdr = r.template read_trivial<am_thread_part_header>();
     DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
     
     chunked_by_key.visit(
@@ -403,7 +403,7 @@ namespace {
     upcxx::detail::serialization_reader r(buf);
     
     while(thread_popn--) {
-      am_thread_header hdr = r.pop_trivial<am_thread_header>();
+      am_thread_header hdr = r.read_trivial<am_thread_header>();
       DEVA_ASSERT(hdr.deadbeef == 0xdeadbeef);
       
       if(hdr.has_part_head)
@@ -418,7 +418,7 @@ namespace {
         void *buf = threads::alloc_message(ub.size, 8);
         upcxx::detail::serialization_writer</*bounded=*/true> w(buf);
         
-        auto *m = w.place_new<remote_in_messages>();
+        auto *m = ::new(w.place(sizeof(remote_in_messages), alignof(remote_in_messages))) remote_in_messages;
         m->count = hdr.middle_msg_n;
 
         std::memcpy(w.place(size, 8), r.unplace(size, 8), size);
@@ -546,7 +546,7 @@ namespace {
                     
                     thread_popn_sent += 1;
 
-                    auto *hdr = w.place_new<am_thread_header>();
+                    auto *hdr = ::new(w.place(sizeof(am_thread_header), alignof(am_thread_header))) am_thread_header;
                     hdr->thread = t;
                     hdr->has_part_head = 0;
                     hdr->has_part_tail = 0;
@@ -560,7 +560,7 @@ namespace {
                       if(laytmp.size >= am_len) goto am_full;
 
                       hdr->has_part_head = 1;
-                      auto *part = w.place_new<am_thread_part_header>();
+                      auto *part = ::new(w.place(sizeof(am_thread_part_header), alignof(am_thread_part_header))) am_thread_part_header;
                       part->nonce = bun->of[t].nonce;
                       part->total_size8 = rm->size8;
                       part->part_size8 = std::min<int32_t>(rm->size8 - offset8, am_len/8 - w.size()/8);
@@ -601,7 +601,7 @@ namespace {
                         
                         if(am_len >= laytmp.size + 64) {
                           hdr->has_part_tail = 1;
-                          auto *part = w.place_new<am_thread_part_header>();
+                          auto *part = ::new(w.place(sizeof(am_thread_part_header), alignof(am_thread_part_header))) am_thread_part_header;
                           part->nonce = nonce_bump++;
                           part->total_size8 = rm->size8;
                           part->part_size8 = am_len/8 - w.size()/8;

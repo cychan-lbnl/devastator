@@ -98,8 +98,8 @@ namespace upcxx {
     
     template<typename W>
     static void serialize(W &w, const bound_function<Fn,B...> &fn) {
-      w.push(fn.fn_);
-      w.push(fn.b_);
+      w.write(fn.fn_);
+      w.write(fn.b_);
     }
 
     template<typename R>
@@ -108,15 +108,15 @@ namespace upcxx {
       r.template skip<std::tuple<B...>>();
     }
 
-    using deserialized_type = bound_function<deserialized_type_of_t<Fn>, deserialized_type_of_t<B>...>;
+    using deserialized_type = bound_function<deserialized_type_t<Fn>, deserialized_type_t<B>...>;
     
     template<typename R>
     static deserialized_type* deserialize(R &r, void *spot) {
-      detail::raw_storage<deserialized_type_of_t<Fn>> fn;
-      r.template pop_into<Fn>(&fn);
+      detail::raw_storage<deserialized_type_t<Fn>> fn;
+      r.template read_into<Fn>(&fn);
 
-      detail::raw_storage<deserialized_type_of_t<std::tuple<B...>>> b;
-      r.template pop_into<std::tuple<B...>>(&b);
+      detail::raw_storage<deserialized_type_t<std::tuple<B...>>> b;
+      r.template read_into<std::tuple<B...>>(&b);
 
       return ::new(spot) deserialized_type(
         fn.value_and_destruct(),
