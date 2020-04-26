@@ -180,14 +180,16 @@ namespace threads {
     int hot_n = this->ack_slots_.reap(hot);
     
     for(int i=0; i < hot_n; i++) {
-      channels_w::each *w = &this->w_[hot[i].ix_xor_i ^ i];
+      int w_id = hot[i].ix_xor_i ^ i;
+      channels_w::each *w = &this->w_[w_id];
       std::uint32_t acks = hot[i].delta;
       
       #if DEVA_THREADS_SPSC_BITS < 32
+        auto *slot = &(*chan_r)[w_id].recv_slots_.live.atom[w->recv_slot];
         if(u32_less_eq(w->recv_bump_wall + acks-1, w->recv_bump))
-          w->recv_slot->store(w->recv_bump_wall + acks-1, std::memory_order_release);
+          slot->store(w->recv_bump_wall + acks-1, std::memory_order_release);
         else if(u32_less_eq(w->recv_bump_wall, w->recv_bump))
-          w->recv_slot->store(w->recv_bump, std::memory_order_release);
+          slot->store(w->recv_bump, std::memory_order_release);
         
         w->recv_bump_wall += acks;
       #endif
