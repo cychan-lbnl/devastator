@@ -4,7 +4,6 @@
 #include <devastator/intrusive_map.hxx>
 #include <devastator/intrusive_min_heap.hxx>
 #include <devastator/queue.hxx>
-#include <devastator/random.hxx>
 
 #include <atomic>
 #include <chrono>
@@ -674,10 +673,6 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   }
 
   bool spinning = false;
-
-  #if DEBUG
-  rng_xoshiro256ss rng(deva::rank_me());
-  #endif
   
   while(true) {
     deva::progress(spinning);
@@ -784,22 +779,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     }
     
     { // execute one event
-      cd_state *cd;
-      stamped_event se;
-      
-      #if DEBUG
-        // pick a random cd, and 25% of time a random event
-        cd = &sim_me.cds[rng() % sim_me.local_cd_n];
-        if(rng() % 4 == 0 && cd->future_events.size() != 0)
-          se = cd->future_events.at(rng() % cd->future_events.size());
-        else
-          se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
-      #else
-        // pick least event
-        cd = sim_me.cds_by_now.peek_least().cd;
-        se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
-      #endif
-      
+      cd_state *cd = sim_me.cds_by_now.peek_least().cd;
+      stamped_event se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
+
       spinning = true;
       if(se.time < look_t_ub) {
         spinning = false;
@@ -807,11 +789,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         DEVA_ASSERT(se.e->future_not_past);
         se.e->future_not_past = false;
         
-        #if DEBUG
-          cd->future_events.erase(se);
-        #else
-          cd->future_events.pop_least();
-        #endif
+        cd->future_events.pop_least();
         sim_me.cds_by_now.increased({cd, cd->now()});
         
         insert_past(cd, se);
@@ -822,6 +800,21 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
           se.e->entry_checksum = cd->checksummer ? cd->checksummer() : 0;
           #endif
           
+          #if DEVA_DUMMY_EXEC
+          execute_context cxt_dummy;
+          cxt_dummy.cd = origin_cd;
+          cxt_dummy.time = se.time;
+          cxt_dummy.subtime = se.subtime;
+          cxt_dummy.dummy = true;
+          se.e->vtbl_on_target->execute(se.e, cxt_dummy);
+
+          event_context cxt_unexec;
+          cxt_unexec.cd = cd->cd_ix;
+          cxt_unexec.time = se.time;
+          cxt_unexec.subtime = se.subtime;
+          se.e->vtbl_on_target->unexecute(se.e, cxt_unexec, DEVA_DEBUG_ONLY(cd->checksummer,) false);
+          #endif
+
           execute_context_impl cxt;
           cxt.cd = origin_cd;
           cxt.time = se.time;

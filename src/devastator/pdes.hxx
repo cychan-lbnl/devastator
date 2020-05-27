@@ -66,6 +66,8 @@ namespace pdes {
      */
     template<typename ProcFn>
     void bcast_procs(std::uint64_t time_lb, std::int32_t total_event_n, ProcFn proc_fn);
+
+    bool dummy = false;
   };
 
   // Set these to determine how frequently and where drain should print global
@@ -477,6 +479,7 @@ namespace pdes {
       std::uint64_t time,
       Event1 &&user
     ) {
+    if (dummy) return;
     using Event = typename std::decay<Event1>::type;
     
     auto *me = static_cast<detail::execute_context_impl*>(this);
@@ -529,6 +532,7 @@ namespace pdes {
   void execute_context::bcast_procs(
       std::uint64_t time_lb, std::int32_t total_event_n, ProcFn proc_fn
     ) {
+    if (dummy) return;
     auto *me = static_cast<detail::execute_context_impl*>(this);
     
     std::uint64_t far_id_base = detail::far_id_bumper;

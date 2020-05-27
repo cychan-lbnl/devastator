@@ -46,11 +46,12 @@ def base_env():
   syms = brutal.env('syms', 1 if debug else 0)
   opnew = brutal.env('opnew', 'libc' if debug else 'deva', universe=['libc','deva','jemalloc'])
   asan = brutal.env('asan', 1 if debug else 0)
-  return debug, optlev, syms, opnew, asan
+  dummy = brutal.env('dummy', 0)
+  return debug, optlev, syms, opnew, asan, dummy
 
 @brutal.rule
 def base_cg_flags():
-  debug, optlev, syms, opnew, asan = base_env()
+  debug, optlev, syms, opnew, asan, dummy = base_env()
 
   asan_flags = ['-fsanitize=address'] if asan else []
   cg_misc = brutal.env('CXX_CGFLAGS', [])
@@ -62,7 +63,7 @@ def base_cg_flags():
     ) + cg_misc
 
 def code_context_base():
-  debug, optlev, syms, opnew, asan = base_env()
+  debug, optlev, syms, opnew, asan, dummy = base_env()
 
   pp_misc = brutal.env('CXX_PPFLAGS', [])
   asan_flags = ['-fsanitize=address'] if asan else []
@@ -77,7 +78,8 @@ def code_context_base():
     pp_defines = {
       'DEBUG': 1 if debug else 0,
       'NDEBUG': None if debug else 1,
-      'DEVA_OPNEW_'+opnew.upper(): 1
+      'DEVA_OPNEW_'+opnew.upper(): 1,
+      'DEVA_DUMMY_EXEC': 1 if dummy else 0
     }
   )
 
