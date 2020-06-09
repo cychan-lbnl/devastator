@@ -10,9 +10,13 @@ source_exts_of_lang = {
   'c'  : ('.c',),
   'c++': ('.cpp','.cxx','.c++','.C','.C++')
 }
+header_exts_of_lang = {
+  'c'  : ('.h',),
+  'c++': ('.hpp','.hxx','.h++','.H','.H++')
+}
 
 lang_of_source_ext = {}
-for lang,exts in source_exts_of_lang.items():
+for lang,exts in list(source_exts_of_lang.items()) + list(header_exts_of_lang.items()):
   for ext in exts:
     lang_of_source_ext[ext] = lang
 
@@ -21,7 +25,7 @@ def lang_of_source(path):
   return lang_of_source_ext[ext]
 
 source_exts = source_exts_of_lang['c'] + source_exts_of_lang['c++']
-header_exts = ('.h','.hpp','.hxx','.h++')
+header_exts = header_exts_of_lang['c'] + header_exts_of_lang['c++']
 
 @brutal.rule
 def uuifdef():
@@ -131,29 +135,29 @@ def compile(PATH, compiler, pp_flags, cg_flags):
 
 @brutal.coroutine
 def discovery(main_src):
+  splitext = brutal.os.path.splitext
+  
   srcs_todo = [main_src]
   srcs_seen = {main_src: None}
   incs_todo = []
   incs_seen = set()
-  
+
   memo_cxt = {}
   cxt_big = CodeContext()
   pp_flags = cxt_big.pp_flags()
 
-  splitext = brutal.os.path.splitext
-  
   while srcs_todo or incs_todo:
     cxt_old = cxt_big
     cxts = [(p, code_context(p)) for p in (srcs_todo + incs_todo) if p not in memo_cxt]
     for (path, cxt) in cxts:
       memo_cxt[path] = cxt = yield cxt
-      if path in srcs_todo:
+      if splitext(path)[1] in source_exts:
         cxt_big |= cxt.with_updates(pp_defines={})
       else:
         cxt_big |= cxt
-    
-    del incs_todo[:]
 
+    del incs_todo[:]
+    
     if cxt_big != cxt_old:
       pp_flags = cxt_big.pp_flags()
       srcs_todo = [main_src]
@@ -181,12 +185,15 @@ def discovery(main_src):
               if src1 not in srcs_seen:
                 srcs_todo += (src1,)
                 srcs_seen[src1] = None
-  
+
   for src in list(srcs_seen.keys()):
-    cxt = memo_cxt[src]
-    for f in sorted(srcs_seen[src]):
-      cxt |= memo_cxt[f]
-    srcs_seen[src] = cxt
+    if splitext(src)[1] in header_exts:
+      del srcs_seen[src]
+    else:
+      cxt = memo_cxt[src]
+      for f in sorted(srcs_seen[src]):
+        cxt |= memo_cxt[f]
+      srcs_seen[src] = cxt
 
   yield srcs_seen, cxt_big
 
@@ -211,6 +218,35 @@ def compile_and_link(name, srcs, cxt_big):
   cmd = ld + ld_flags + ['-o',exe] + sorted(objs) + lib_flags
   yield brutal.process(cmd)
   yield exe
+
+@brutal.rule(caching='file', cli='makevars')
+@brutal.coroutine
+def makevars(PATH):
+  srcs, cxt_big = yield discovery(PATH)
+  objs = {}
+  for src in srcs:
+    cxt = srcs[src]
+    big_pp_flags = (cxt_big | cxt).pp_flags()
+    objs[src] = compile(src, cxt.compiler(), big_pp_flags, cxt.cg_flags())
+  
+  for src in objs:
+    objs[src] = yield objs[src]
+  objs = frozenset(objs.values())
+
+  yield {
+    'CXX': cxt_big.compiler(),
+    'PPFLAGS': ' '.join(cxt_big.pp_flags()),
+    'CGFLAGS': ' '.join(cxt_big.cg_flags()),
+    'LDFLAGS': ' '.join(cxt_big.ld_flags()),
+    'OBJS': ' '.join(sorted(objs)),
+    'LIBFLAGS': ' '.join(cxt_big.lib_flags())
+  }
+
+@brutal.rule(cli='makevar')
+@brutal.coroutine
+def makevar(varname, PATH):
+  vars = yield makevars(PATH)
+  yield vars.get(varname, '')
 
 @brutal.rule(caching='file', cli='exe')
 @brutal.coroutine

@@ -299,7 +299,7 @@ def _everything():
       path = os_path_join(os_path_dirname(path), 'brutal.py')
     elif path_arg_ix is not None:
       if path_arg_ix >= len(args):
-        panic('Required argument "PATH" not present.')
+        panic('Required argument "PATH" not present. fn={0}, args={1} kws={2}', fn_name, args, kws)
       path = os_path_abspath(args[path_arg_ix])
       args = list(args)
       args[path_arg_ix] = path
