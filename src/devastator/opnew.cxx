@@ -173,13 +173,7 @@ void opnew::operator_delete_slow(void *obj) {
 }
 
 void opnew::gc_bins() {
-  uint64_t m = my_ts.bins_occupied_mask;
-  my_ts.bins_occupied_mask = 0;
-
-  while(m != 0) {
-    int bin_id = bitffs(m) - 1;
-    m &= m-1;
-
+  for(int bin_id = 0; bin_id < bin_n; bin_id++) {
     bin_state *bin = &my_ts.bins[bin_id];
     bin->sane();
     int best_pn = pool_best_pages[bin_id];
@@ -195,8 +189,10 @@ void opnew::gc_bins() {
       while(n--) {
         frobj *onext = o->next(oprev);
         arena *a = arena_of_nonhuge(o);
-        
-        if(best_pn != -1)
+
+        if(a->owner_ts != &my_ts)
+          arena_dealloc_remote(a, o);
+        else if(best_pn != -1)
           arena_hold_pooled(a, o, bin->held_pools);
         else
           arena_dealloc_blob(a, o);
@@ -214,8 +210,9 @@ void opnew::gc_bins() {
     
     bin->popn_least = bin->popn;
     bin->sane();
-    my_ts.bins_occupied_mask |= uint64_t(bin->popn ? 1 : 0) << bin_id;
   }
+
+  flush_remote();
 }
 
 void opnew::flush_remote() {

@@ -349,7 +349,6 @@ namespace opnew {
 
   struct thread_state {
     std::uint64_t opcalls;
-    std::uint64_t bins_occupied_mask;
     frobj *outsider_frees;
     
     bin_state bins[bin_n];
@@ -376,7 +375,7 @@ namespace opnew {
       my_ts.opcalls = 0;
     }
 
-    flush_remote();
+    //flush_remote(); // done in gc_bins()
   }
   
   inline void* operator_new(std::size_t size) {
@@ -409,14 +408,13 @@ namespace opnew {
 
       DEVA_OPNEW_ASSERT(!known_local || a->owner_ts == &my_ts);
       
-      if((known_local || a->owner_ts == &my_ts) && bin != -1) {
+      if(bin != -1) {
         bin_state *b = &my_ts.bins[bin];
         frobj *o = new(obj) frobj;
         o->set_links(nullptr, b->head());
         b->head()->change_link(nullptr, o);
         b->head(o);
         b->popn += 1;
-        my_ts.bins_occupied_mask |= std::uint64_t(1)<<bin;
         
         b->sane();
         return;
