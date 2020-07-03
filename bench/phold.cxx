@@ -155,7 +155,7 @@ int main() {
       rep.emit(
         deva::datarow::x("lp_per_rank", lp_per_rank) &
         deva::datarow::x("ray_per_lp", ray_per_lp) &
-        deva::datarow::x("frac_remote", fraction_remote) &
+        deva::datarow::x("fraction_remote", fraction_remote) &
         
         deva::datarow::y("execute_per_rank_per_sec", stats.executed_n/wall_secs/rank_n) &
         deva::datarow::y("commit_per_rank_per_sec", stats.committed_n/wall_secs/rank_n) &
