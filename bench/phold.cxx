@@ -38,11 +38,28 @@ struct rng_state {
     b = x ^ y ^ (x >> 17) ^ (y >> 26); // b, c
     return b + y;
   }
+
+  double normal(double stddev) {
+    double x, y, r2;
+    do {
+      x = (2.0/double(~uint64_t(0)))*(*this)() - 1.0;
+      y = (2.0/double(~uint64_t(0)))*(*this)() - 1.0;
+      r2 = x*x + y*y;
+    }
+    while(r2 > 1.0 || r2 == 0.0);
+    
+    x *= std::sqrt(-2.0*std::log(r2)/r2);
+    if(x > 1.e6) x = 1.e6;
+    else if(x < -1.e6) x = -1.e6;
+    
+    x *= stddev;
+    return x;
+  }
 };
 
 int lp_per_rank;
 int ray_per_lp;
-double fraction_remote;
+double peer_stddev;
 
 thread_local unique_ptr<rng_state[]> state_cur;
 
@@ -68,7 +85,9 @@ struct bounce {
   };
   
   reverse execute(pdes::execute_context &cxt) {
-    int cd = this->lp % lp_per_rank;
+    const int lp_me = this->lp;
+    const int lp_n = lp_per_rank*deva::rank_n;
+    const int cd = this->lp % lp_per_rank;
 
     rng_state &rng = state_cur[cd];
     rng_state state_prev = rng;
@@ -92,11 +111,10 @@ struct bounce {
     #endif
     dt += 1;
     
-    int lp_to;
-    if(rng() < uint64_t(fraction_remote*double(-1ull)))
-      lp_to = int(rng() % (lp_per_rank*rank_n));
-    else
-      lp_to = lp;
+    int lp_to = lp_me + (int)(lp_per_rank*rng.normal(peer_stddev));
+    lp_to %= lp_n;
+    lp_to += lp_n;
+    lp_to %= lp_n;
     
     cxt.send(
       /*rank=*/lp_to/lp_per_rank,
@@ -117,7 +135,7 @@ int main() {
     if(deva::rank_me_local() == 0) {
       lp_per_rank = deva::os_env<int>("lp_per_rank", 1000);
       ray_per_lp = deva::os_env<int>("ray_per_lp", 2);
-      fraction_remote = deva::os_env<double>("fraction_remote", .5);
+      peer_stddev = deva::os_env<double>("peer_stddev", 2.0);
       cutoff = deva::os_env<double>("wall_secs", 10);
     }
 
@@ -155,7 +173,7 @@ int main() {
       rep.emit(
         deva::datarow::x("lp_per_rank", lp_per_rank) &
         deva::datarow::x("ray_per_lp", ray_per_lp) &
-        deva::datarow::x("fraction_remote", fraction_remote) &
+        deva::datarow::x("peer_stddev", peer_stddev) &
         
         deva::datarow::y("execute_per_rank_per_sec", stats.executed_n/wall_secs/rank_n) &
         deva::datarow::y("commit_per_rank_per_sec", stats.committed_n/wall_secs/rank_n) &
