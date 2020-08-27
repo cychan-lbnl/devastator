@@ -4,6 +4,7 @@
 #include <devastator/intrusive_map.hxx>
 #include <devastator/intrusive_min_heap.hxx>
 #include <devastator/queue.hxx>
+#include <devastator/os_env.hxx>
 
 #include <atomic>
 #include <chrono>
@@ -31,6 +32,8 @@ __thread std::int64_t pdes::detail::live_event_balance = 0;
 #endif
 
 namespace {
+  bool flag_heartbeat = deva::os_env<bool>("pdes_heartbeat", true);
+
   class global_status_state {
     static constexpr int hist_len = 16; // must be pow2
     
@@ -215,7 +218,7 @@ namespace {
       auto period = std::chrono::seconds(chitter_secs);
       auto now = std::chrono::steady_clock::now();
       
-      if(deva::rank_me() == 0 && now - last_chit_tick > period) {
+      if(flag_heartbeat && deva::rank_me() == 0 && now - last_chit_tick > period) {
         (*pdes::chitter_io)
           <<"pdes::drain() status:\n"
           <<"  gvt = "<<double(gvt)<<'\n'
