@@ -33,7 +33,7 @@ def cxx14_flags():
 
 @brutal.rule
 def sources_from_includes_enabled(PATH):
-  return brutal.os.path_within_any(PATH,
+  return '.brutal/' not in PATH and brutal.os.path_within_any(PATH,
     '.',
     brutal.here('bench'),
     brutal.here('src'),
