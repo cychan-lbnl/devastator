@@ -6,6 +6,16 @@
 #include <atomic>
 #include <cstring>
 
+#ifndef DEVA_THREADS_SIGNAL_REAP_ATOM
+  #define DEVA_THREADS_SIGNAL_REAP_ATOM 0
+#endif
+#ifndef DEVA_THREADS_SIGNAL_REAP_MEMCPY
+  #define DEVA_THREADS_SIGNAL_REAP_MEMCPY 0
+#endif
+#ifndef DEVA_THREADS_SIGNAL_REAP_SIMD
+  #define DEVA_THREADS_SIGNAL_REAP_SIMD 0
+#endif
+
 namespace deva {
 namespace threads {
   template<typename Uint>

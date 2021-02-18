@@ -1,7 +1,11 @@
 SHELL = bash
 
-# path to devastator
-deva = ../..
+# USER TODO: Make sure a brutal.py matching the one in this directory exists in
+# yours as well!
+
+# abs path to devastator
+deva := ../..
+deva := $(shell cd $(deva); echo $$PWD)
 
 # canonicalize configuration parameters
 debug ?= 0
@@ -24,7 +28,7 @@ deva_conf := $(if $(debug),debug=$(debug)) \
 deva_conf := $(strip $(deva_conf))
 
 # function for invoking "brutal $(deva_conf) makevar $(1) $(2)"
-deva_var = $(shell cd $(deva); . sourceme; cd $(PWD); brutal $(deva_conf) makevar $(1) $(2))
+deva_var = $(shell cd $(deva); . sourceme; cd $(PWD); DEVA=$(deva) brutal $(deva_conf) makevar $(1) $(2))
 
 # extract build flags from devastator given that deva_includes.hpp
 # includes all the functionality this app needs from devastator

@@ -1,5 +1,6 @@
 #include <devastator/diagnostic.hxx>
 #include <devastator/opnew.hxx>
+#include <devastator/threads.hxx>
 
 #if DEVA_WORLD
   #include <devastator/world.hxx>
@@ -99,11 +100,27 @@ deva::datarow deva::describe() {
       ans &= datarow::x("workers", deva::worker_n);
     #endif
   #endif
+  
+  ans &= datarow::x("tmsg",
+    DEVA_THREADS_SPSC ? "spsc" :
+    DEVA_THREADS_MPSC ? "mpsc" :
+    "");
 
-  ans &= datarow::x("tmsg", DEVA_THREADS_SPSC ? "spsc" : DEVA_THREADS_MPSC ? "mpsc" : "");
+  ans &= datarow::x("talloc",
+    DEVA_THREADS_ALLOC_OPNEW_SYM ? "opnew-sym" :
+    DEVA_THREADS_ALLOC_OPNEW_ASYM ? "opnew-asym" :
+    DEVA_THREADS_ALLOC_EPOCH ? "epoch" :
+    "");
 
   #if DEVA_THREADS_SPSC
     ans &= datarow::x("tsigbits", DEVA_THREADS_SPSC_BITS);
+    ans &= datarow::x("tsigreap",
+      DEVA_THREADS_SIGNAL_REAP_ATOM ? "atom" :
+      DEVA_THREADS_SIGNAL_REAP_MEMCPY ? "memcpy" :
+      DEVA_THREADS_SIGNAL_REAP_SIMD ? "simd" :
+      "");
+  #elif DEVA_THREADS_MPSC
+    ans &= datarow::x("trails", DEVA_THREADS_MPSC_RAIL_N);
   #endif
 
   return ans;

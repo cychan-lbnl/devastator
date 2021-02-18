@@ -33,7 +33,7 @@ def cxx14_flags():
 
 @brutal.rule
 def sources_from_includes_enabled(PATH):
-  return brutal.os.path_within_any(PATH,
+  return '.brutal/' not in PATH and brutal.os.path_within_any(PATH,
     '.',
     brutal.here('bench'),
     brutal.here('src'),
@@ -104,7 +104,7 @@ def code_context(PATH):
   
   if PATH == brutal.here('src/devastator/threads.hxx'):
     impl = brutal.env('tmsg', universe=('spsc','mpsc'))
-    talloc = brutal.env('talloc', universe=('opnew-sym','opnew-asym','epoch'))
+    talloc = brutal.env('talloc', universe=('opnew-asym','opnew-sym','epoch'))
     cxt |= CodeContext(pp_defines={
       'DEVA_THREADS_'+impl.upper(): 1,
       'DEVA_THREADS_ALLOC_' + talloc.replace('-','_').upper(): 1

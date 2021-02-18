@@ -95,6 +95,7 @@ void threads::barrier(void(*progress_work)(threads::progress_state&)) {
 }
 
 namespace {
+  cpu_set_t cpu_mask;
   pthread_t thread_ids[threads::thread_n];
   pthread_mutex_t lock;
   pthread_cond_t wake;
@@ -114,6 +115,31 @@ namespace {
     if(me != 0 || !zero_inited) {
       if(me == 0)
         zero_inited = true;
+
+      { // pin ourself to the me'th cpu of our process's affinity mask
+        int cpu_n = 0;
+        int cpu = 0;
+        while(cpu != CPU_SETSIZE) {
+          cpu_n += CPU_ISSET(cpu, &cpu_mask) ? 1 : 0;
+          cpu++;
+        }
+
+        if(cpu_n == threads::thread_n) {
+          cpu = 0;
+          cpu_n = 0;
+          while(true) {
+            if(CPU_ISSET(cpu, &cpu_mask))
+              if(me == cpu_n++)
+                break;
+            cpu++;
+          }
+
+          cpu_set_t just_me;
+          CPU_ZERO(&just_me);
+          CPU_SET(cpu, &just_me);
+          sched_setaffinity(0, sizeof(cpu_set_t), &just_me);
+        }
+      }
       
       threads::thread_me_ = me;
 
@@ -189,6 +215,8 @@ void threads::run(upcxx::detail::function_ref<void()> fn) {
   if(!inited) {
     inited = true;
 
+    sched_getaffinity(0, sizeof(cpu_set_t), &cpu_mask);
+    
     (void)pthread_cond_init(&wake, nullptr);
     (void)pthread_mutex_init(&lock, nullptr);
 

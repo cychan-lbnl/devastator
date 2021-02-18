@@ -405,28 +405,40 @@ namespace threads {
 
     for(int i=0; i < hot_n; i++) {
       channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
-
       std::uint32_t msg_n = hot[i].delta;
       message *m = ch->recv_last;
       
       do {
         message *m1 = m->next;
-        #if DEVA_THREADS_ALLOC_OPNEW_ASYM
-          threads::dealloc_message(m);
-        #endif
         rcv(m1);
         m = m1;
       } while(--msg_n != 0);
       
-      ch->recv_last = m;
+      #if !DEVA_THREADS_ALLOC_OPNEW_ASYM
+        ch->recv_last = m;
+      #endif
     }
-
+    
     batch();
     
     #if DEVA_THREADS_ALLOC_OPNEW_SYM
       for(int i=0; i < hot_n; i++) {
         channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
         ch->ack_slot->store(hot[i].old + hot[i].delta, std::memory_order_release);
+      }
+    #elif DEVA_THREADS_ALLOC_OPNEW_ASYM
+      for(int i=0; i < hot_n; i++) {
+        channels_r::each *ch = &this->r_[hot[i & hot_stride_mask].ix_xor_i ^ i];
+        std::uint32_t msg_n = hot[i].delta;
+        message *m = ch->recv_last;
+        
+        do {
+          message *m1 = m->next;
+          threads::dealloc_message(m);
+          m = m1;
+        } while(--msg_n != 0);
+        
+        ch->recv_last = m;
       }
     #endif
     
