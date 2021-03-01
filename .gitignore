@@ -1,2 +1,4 @@
 __pycache__/
 .brutal/
+ext/
+.*.swp
