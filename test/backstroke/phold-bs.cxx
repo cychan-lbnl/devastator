@@ -29,12 +29,12 @@ constexpr int rank_per_proc = rank_n / process_n;
 constexpr int actor_per_proc = actor_per_rank * rank_per_proc;
 
 // must not use thread_local for backstroke
-actor proc_actors[actor_per_proc];
+vector<actor> proc_actors;
 
 actor & get_actor(int actor_id)
 {
   int idx = actor_id - actor_per_proc * process_me();
-  DEVA_ASSERT(idx >= 0 && idx < actor_per_proc);
+  DEVA_ASSERT(idx >= 0 && idx < proc_actors.size());
   return proc_actors[idx];
 }
 
@@ -71,12 +71,12 @@ struct event {
     
     void unexecute(pdes::event_context&, event &me) {
       actor & target = get_actor(me.a);
-//    target.unexecute(state_prev, check_prev);
-      xpdes::reverseEvent();
+//      target.unexecute(state_prev, check_prev);
+      xpdes::reverseEvent(me.a);
     }
 
     void commit(pdes::event_context&cxt, event&me) {
-      xpdes::commitEvent();
+      xpdes::commitEvent(me.a);
     }
   };
   
@@ -84,7 +84,8 @@ struct event {
     //deva::say() << "execute "<<ray;
     sane(__FILE__,__LINE__);
     
-    actor & target = get_actor(this->a);
+    int id = this->a;
+    actor & target = get_actor(id);
 
     //deva::say()<<"ray="<<ray<<" time="<<cxt.time;
 
@@ -93,9 +94,9 @@ struct event {
     rng_state state_prev;
     uint64_t check_prev;
 
-    xpdes::beginForwardEvent();
+    xpdes::beginForwardEvent(id);
     tie(actor_to, dt, state_prev, check_prev) = target.execute(ray);
-    xpdes::endForwardEvent();
+    xpdes::endForwardEvent(id);
     
     if(cxt.time + dt < end_time) {
       cxt.send(
@@ -123,22 +124,12 @@ uint64_t checksum() {
   return deva::reduce_xor(lacc);
 }
 
-bool rtss_inited = false;
-
 int main() {
   int iter = 0;
 
+  proc_actors.resize(actor_per_proc);
+
   auto doit = [&]() {
-    if (!rtss_inited) {
-      if (deva::rank_me_local() == 0) {
-        cout << "Process " << deva::process_me() << " running initializeRTSS() ..." << endl;
-        xpdes::initializeRTSS();
-      }
-      deva::barrier();
-      rtss_inited = true;
-    }
-  
-    cout << "Rank " << deva::rank_me() << " doit() ..." << endl;
     pdes::init(actor_per_rank);
     
     int actor_lb = rank_me()*actor_per_rank;
@@ -155,6 +146,8 @@ int main() {
       pdes::register_checksum_if_debug(cd, [=]()->uint64_t {
         return cur_actor.checksum();
       });
+
+      xpdes::initializeRTSS(a);
     }
     
     for(int ray=0; ray < ray_n; ray++) {
@@ -189,6 +182,7 @@ int main() {
       pdes::drain();
 
     pdes::finalize();
+    xpdes::finalizeRTSS();
 
     pdes::statistics stats = deva::reduce_sum(pdes::local_stats());
     if(deva::rank_me()==0) {

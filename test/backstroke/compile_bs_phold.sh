@@ -1,12 +1,12 @@
 #!/bin/bash
 
+set -e
+
 : ${BS_TOP="${HOME}/projects/external/backstroke"}
 BS_SRCDIR="${BS_TOP}/src"
 
-#cp phold-bs-state.hxx backstroke_phold-bs-state.hxx
-
-#TARGET=phold-bs-state.cxx ./bs.sh 
-
+cp phold-bs-state.hxx backstroke_phold-bs-state.hxx
+TARGET=phold-bs-state.cxx ./bs.sh 
 
 export PP_DIRS="${BS_SRCDIR}/rtss"
 export CXX_CGFLAGS="-fpermissive"
