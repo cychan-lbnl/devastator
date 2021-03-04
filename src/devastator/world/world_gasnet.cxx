@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <iostream>
 
 #include <unistd.h>
 #include <sched.h>
@@ -223,13 +224,19 @@ namespace {
   threads::barrier_state_global<threads::thread_n-1> wbar_g_;
   thread_local threads::barrier_state_local<threads::thread_n-1> wbar_l_;
   std::atomic<uint64_t> bigbar_epoch_{0};
+  uint64_t counter = 1;
   
   void barrier_defer_try(uint64_t e) {
     threads::send(0, [=]() {
-      if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS))
+      if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS)) {
+        cout << "process " << deva::process_me_ << ", thread 0: gasnet_barrier_try() OK (epoch " << e << ") ..." << endl;
         bigbar_epoch_.store(e, std::memory_order_release);
-      else
+      } else {
+        if (counter++ % 10000 == 0) {
+          cout << "process " << deva::process_me_ << ", thread 0: gasnet_barrier_try() FAILED (epoch " << e << ") ..." << endl;
+        }
         barrier_defer_try(e);
+      }
     });
   }
 }
@@ -248,6 +255,7 @@ void deva::barrier(bool deaf) {
 
   if(wme == 0) {
     threads::send(0, [=]() {
+      cout << "process " << deva::process_me_ << ", thread 0: gasnet_barrier_notify() (epoch " << e << ") ..." << endl;
       gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
       barrier_defer_try(e);
     });
