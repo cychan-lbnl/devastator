@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <thread>
 
 using namespace std;
 
@@ -23,9 +24,11 @@ int main ()
       cout << "Process 1 spinning for " << 1 << " second ..." << endl;
       auto start_time = chrono::steady_clock::now();
       while (std::chrono::duration<double>(chrono::steady_clock::now() - start_time).count() < 1) {
-        spin();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        //spin();
       }
     }
+    if(deva::rank_me_local()==0) cout << "Process "<<deva::process_me()<<" quitting"<<endl;
   });
 
   return 0;
