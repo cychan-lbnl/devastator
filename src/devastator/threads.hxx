@@ -108,7 +108,7 @@ namespace threads {
   extern __thread int epoch_mod3_;
   extern __thread barrier_state_local<thread_n> barrier_l_;
   extern __thread barrier_state_local<thread_n> epoch_barrier_l_;
-
+  
   inline int const& thread_me() {
     return thread_me_;
   }

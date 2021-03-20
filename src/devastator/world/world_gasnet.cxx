@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <iostream>
 
 #include <unistd.h>
 #include <sched.h>
@@ -222,16 +223,7 @@ void deva::progress(bool spinning) {
 namespace {
   threads::barrier_state_global<threads::thread_n-1> wbar_g_;
   thread_local threads::barrier_state_local<threads::thread_n-1> wbar_l_;
-  std::atomic<uint64_t> bigbar_epoch_{0};
-  
-  void barrier_defer_try(uint64_t e) {
-    threads::send(0, [=]() {
-      if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS))
-        bigbar_epoch_.store(e, std::memory_order_release);
-      else
-        barrier_defer_try(e);
-    });
-  }
+  std::atomic<int> bigbar_phase_{0};
 }
 
 void deva::barrier(bool deaf) {
@@ -244,16 +236,12 @@ void deva::barrier(bool deaf) {
       deva::progress(/*spinning=*/true);
   }
   
-  uint64_t e = wbar_l_.epoch();
+  int e = wbar_l_.epoch() & 0x0f;
 
-  if(wme == 0) {
-    threads::send(0, [=]() {
-      gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
-      barrier_defer_try(e);
-    });
-  }
+  if(wme == 0)
+    bigbar_phase_.store(0x10 | e, std::memory_order_relaxed);
 
-  while(bigbar_epoch_.load(std::memory_order_relaxed) != e) {
+  while(e != bigbar_phase_.load(std::memory_order_relaxed)) {
     if(!deaf)
       deva::progress(/*spinning=*/true);
   }
@@ -454,6 +442,20 @@ namespace {
     const int tme = threads::thread_me();
     
     while(!leave_pump.load(std::memory_order_relaxed)) {
+      { int e = bigbar_phase_.load(std::memory_order_relaxed);
+        if(e & 0x10) {
+          if(e & 0x20) {
+            if(GASNET_OK == gasnet_barrier_try(0, GASNET_BARRIERFLAG_ANONYMOUS)) {
+              bigbar_phase_.store(e & 0x0f, std::memory_order_release);
+            }
+          }
+          else {
+            bigbar_phase_.store(0x20 | e, std::memory_order_relaxed);
+            gasnet_barrier_notify(0, GASNET_BARRIERFLAG_ANONYMOUS);
+          }
+        }
+      }
+      
       gasnet_AMPoll();
 
       threads::progress_state ps;
