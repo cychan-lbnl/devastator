@@ -797,7 +797,6 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         
         insert_past(cd, se);
 
-        int32_t origin_cd = cd->cd_ix;
         event *sent_near; {
           #if DEBUG
           se.e->entry_checksum = cd->checksummer ? cd->checksummer() : 0;
@@ -805,21 +804,16 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
           
           #if DEVA_DUMMY_EXEC
           execute_context cxt_dummy;
-          cxt_dummy.cd = origin_cd;
+          cxt_dummy.cd = cd->cd_ix;
           cxt_dummy.time = se.time;
           cxt_dummy.subtime = se.subtime;
           cxt_dummy.dummy = true;
           se.e->vtbl_on_target->execute(se.e, cxt_dummy);
-
-          event_context cxt_unexec;
-          cxt_unexec.cd = cd->cd_ix;
-          cxt_unexec.time = se.time;
-          cxt_unexec.subtime = se.subtime;
-          se.e->vtbl_on_target->unexecute(se.e, cxt_unexec, DEVA_DEBUG_ONLY(cd->checksummer,) false);
+          se.e->vtbl_on_target->unexecute(se.e, cxt_dummy, DEVA_DEBUG_ONLY(cd->checksummer,) false);
           #endif
 
           execute_context_impl cxt;
-          cxt.cd = origin_cd;
+          cxt.cd = cd->cd_ix;
           cxt.time = se.time;
           cxt.subtime = se.subtime;
           
