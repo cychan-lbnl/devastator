@@ -11,6 +11,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 namespace gvt = deva::gvt;
 namespace pdes = deva::pdes;
@@ -146,6 +147,9 @@ namespace {
     std::vector<event*> rewind_created_near; // roots we created but sent away near
 
     statistics stats;
+
+    bool spinning = false;
+    DrainTimer drain_timer;
   };
   
   thread_local sim_state sim_me;
@@ -457,6 +461,8 @@ namespace {
   void rollback(cd_state *cd, int undo_n) {
     sim_state &sim_me = ::sim_me;
     const int rank_me = deva::rank_me();
+
+    sim_me.drain_timer.update(DrainTimer::Cat::rollback);
     
     std::vector<cd_state*> undos_all, undos_fresh;
     undos_all.reserve(32);
@@ -607,12 +613,16 @@ namespace {
       del_head->vtbl_on_creator->destruct_and_delete(del_head);
       del_head = next;
     }
+
+    sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::progress);
   }
 }
 
 uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   sim_state &sim_me = ::sim_me;
   const int32_t rank_me = deva::rank_me();
+
+  sim_me.drain_timer.init();
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -675,12 +685,15 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     look_t_ub = global_status.calc_look_t_ub(gvt0, t_end);
   }
 
-  bool spinning = false;
+  sim_me.spinning = false;
   
   while(true) {
-    deva::progress(spinning);
+    sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::progress);
+    deva::progress(sim_me.spinning);
     
     { // nurse gvt
+      sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::gvt);
+
       uint64_t lvt = sim_me.cds_by_now.least_key();
       uint64_t gvt_old = gvt::epoch_gvt();
 
@@ -740,11 +753,13 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                 }
                 
                 { // invoke commit()
+                  sim_me.drain_timer.update(DrainTimer::Cat::commit);
                   event_context cxt;
                   cxt.cd = cd->cd_ix;
                   cxt.time = se.time;
                   cxt.subtime = se.subtime;
                   se.e->vtbl_on_target->commit(se.e, cxt, should_delete);
+                  sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::gvt);
                 }
                 commit_n += 1;
               }
@@ -779,15 +794,17 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         executed_n = 0;
         committed_n = 0;
       }
+      sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::none);
     }
     
     { // execute one event
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
       stamped_event se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
 
-      spinning = true;
+      sim_me.spinning = true;
       if(se.time < look_t_ub) {
-        spinning = false;
+        sim_me.spinning = false;
+        sim_me.drain_timer.update(DrainTimer::Cat::execute);
         
         DEVA_ASSERT(se.e->future_not_past);
         se.e->future_not_past = false;
@@ -873,6 +890,8 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   }
 
 drain_completed:
+  sim_me.drain_timer.update(DrainTimer::Cat::none);
+
   for(int cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
     cd_state *cd = &sim_me.cds[cd_ix];
     DEVA_ASSERT_ALWAYS(cd->future_events.size() == 0);
@@ -882,6 +901,7 @@ drain_completed:
   DEVA_ASSERT_ALWAYS(sim_me.sent_near.size() == 0, "sim_me.sent_near.size() = "<<sim_me.sent_near.size()<<", expected 0");
   
 drain_paused:
+  sim_me.drain_timer.update(DrainTimer::Cat::none);
   for(int cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
     cd_state *cd = &sim_me.cds[cd_ix];
     DEVA_ASSERT_ALWAYS(cd->past_events.size() == 0);
@@ -980,6 +1000,14 @@ void pdes::finalize() {
     live_event_balance = deva::reduce_sum(live_event_balance);
     DEVA_ASSERT(live_event_balance == 0, "Events have been leaked!");
   #endif
+
+  if (os_env<bool>("dump_drain_timer", false)) {
+    // write drain timer stats
+    ostringstream oss;
+    oss << "drain_timer." << deva::rank_me() << ".out";
+    ofstream ofs(oss.str());
+    ofs << sim_me.drain_timer;
+  }
 }
 
 void pdes::rewind(bool do_rewind) {

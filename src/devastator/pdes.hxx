@@ -10,6 +10,8 @@
 #include <functional>
 #include <iostream>
 #include <utility>
+#include <chrono>
+#include <vector>
 
 namespace deva {
 namespace pdes {
@@ -114,12 +116,62 @@ namespace pdes {
     std::uint64_t executed_n = 0;
     std::uint64_t committed_n = 0;
     bool deterministic = true;
-    
+
     statistics& operator+=(statistics x) {
       this->executed_n += x.executed_n;
       this->committed_n += x.committed_n;
       this->deterministic &= x.deterministic;
       return *this;
+    }
+  };
+
+  struct DrainTimer
+  {
+    enum class Cat
+    {
+      none,
+      progress,
+      gvt,
+      execute,
+      rollback,
+      commit,
+      spin,
+      cat_n // sentinel
+    };
+
+    Cat cur_cat = Cat::none;
+    std::chrono::steady_clock::time_point epoch_begin;
+    std::array<std::chrono::steady_clock::duration, static_cast<int>(Cat::cat_n)> accum;
+
+    static std::vector<std::string> get_labels () {
+      return {"none", "progress", "gvt", "execute", "rollback", "commit", "spin"};
+    }
+
+    void init ()
+    {
+      epoch_begin = std::chrono::steady_clock::now();
+      cur_cat = Cat::none;
+    }
+
+    void update (Cat cat)
+    {
+      if (cat != cur_cat) {
+        auto epoch_end = std::chrono::steady_clock::now();
+        accum[static_cast<int>(cur_cat)] += epoch_end - epoch_begin;
+        cur_cat = cat;
+        epoch_begin = epoch_end;
+      }
+    }
+
+    friend std::ostream & operator<< (std::ostream & os, const DrainTimer & x)
+    {
+      const auto & labels = get_labels();
+      for (int i = 0; i < static_cast<int>(DrainTimer::Cat::cat_n); ++i) {
+        auto label = labels[i];
+        auto dur = x.accum[i];
+        os << label << ": " << std::chrono::duration<double>(dur).count() << std::endl;
+      }
+      return os;
     }
   };
 
