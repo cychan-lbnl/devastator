@@ -12,6 +12,7 @@
 #include <utility>
 #include <chrono>
 #include <vector>
+#include <deque>
 
 namespace deva {
 namespace pdes {
@@ -133,34 +134,69 @@ namespace pdes {
       progress,
       gvt,
       execute,
+      execute_rb,
       rollback,
       commit,
-      spin,
+      spin_empty,
+      spin_look,
       cat_n // sentinel
     };
 
     Cat cur_cat = Cat::none;
     std::chrono::steady_clock::time_point epoch_begin;
     std::array<std::chrono::steady_clock::duration, static_cast<int>(Cat::cat_n)> accum;
+    std::vector<std::deque<std::chrono::steady_clock::duration>> event_times_by_cd_ix;
 
-    static std::vector<std::string> get_labels () {
-      return {"none", "progress", "gvt", "execute", "rollback", "commit", "spin"};
+    static std::vector<std::string> get_labels ()
+    {
+      return {"none", "progress", "gvt", "execute", "execute_rb", "rollback", "commit", "spin_empty", "spin_look"};
     }
 
-    void init ()
+    void init (int local_cd_n)
     {
       epoch_begin = std::chrono::steady_clock::now();
       cur_cat = Cat::none;
+      event_times_by_cd_ix.resize(local_cd_n);
     }
 
-    void update (Cat cat)
+    // if category change, returns time since last change
+    std::chrono::steady_clock::duration update (Cat cat, bool flag_discard = false)
     {
+      std::chrono::steady_clock::duration result = std::chrono::steady_clock::duration::zero();
       if (cat != cur_cat) {
         auto epoch_end = std::chrono::steady_clock::now();
-        accum[static_cast<int>(cur_cat)] += epoch_end - epoch_begin;
+        result = epoch_end - epoch_begin;
+        if (!flag_discard) {
+          accum[static_cast<int>(cur_cat)] += result;
+        }
         cur_cat = cat;
         epoch_begin = epoch_end;
       }
+      return result;
+    }
+
+    void register_event (int cd_ix, std::chrono::steady_clock::duration dt)
+    {
+      DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
+      event_times_by_cd_ix[cd_ix].push_back(dt);
+    }
+
+    void commit_event (int cd_ix)
+    {
+      DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
+      auto & event_times = event_times_by_cd_ix[cd_ix];
+      DEVA_ASSERT(event_times.size());
+      accum[static_cast<int>(Cat::execute)] += event_times.front();
+      event_times.pop_front();
+    }
+
+    void rollback_event (int cd_ix)
+    {
+      DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
+      auto & event_times = event_times_by_cd_ix[cd_ix];
+      DEVA_ASSERT(event_times.size());
+      accum[static_cast<int>(Cat::execute_rb)] += event_times.back();
+      event_times.pop_back();
     }
 
     friend std::ostream & operator<< (std::ostream & os, const DrainTimer & x)

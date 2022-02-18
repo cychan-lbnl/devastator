@@ -148,8 +148,19 @@ namespace {
 
     statistics stats;
 
-    bool spinning = false;
+    bool spinning_empty = false;
+    bool spinning_look = false;
     DrainTimer drain_timer;
+
+    bool spinning () {
+      return spinning_empty || spinning_look;
+    }
+
+    void drain_timer_update_spin_or (DrainTimer::Cat or_cat) {
+      auto cat = spinning_empty ? DrainTimer::Cat::spin_empty :
+                (spinning_look  ? DrainTimer::Cat::spin_look : or_cat);
+      drain_timer.update(cat);
+    }
   };
   
   thread_local sim_state sim_me;
@@ -594,6 +605,7 @@ namespace {
         cxt.time = se.time;
         cxt.subtime = se.subtime;
         se.e->vtbl_on_target->unexecute(se.e, cxt, DEVA_DEBUG_ONLY(cd->checksummer,) do_delete);
+        sim_me.drain_timer.rollback_event(cd->cd_ix);
       }
 
       cd->undo_n_hi = 0;
@@ -614,7 +626,7 @@ namespace {
       del_head = next;
     }
 
-    sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::progress);
+    sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
   }
 }
 
@@ -622,7 +634,7 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   sim_state &sim_me = ::sim_me;
   const int32_t rank_me = deva::rank_me();
 
-  sim_me.drain_timer.init();
+  sim_me.drain_timer.init(sim_me.local_cd_n);
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -685,14 +697,15 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     look_t_ub = global_status.calc_look_t_ub(gvt0, t_end);
   }
 
-  sim_me.spinning = false;
+  sim_me.spinning_empty = false;
+  sim_me.spinning_look = false;
   
   while(true) {
-    sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::progress);
-    deva::progress(sim_me.spinning);
+    sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
+    deva::progress(sim_me.spinning());
     
     { // nurse gvt
-      sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::gvt);
+      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
 
       uint64_t lvt = sim_me.cds_by_now.least_key();
       uint64_t gvt_old = gvt::epoch_gvt();
@@ -759,7 +772,8 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                   cxt.time = se.time;
                   cxt.subtime = se.subtime;
                   se.e->vtbl_on_target->commit(se.e, cxt, should_delete);
-                  sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::gvt);
+                  sim_me.drain_timer.commit_event(cd->cd_ix);
+                  sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
                 }
                 commit_n += 1;
               }
@@ -794,16 +808,17 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         executed_n = 0;
         committed_n = 0;
       }
-      sim_me.drain_timer.update(sim_me.spinning ? DrainTimer::Cat::spin : DrainTimer::Cat::none);
+      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::none);
     }
     
     { // execute one event
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
       stamped_event se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
+      sim_me.spinning_empty = cd->future_events.size() == 0; // account for advance to end of time event
+      sim_me.spinning_look  = !sim_me.spinning_empty && se.time >= look_t_ub;
 
-      sim_me.spinning = true;
       if(se.time < look_t_ub) {
-        sim_me.spinning = false;
+        DEVA_ASSERT(!sim_me.spinning_empty && !sim_me.spinning_look);
         sim_me.drain_timer.update(DrainTimer::Cat::execute);
         
         DEVA_ASSERT(se.e->future_not_past);
@@ -885,6 +900,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
             sent = sent->sent_near_next;
           }
         }
+
+        auto dt = sim_me.drain_timer.update(DrainTimer::Cat::none, true);
+        sim_me.drain_timer.register_event(cd->cd_ix, dt);
       }
     }
   }
