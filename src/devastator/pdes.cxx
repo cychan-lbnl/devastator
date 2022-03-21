@@ -33,6 +33,15 @@ __thread std::int64_t pdes::detail::live_event_balance = 0;
 #endif
 
 namespace {
+  constexpr auto default_sim_interval = static_cast<uint64_t>(15*60*1000) << 33; // 15 minutes in milliseconds, assuming 33 bits of subtime
+  const double wall_interval_s = deva::os_env<double>("deva_drain_timer_wall_interval", 10); // 10 seconds
+}
+
+const uint64_t pdes::DrainTimer::sim_interval = os_env<uint64_t>("deva_drain_timer_sim_interval" , default_sim_interval);
+const std::chrono::steady_clock::duration pdes::DrainTimer::wall_interval =
+        std::chrono::milliseconds(static_cast<int>(wall_interval_s * 1000));
+
+namespace {
   bool flag_heartbeat = deva::os_env<bool>("pdes_heartbeat", true);
 
   class global_status_state {
@@ -901,8 +910,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
           }
         }
 
+        auto wall_time = sim_me.drain_timer.epoch_begin; // when event began
         auto dt = sim_me.drain_timer.update(DrainTimer::Cat::none, true);
-        sim_me.drain_timer.register_event(cd->cd_ix, dt);
+        sim_me.drain_timer.register_event(cd->cd_ix, se.time, wall_time, dt);
       }
     }
   }
@@ -1020,11 +1030,14 @@ void pdes::finalize() {
   #endif
 
   if (os_env<bool>("dump_drain_timer", false)) {
-    // write drain timer stats
-    ostringstream oss;
-    oss << "drain_timer." << deva::rank_me() << ".out";
-    ofstream ofs(oss.str());
-    ofs << sim_me.drain_timer;
+    { // dump drain timer summary stats
+      ostringstream oss;
+      oss << "drain_timer." << deva::rank_me() << ".out";
+      ofstream ofs(oss.str());
+      ofs << sim_me.drain_timer;
+    }
+    // dump per-interval stats
+    sim_me.drain_timer.dump();
   }
 }
 

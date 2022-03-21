@@ -13,6 +13,7 @@
 #include <chrono>
 #include <vector>
 #include <deque>
+#include <fstream>
 
 namespace deva {
 namespace pdes {
@@ -142,10 +143,24 @@ namespace pdes {
       cat_n // sentinel
     };
 
+    struct EventRecord
+    {
+      uint64_t sim_time;
+      std::chrono::steady_clock::time_point wall_time;
+      std::chrono::steady_clock::duration dt;
+    };
+
+    const static uint64_t sim_interval;
+    const static std::chrono::steady_clock::duration wall_interval;
+
     Cat cur_cat = Cat::none;
+    std::chrono::steady_clock::time_point start_time;
     std::chrono::steady_clock::time_point epoch_begin;
-    std::array<std::chrono::steady_clock::duration, static_cast<int>(Cat::cat_n)> accum;
-    std::vector<std::deque<std::chrono::steady_clock::duration>> event_times_by_cd_ix;
+    std::vector<std::array<std::chrono::steady_clock::duration, 2>> accum_sim; // {execute, execute_rb}
+    std::vector<std::array<std::chrono::steady_clock::duration, static_cast<int>(Cat::cat_n)>> accum_wall;
+
+    // [[{sim_time, event_time}]] by cd_ix, then in order of execution
+    std::vector<std::deque<EventRecord>> event_times_by_cd_ix;
 
     static std::vector<std::string> get_labels ()
     {
@@ -154,9 +169,38 @@ namespace pdes {
 
     void init (int local_cd_n)
     {
-      epoch_begin = std::chrono::steady_clock::now();
+//    if (rank_me() == 0) {
+//      std::cout << "Initializing drain timer:" << std::endl;
+//      std::cout << "  sim_interval:" << sim_interval << std::endl;
+//      std::cout << "  wall_interval:" << std::chrono::duration<double>(wall_interval).count() << std::endl;
+//    }
+      deva::barrier(); // try to approximately align timers
+      start_time = std::chrono::steady_clock::now();
+      epoch_begin = start_time;
       cur_cat = Cat::none;
       event_times_by_cd_ix.resize(local_cd_n);
+    }
+
+    void accum_by_wall_time (Cat cat, std::chrono::steady_clock::time_point wall_time,
+                             std::chrono::steady_clock::duration dt)
+    {
+      // bin by wall time
+      int idx = (wall_time - start_time) / wall_interval;
+      if (accum_wall.size() < idx + 1) {
+        accum_wall.resize(idx + 1, {});
+      }
+      accum_wall[idx][static_cast<int>(cat)] += dt;
+    }
+
+    void accum_by_sim_time (Cat cat, uint64_t sim_time, std::chrono::steady_clock::duration dt)
+    {
+      DEVA_ASSERT(cat == Cat::execute || cat == Cat::execute_rb);
+      // bin accumulator by sim time
+      int idx = sim_time / sim_interval;
+      if (accum_sim.size() < idx + 1) {
+        accum_sim.resize(idx + 1, {});
+      }
+      accum_sim[idx][cat == Cat::execute ? 0 : 1] += dt;
     }
 
     // if category change, returns time since last change
@@ -167,7 +211,7 @@ namespace pdes {
         auto epoch_end = std::chrono::steady_clock::now();
         result = epoch_end - epoch_begin;
         if (!flag_discard) {
-          accum[static_cast<int>(cur_cat)] += result;
+          accum_by_wall_time(cur_cat, epoch_begin, result);
         }
         cur_cat = cat;
         epoch_begin = epoch_end;
@@ -175,10 +219,12 @@ namespace pdes {
       return result;
     }
 
-    void register_event (int cd_ix, std::chrono::steady_clock::duration dt)
+    void register_event (int cd_ix, uint64_t sim_time,
+                         std::chrono::steady_clock::time_point wall_time,
+                         std::chrono::steady_clock::duration dt)
     {
       DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
-      event_times_by_cd_ix[cd_ix].push_back(dt);
+      event_times_by_cd_ix[cd_ix].push_back(EventRecord{sim_time, wall_time, dt});
     }
 
     void commit_event (int cd_ix)
@@ -186,7 +232,9 @@ namespace pdes {
       DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
       auto & event_times = event_times_by_cd_ix[cd_ix];
       DEVA_ASSERT(event_times.size());
-      accum[static_cast<int>(Cat::execute)] += event_times.front();
+      const EventRecord & record = event_times.front();
+      accum_by_sim_time(Cat::execute, record.sim_time, record.dt);
+      accum_by_wall_time(Cat::execute, record.wall_time, record.dt);
       event_times.pop_front();
     }
 
@@ -195,7 +243,9 @@ namespace pdes {
       DEVA_ASSERT(cd_ix < event_times_by_cd_ix.size());
       auto & event_times = event_times_by_cd_ix[cd_ix];
       DEVA_ASSERT(event_times.size());
-      accum[static_cast<int>(Cat::execute_rb)] += event_times.back();
+      const EventRecord & record = event_times.back();
+      accum_by_sim_time(Cat::execute_rb, record.sim_time, record.dt);
+      accum_by_wall_time(Cat::execute_rb, record.wall_time, record.dt);
       event_times.pop_back();
     }
 
@@ -204,10 +254,51 @@ namespace pdes {
       const auto & labels = get_labels();
       for (int i = 0; i < static_cast<int>(DrainTimer::Cat::cat_n); ++i) {
         auto label = labels[i];
-        auto dur = x.accum[i];
-        os << label << ": " << std::chrono::duration<double>(dur).count() << std::endl;
+        auto total = std::chrono::steady_clock::duration::zero();
+        for (const auto & entry : x.accum_wall) {
+          total += entry[i];
+        }
+        os << label << ": " << std::chrono::duration<double>(total).count() << std::endl;
       }
       return os;
+    }
+
+    void dump () const
+    {
+      { // dump wall time accumulators
+        std::ostringstream oss;
+        oss << "drain_timer.wall." << deva::rank_me() << ".csv";
+        std::ofstream ofs(oss.str());
+
+        bool flag_first = true;
+        for (const auto & label : get_labels()) {
+          if (!flag_first) { ofs << ","; }
+          ofs << label;
+          flag_first = false;
+        }
+        ofs << std::endl;
+
+        for (const auto & entry : accum_wall) {
+          flag_first = true;
+          for (const auto & val : entry) {
+            if (!flag_first) { ofs << ","; }
+            ofs << std::chrono::duration<double>(val).count();
+            flag_first = false;
+          }
+          ofs << std::endl;
+        }
+      }
+
+      { // dump sim time accumulators
+        std::ostringstream oss;
+        oss << "drain_timer.sim." << deva::rank_me() << ".csv";
+        std::ofstream ofs(oss.str());
+        ofs << "execute,execute_rb" << std::endl;
+        for (const auto & entry : accum_sim) {
+          ofs << std::chrono::duration<double>(entry[0]).count() << ","
+              << std::chrono::duration<double>(entry[1]).count() << std::endl;
+        }
+      }
     }
   };
 
