@@ -35,6 +35,7 @@ __thread std::int64_t pdes::detail::live_event_balance = 0;
 namespace {
   constexpr auto default_sim_interval = static_cast<uint64_t>(15*60*1000) << 33; // 15 minutes in milliseconds, assuming 33 bits of subtime
   const double wall_interval_s = deva::os_env<double>("deva_drain_timer_wall_interval", 10); // 10 seconds
+  const int64_t static_look_dt = deva::os_env<int64_t>("deva_static_look_dt", -1);
 }
 
 const uint64_t pdes::DrainTimer::sim_interval = os_env<uint64_t>("deva_drain_timer_sim_interval" , default_sim_interval);
@@ -206,7 +207,12 @@ namespace {
 
     io_exec_sum += exec_n;
     io_comm_sum += comm_n;
-    
+
+    if (static_look_dt != -1) {
+      look_dt = static_look_dt;
+      return;
+    }
+
     uint64_t comm1 = hist_comm_sum;
     
     double eff_num = hist_comm_sum;
