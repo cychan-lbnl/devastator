@@ -352,8 +352,13 @@ namespace pdes {
 
     struct alignas(64) event_on_creator {
       event_vtable const *vtbl_on_creator;
-      std::uint64_t time;
-      std::uint64_t subtime;
+      std::uint64_t time;   // execute time
+      std::uint64_t subtime;// execute subtime
+      #if TIMELINE
+        std::uint64_t gen_rank = -1; // generation time
+        std::uint64_t gen_cd   = -1; // generation time
+        std::uint64_t gen_time =  0; // generation time
+      #endif
       union {
         struct {
           std::int32_t target_rank;
@@ -663,6 +668,11 @@ namespace pdes {
     
     auto *me = static_cast<detail::execute_context_impl*>(this);
     std::uint64_t subtime = detail::event_subtime<Event>()(detail::next_seq_id(this->cd, +1), user);
+    #if TIMELINE
+      std::uint64_t gen_rank = deva::rank_me();
+      std::uint64_t gen_cd   = this->cd;
+      std::uint64_t gen_time = this->time; // event generation time
+    #endif
     
     DEVA_ASSERT(
       std::make_pair(me->time, me->subtime) <= std::make_pair(time, subtime),
@@ -678,6 +688,11 @@ namespace pdes {
       e->target_cd = cd;
       e->time = time;
       e->subtime = subtime;
+      #if TIMELINE
+        e->gen_rank = gen_rank;
+        e->gen_cd   = gen_cd;
+        e->gen_time = gen_time;
+      #endif
       e->sent_near_ix = -1;
       e->sent_near_next = me->sent_near_head;
       me->sent_near_head = e;
@@ -691,6 +706,11 @@ namespace pdes {
         [=](Event &&user) {
           auto *e = new detail::event_impl<Event>{static_cast<Event&&>(user)};
           e->subtime = subtime;
+          #if TIMELINE
+            e->gen_rank = gen_rank;
+            e->gen_cd   = gen_cd;
+            e->gen_time = gen_time;
+          #endif
           detail::arrive_far(far_id, time, cd, e);
         },
         static_cast<Event1&&>(user)

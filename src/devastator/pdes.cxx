@@ -161,6 +161,34 @@ namespace {
     bool spinning_empty = false;
     bool spinning_look = false;
     DrainTimer drain_timer;
+    #if TIMELINE
+      struct Timeline
+      {
+        struct EventRecord {
+          uint64_t time;
+          int gen_rank;
+          int gen_cd;
+          uint64_t gen_time;
+        };
+        std::vector<std::vector<EventRecord>> events;
+
+        void init (int cd_n) {
+          events.resize(cd_n);
+        }
+        void record_event (int cd, uint64_t time, int gen_rank, int gen_cd, uint64_t gen_time) {
+          events[cd].push_back({time, gen_rank, gen_cd, gen_time});
+        }
+        friend std::ostream & operator<< (std::ostream & os, const Timeline & tl) {
+          for (int cd = 0; cd < tl.events.size(); ++cd) {
+            for (const auto & e : tl.events[cd]) {
+              os << deva::rank_me() << ',' << cd << ',' << e.time << ',' << e.gen_rank << ',' << e.gen_cd << ',' << e.gen_time << std::endl;
+            }
+          }
+          return os;
+        }
+      };
+      Timeline timeline;
+    #endif
 
     bool spinning () {
       return spinning_empty || spinning_look;
@@ -300,6 +328,10 @@ void pdes::init(int32_t local_cd_n) {
   }
   
   sim_me.stats = {};
+
+  #if TIMELINE
+    sim_me.timeline.init(local_cd_n);
+  #endif
 }
 
 pdes::statistics pdes::local_stats() {
@@ -786,6 +818,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                   cxt.cd = cd->cd_ix;
                   cxt.time = se.time;
                   cxt.subtime = se.subtime;
+                  #if TIMELINE
+                    sim_me.timeline.record_event(cxt.cd, cxt.time, se.e->gen_rank, se.e->gen_cd, se.e->gen_time);
+                  #endif
                   se.e->vtbl_on_target->commit(se.e, cxt, should_delete);
                   sim_me.drain_timer.commit_event(cd->cd_ix);
                   sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
@@ -1039,6 +1074,16 @@ void pdes::finalize() {
     // dump per-interval stats
     sim_me.drain_timer.dump();
   }
+
+  #if TIMELINE
+    if (os_env<bool>("dump_timeline", false)) {
+      // dump event timelines
+      ostringstream oss;
+      oss << "timeline." << deva::rank_me() << ".out";
+      ofstream ofs(oss.str());
+      ofs << sim_me.timeline;
+    }
+  #endif
 }
 
 void pdes::rewind(bool do_rewind) {
