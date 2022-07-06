@@ -1,15 +1,6 @@
-#include <devastator/diagnostic.hxx>
-#include <devastator/world.hxx>
-#include <devastator/pdes.hxx>
 #include <devastator/os_env.hxx>
 
-#include <cstdint>
-#include <cmath>
-#include <memory>
-#include <vector>
-#include <unordered_map>
-
-#include "print.hxx"
+#include "qss.hxx"
 
 using namespace std;
 
@@ -21,37 +12,22 @@ using deva::rank_me;
 using deva::rank_me_local;
 using deva::rank_is_local;
 
-using Time = unsigned;
-
-constexpr int priority_bit_n = 1;
-uint64_t get_timestamp (Time t, unsigned priority)
-{
-  DEVA_ASSERT(priority < 1 << priority_bit_n);
-  return static_cast<uint64_t>(t << priority_bit_n | priority);
-}
-
-int get_time (uint64_t timestamp)
-{
-  return static_cast<int>(timestamp >> priority_bit_n);
-}
-
-///////////////////////
-// Model Actor: Cell //
-///////////////////////
+///////////
+// Model //
+///////////
 
 // model parameters
 const int cell_n = deva::os_env<int>("cells", 100);
-const int cell_per_process = (cell_n + process_n-1)/process_n;
-const int cell_per_rank = (cell_n + rank_n-1)/rank_n;
+const int cell_per_rank = (cell_n + rank_n-1) / rank_n;
 const double alpha = deva::os_env<double>("alpha", 0.01);
 const double value_threshold = deva::os_env<double>("value_thresh", 0.1);
 
 // local integrator time step
 const Time local_delta_t = deva::os_env<unsigned>("local_delta_t", 1);
 // force advance at least this many seconds
-const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", 10);
+const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", 100);
 // simulation ends after this many seconds
-const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 10);
+const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 100);
 
 class Cell
 {
@@ -69,6 +45,7 @@ public:
   };
 
   Cell () = default;
+  Cell (int i) : id(i) {}
   Cell (int i, unordered_map<int, Neighbor> nbrs) : id(i), neighbors(std::move(nbrs)) {}
 
   // helper functions
@@ -76,6 +53,11 @@ public:
   void set_last_sent (Neighbor nbr) { last_sent = nbr; }
   void set_next_advance_time (Time t) { next_advance_time = t; }
   const State & get_state () const { return state; }
+
+  friend ostream & operator<< (ostream & os, const Cell & x) {
+    os << x.state.val;
+    return os;
+  }
 
 private:
 
@@ -187,119 +169,25 @@ public:
 // Cell Actor Space //
 //////////////////////
 
-class CellSpace
+class CellSpace : public ActorSpace<Cell>
 {
 public:
-
-  void initialize ()
+  void connect () override
   {
-    if (rank_me_local() == 0) {
-      for (int cell_id = 0; cell_id < cell_n; ++cell_id) {
-        if (rank_is_local(cell_id_to_rank(cell_id))) {
-          get_shared_cell(cell_id) = Cell();
-        }
-      }
-    }
-
-    deva::barrier();
-
-    // initialize cells owned by this rank
-    for (int cell_id : rank_to_cell_ids(rank_me())) {
+    // connect cells owned by this rank
+    for (int actor_id : rank_to_actor_ids(rank_me())) {
       unordered_map<int, Cell::Neighbor> neighbors;
       // insert left/right neighbors
-      if (cell_id == 0) {
+      if (actor_id == 0) {
         // Dirichlet boundary condition
-        neighbors.insert({cell_id-1, Cell::Neighbor{100, 0}});
+        neighbors.insert({actor_id-1, Cell::Neighbor{100, 0}});
       } else {
-        neighbors.insert({cell_id-1, Cell::Neighbor()});
+        neighbors.insert({actor_id-1, Cell::Neighbor()});
       }
-      neighbors.insert({cell_id+1, Cell::Neighbor()});
-      get_cell(cell_id) = Cell(cell_id, std::move(neighbors));
+      neighbors.insert({actor_id+1, Cell::Neighbor()});
+      get_actor(actor_id) = Cell(actor_id, std::move(neighbors));
     }
   }
-
-  void root_events ()
-  {
-    // insert a root advance event for each cell owned by this rank
-    for (int cell_id : rank_to_cell_ids(rank_me())) {
-      int cell_idx = cell_id_to_idx(cell_id);
-      pdes::root_event(cell_idx,            // use index as causality domain
-                       get_timestamp(0, 0), // event time stamp
-                       Cell::Advance{0, cell_id}); // advance event
-    }
-  }
-
-  bool has_actor (int cell_id) const
-  {
-    return cell_id >= 0 && cell_id < cell_n;
-  }
-
-  // which rank a cell is assigned to
-  int cell_id_to_rank (int cell_id)
-  {
-    DEVA_ASSERT(has_actor(cell_id));
-    return cell_id / cell_per_rank;
-  }
-
-  // returns cell's index within rank
-  int cell_id_to_idx (int cell_id)
-  {
-    DEVA_ASSERT(has_actor(cell_id));
-    return cell_id % cell_per_rank;
-  }
-
-  // which cells are assigned to a rank
-  vector<int> rank_to_cell_ids (int rank)
-  {
-    int lb = std::min(cell_n,  rank_me()      * cell_per_rank);
-    int ub = std::min(cell_n, (rank_me() + 1) * cell_per_rank);
-    
-    vector<int> result(ub - lb);
-    for (int idx = 0; idx < ub - lb; idx++) {
-      result[idx] = lb + idx;
-    }
-    return result;
-  }
-
-  // return Cell from local storage
-  Cell & get_cell (int cell_id)
-  {
-    DEVA_ASSERT(cell_id_to_rank(cell_id) == rank_me());
-    return cells[cell_id];
-  }
-
-  // return Cell from local storage (any cell on process)
-  Cell & get_shared_cell (int cell_id)
-  {
-    DEVA_ASSERT(rank_is_local(cell_id_to_rank(cell_id)));
-    return cells[cell_id];
-  }
-
-  void print () const
-  {
-    if (rank_me() == 0) {
-      vector<int> cell_ids;
-      for (const auto & p : cells) {
-        cell_ids.push_back(p.first);
-      }
-      std::sort(cell_ids.begin(), cell_ids.end());
-      AllPrint() << "Cell values: [";
-      bool flag_first = true;
-      for (int cell_id : cell_ids) {
-        if (!flag_first) {
-          AllPrint() << ',';
-        }
-        AllPrint() << cells.at(cell_id).get_state().val;
-        flag_first = false;
-      }
-      AllPrint() << ']' << endl;
-    }
-  }
-
-private:
-
-  // here's where the cell actors are stored
-  unordered_map<int, Cell> cells;
 };
 
 CellSpace cs;
@@ -392,8 +280,8 @@ Time Cell::reschedule (pdes::execute_context & cxt)
 
   // only reschedule if est_time is earlier than currently scheduled advance 
   if (est_time > time && est_time < std::min(next_advance_time, sim_end_time)) {
-    int rank = cs.cell_id_to_rank(id);
-    int cd   = cs.cell_id_to_idx(id);
+    int rank = cs.actor_id_to_rank(id);
+    int cd   = cs.actor_id_to_idx(id);
     AllPrint() << "Time " << time << ": Cell " << id << ": reschedule() for future time: " << est_time << endl;
     cxt.send(rank, cd, get_timestamp(est_time, 0), Advance {est_time, id});
     next_advance_time = est_time;
@@ -412,8 +300,8 @@ Cell::Neighbor Cell::send_share_state_events (pdes::execute_context & cxt)
     for (const auto & p : get_neighbors()) {
       int nbr_id = p.first;
       if (cs.has_actor(nbr_id)) {
-        int nbr_rank = cs.cell_id_to_rank(nbr_id);
-        int nbr_cd   = cs.cell_id_to_idx(nbr_id);
+        int nbr_rank = cs.actor_id_to_rank(nbr_id);
+        int nbr_cd   = cs.actor_id_to_idx(nbr_id);
         ShareState event{time, id, nbr_id, nbr};
         cxt.send(nbr_rank, nbr_cd, get_timestamp(time, 1), event);
       }
@@ -430,7 +318,7 @@ Cell::Neighbor Cell::send_share_state_events (pdes::execute_context & cxt)
 
 Cell::ShareState::UC Cell::ShareState::execute (pdes::execute_context & cxt)
 {
-  Cell & cell = cs.get_cell(dst_cell_id);
+  Cell & cell = cs.get_actor(dst_cell_id);
   // advance to given time using old neighbor values
   AdvanceInfo adv_info = cell.advance(event_time);
   // set the neighbor with new values from event
@@ -445,7 +333,7 @@ Cell::ShareState::UC Cell::ShareState::execute (pdes::execute_context & cxt)
 void Cell::ShareState::UC::unexecute (pdes::event_context & cxt, Cell::ShareState & me)
 {
   // restore the old state
-  Cell & cell = cs.get_cell(me.dst_cell_id);
+  Cell & cell = cs.get_actor(me.dst_cell_id);
   cell.unadvance(std::move(adv_info));
   cell.set_neighbor(me.src_cell_id, old_nbr);
   cell.set_next_advance_time(saved_next_advance_time);
@@ -457,7 +345,7 @@ void Cell::ShareState::UC::unexecute (pdes::event_context & cxt, Cell::ShareStat
 
 Cell::Advance::UC Cell::Advance::execute (pdes::execute_context & cxt)
 {
-  Cell & cell = cs.get_cell(cell_id);
+  Cell & cell = cs.get_actor(cell_id);
   AdvanceInfo adv_info = cell.advance(event_time);
   // share state with neighbors
   Neighbor saved_last_sent = cell.send_share_state_events(cxt);
@@ -468,7 +356,7 @@ Cell::Advance::UC Cell::Advance::execute (pdes::execute_context & cxt)
 
 void Cell::Advance::UC::unexecute (pdes::event_context & cxt, Cell::Advance & me) {
   // restore the old state
-  Cell & cell = cs.get_cell(me.cell_id);
+  Cell & cell = cs.get_actor(me.cell_id);
   cell.unadvance(std::move(adv_info));
   cell.set_last_sent(saved_last_sent);
   cell.set_next_advance_time(saved_next_advance_time);
@@ -482,7 +370,8 @@ void Cell::Advance::UC::unexecute (pdes::event_context & cxt, Cell::Advance & me
 void rank_main ()
 {
   pdes::init(cell_per_rank);
-  cs.initialize();
+  cs.init(cell_n);
+  cs.connect();
   cs.print();
   cs.root_events();
   pdes::drain();
