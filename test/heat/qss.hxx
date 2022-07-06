@@ -16,30 +16,30 @@
 const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", 100);
 // simulation ends after this many seconds
 const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 100);
+// control verbosity
+const bool flag_verbose = deva::os_env<bool>("verbose", false);
 
+// basic implementation of an actor space
+// uses a simple block partitioning across ranks
 template <class Actor>
-class ActorSpace
+class BasicActorSpace
 {
 public:
 
+  // allocate actors in shared storage to prepare for concurrent access
   void init (int a_n)
   {
-    // allocate actors in shared storage to prepare for concurrent access
     if (deva::rank_me_local() == 0) {
       actor_n = a_n;
       for (int actor_id = 0; actor_id < actor_n; ++actor_id) {
-        if (deva::rank_is_local(actor_id_to_rank(actor_id))) {
-          get_shared_actor(actor_id) = Actor(actor_id);
-        }
+        actors.insert({actor_id, Actor(actor_id)});
       }
     }
     deva::barrier();
   }
 
-  int actor_per_rank () const {
-    return (actor_n + deva::rank_n-1) / deva::rank_n;
-  }
-
+  // derived class implements this
+  // use Actor::set_neighbors() to connect actors
   virtual void connect () {}
 
   void root_events () const
@@ -52,6 +52,11 @@ public:
                              get_timestamp(0, 0), // event time stamp
                              Advance{0, actor_id}); // advance event
     }
+  }
+
+  int actor_per_rank () const
+  {
+    return (actor_n + deva::rank_n-1) / deva::rank_n;
   }
 
   bool has_actor (int actor_id) const
@@ -93,13 +98,6 @@ public:
     return actors[actor_id];
   }
 
-  // return Actor from local storage (any actor on process)
-  Actor & get_shared_actor (int actor_id)
-  {
-    DEVA_ASSERT(deva::rank_is_local(actor_id_to_rank(actor_id)));
-    return actors[actor_id];
-  }
-
   void print () const
   {
     if (deva::rank_me() == 0) {
@@ -130,9 +128,9 @@ private:
   std::unordered_map<int, Actor> actors;
 };
 
-// specialize this function to return the Actor's ActorSpace
+// specialize this function to return the Actor's actor space
 template <class Actor>
-ActorSpace<Actor> * get_actor_space ()
+BasicActorSpace<Actor> * get_actor_space ()
 {
   return nullptr;
 }
@@ -223,11 +221,11 @@ public:
   AdvanceInfo advance (Time t);
   void unadvance (AdvanceInfo info);
   NeighborState set_neighbor (int nid, NeighborState nbr);
-  NeighborState send_share_state_events (deva::pdes::execute_context & cxt); // send state update to neighbors
+  NeighborState send_share_state_events (deva::pdes::execute_context & cxt); // share state with neighbors
   Time reschedule (deva::pdes::execute_context & cxt); // self-schedule an advance
 
   const State & get_state () const { return state; }
-  void set_neighbors(std::unordered_map<int, NeighborState> nbrs) { neighbors = std::move(nbrs); }
+  void set_neighbors (std::unordered_map<int, NeighborState> nbrs) { neighbors = std::move(nbrs); }
   void set_last_sent (NeighborState nbr) { last_sent = nbr; }
   void set_next_advance_time (Time t) { next_advance_time = t; }
 
@@ -247,7 +245,6 @@ private:
   // include all object data fields in this macro
   SERIALIZED_FIELDS(id, time, state, neighbors, last_sent, next_advance_time);
 
-  // helper functions
   std::pair<Time, State> estimate_next_send_time () const;
 };
 
@@ -261,8 +258,11 @@ Actor<State>::advance (Time t)
 
   auto always_false = [] (Time t, const State & s) { return false; };
   state.local_integrator(time, t, state, neighbors, always_false);
-  AllPrint() << "Time " << t << ": Actor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
+  if (flag_verbose) {
+    AllPrint() << "Time " << t << ": Actor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
+  }
   DEVA_ASSERT(time == t);
+
   return info;
 }
 
@@ -277,7 +277,9 @@ template <class State>
 typename State::NeighborState
 Actor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
 {
-  AllPrint() << "Time " << time << ": Actor " << id << ": set_neighbor() cell " << nid << " to " << nbr << std::endl;
+  if (flag_verbose) {
+    AllPrint() << "Time " << time << ": Actor " << id << ": set_neighbor() cell " << nid << " to " << nbr << std::endl;
+  }
   NeighborState old_nbr = neighbors[nid];
   neighbors[nid] = nbr;
   return old_nbr;
@@ -306,19 +308,21 @@ Actor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
   NeighborState saved_last_sent = last_sent;
 
   if (state.check_need_update(last_sent, time, state)) {
-    AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events() with value: " << state << std::endl;
-    NeighborState nbr = state.gen_neighbor_state(time);
+    if (flag_verbose) {
+      AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events() with value: " << state << std::endl;
+    }
+    NeighborState my_nbr_state = state.gen_neighbor_state(time, neighbors);
     const auto & as = *get_actor_space<Actor<State>>();
     for (const auto & p : neighbors) {
       int nbr_id = p.first;
       if (as.has_actor(nbr_id)) {
         int nbr_rank = as.actor_id_to_rank(nbr_id);
         int nbr_cd   = as.actor_id_to_idx(nbr_id);
-        ShareState event{time, id, nbr_id, nbr};
+        ShareState event{time, id, nbr_id, my_nbr_state};
         cxt.send(nbr_rank, nbr_cd, get_timestamp(time, 1), event);
       }
     }
-    last_sent = nbr;
+    last_sent = my_nbr_state;
   }
 
   return saved_last_sent;
@@ -341,7 +345,9 @@ Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
     const auto & as = *get_actor_space<Actor<State>>();
     int rank = as.actor_id_to_rank(id);
     int cd   = as.actor_id_to_idx(id);
-    AllPrint() << "Time " << time << ": Actor " << id << ": reschedule() for future time: " << est_time << std::endl;
+    if (flag_verbose) {
+      AllPrint() << "Time " << time << ": Actor " << id << ": reschedule() for future time: " << est_time << std::endl;
+    }
     cxt.send(rank, cd, get_timestamp(est_time, 0), Advance {est_time, id});
     next_advance_time = est_time;
   }

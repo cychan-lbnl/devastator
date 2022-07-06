@@ -24,9 +24,9 @@ const double value_threshold = deva::os_env<double>("value_thresh", 0.1);
 // local integrator time step
 const Time local_delta_t = deva::os_env<unsigned>("local_delta_t", 1);
 
-////////////////
-// Cell State //
-////////////////
+///////////////
+// CellState //
+///////////////
 
 struct CellState
 {
@@ -35,11 +35,13 @@ public:
   struct NeighborState
   {
     double val = 0;
+    double slope  = 0;
     Time effective = 0;
 
     // include all object data fields in this macro
-    SERIALIZED_FIELDS(val, effective);
+    SERIALIZED_FIELDS(val, slope, effective);
 
+    double estimate (Time t) const;
     friend ostream & operator<< (ostream & os, const NeighborState & x);
   };
 
@@ -63,7 +65,7 @@ public:
   static bool check_need_update (const NeighborState & last_sent, Time t, const CellState & s);
 
   // generate a NeighborState object to share with neighbors
-  NeighborState gen_neighbor_state (Time cur_time) const;
+  NeighborState gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 
   friend ostream & operator<< (ostream & os, const CellState & x);
 };
@@ -72,7 +74,14 @@ public:
 // CellState Implementation //
 //////////////////////////////
 
-// approximate diffusion for fixed neighbor values
+// estimated time based on linear approximation
+double CellState::NeighborState::estimate (Time t) const
+{
+  DEVA_ASSERT(t >= effective);
+  return val + (t - effective) * slope;
+}
+
+// approximate diffusion using estimated neighbor values
 // integrates from cur_time until end_time OR f() evaluates true
 // this can be made more efficient
 // NOTE: check the math
@@ -82,32 +91,41 @@ void CellState::local_integrator (Time & cur_time, Time end_time,
                                   const unordered_map<int, NeighborState> & neighbors,
                                   const F & f)
 {
-  // these are fixed for all steps
-  int nbr_n = neighbors.size();
-  double nbr_sum = 0;
-  for (const auto & p : neighbors) {
-    nbr_sum += p.second.val;
-  }
-
   // integrate until end time or f() evaluates to true
+  int nbr_n = neighbors.size();
   while (cur_time < end_time && !f(cur_time, cur_state)) {
     Time next_time = std::min(cur_time + local_delta_t, end_time);
     Time step = next_time - cur_time;
+    double nbr_sum = 0;
+    for (const auto & p : neighbors) {
+      nbr_sum += p.second.estimate(cur_time);
+    }
     double rhs = cur_state.source + alpha * (nbr_sum - nbr_n * cur_state.val);
     cur_state.val += rhs * step;
     cur_time = next_time;
   }
 }
 
-// need to update neighbors when estimated value has changed by threshold
+// need to update neighbors when estimated value has deviated from linear estimate by threshold
 bool CellState::check_need_update (const NeighborState & last_sent, Time t, const CellState & s)
 {
-  return std::abs(s.val - last_sent.val) >= value_threshold;
+  DEVA_ASSERT(t >= last_sent.effective);
+  double estimate = last_sent.val + (t - last_sent.effective) * last_sent.slope;
+  return std::abs(s.val - estimate) >= value_threshold;
 }
 
-typename CellState::NeighborState CellState::gen_neighbor_state (Time cur_time) const
+typename CellState::NeighborState
+CellState::gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
-  return {val, cur_time};
+  // TODO: this shares common code with local_integrator
+  int nbr_n = neighbors.size();
+  double nbr_sum = 0;
+  for (const auto & p : neighbors) {
+    nbr_sum += p.second.estimate(cur_time);
+  }
+  double slope = source + alpha * (nbr_sum - nbr_n * val);
+
+  return {val, slope, cur_time};
 }
 
 ostream & operator<< (ostream & os, const CellState & x) {
@@ -116,7 +134,7 @@ ostream & operator<< (ostream & os, const CellState & x) {
 }
 
 ostream & operator<< (ostream & os, const CellState::NeighborState & x) {
-  os << x.val;
+  os << "(" << x.val << "," << x.slope << "," << x.effective << ")";
   return os;
 }
 
@@ -126,7 +144,7 @@ ostream & operator<< (ostream & os, const CellState::NeighborState & x) {
 
 using Cell = Actor<CellState>;
 
-class CellSpace : public ActorSpace<Cell>
+class CellSpace : public BasicActorSpace<Cell>
 {
 public:
   void connect () override
@@ -150,9 +168,9 @@ public:
 CellSpace cs;
 
 template <>
-ActorSpace<Cell> * get_actor_space<Cell> ()
+BasicActorSpace<Cell> * get_actor_space<Cell> ()
 {
-  return static_cast<ActorSpace<Cell> *>(&cs);
+  return static_cast<BasicActorSpace<Cell> *>(&cs);
 }
 
 /////////////////////
@@ -165,12 +183,14 @@ void rank_main ()
   cs.init(cell_n);
   cs.connect();
 
+  Print() << "Initial state:" << endl;
   cs.print();
 
   pdes::init(cs.actor_per_rank());
   cs.root_events();
   pdes::drain();
 
+  Print() << "Final state:" << endl;
   cs.print();
 }
 

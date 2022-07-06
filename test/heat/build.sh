@@ -6,4 +6,4 @@
 pushd ../../; source sourceme; popd
 
 # compile
-exe=$(brutal ranks=4 exe heat.cxx)
+exe=$(brutal ranks=4 exe heat_qss1.cxx)
