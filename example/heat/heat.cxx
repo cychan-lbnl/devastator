@@ -13,11 +13,7 @@ using namespace std;
 
 namespace pdes = deva::pdes;
 
-using deva::process_n;
-using deva::rank_n;
 using deva::rank_me;
-using deva::rank_me_local;
-using deva::rank_is_local;
 
 //////////////////////
 // Model Parameters //
@@ -27,12 +23,13 @@ using deva::rank_is_local;
 const int cell_n = deva::os_env<int>("cells", 100);
 const double alpha = deva::os_env<double>("alpha", 0.01);
 const double value_threshold = deva::os_env<double>("value_thresh", 0.1);
+const string sim_conf = deva::os_env<string>("sim_conf", "source");
 
 // local integrator time step
 const Time local_delta_t = deva::os_env<unsigned>("local_delta_t", 1);
+// skip over at most this many time steps
+const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", sim_end_time);
 
-// configuration
-const string sim_conf = deva::os_env<string>("sim_conf", "source");
 
 ///////////////
 // CellState //
@@ -54,7 +51,7 @@ struct CellState
   // include all object data fields in this macro
   SERIALIZED_FIELDS(val, source);
 
-  // Actor API functions
+  // QSSActor API functions
 
   // advance state from prev_time to cur_time
   void advance (Time prev_time, Time cur_time,
@@ -86,9 +83,9 @@ private:
                          const F & f);
 };
 
-////////////////////////////////////////
-// CellState Actor API Implementation //
-////////////////////////////////////////
+///////////////////////////////////////////
+// CellState QSSActor API Implementation //
+///////////////////////////////////////////
 
 void CellState::advance (Time prev_time, Time cur_time, 
                          const unordered_map<int, NeighborState> & neighbors)
@@ -97,7 +94,7 @@ void CellState::advance (Time prev_time, Time cur_time,
   local_integrator(prev_time, cur_time, neighbors, always_false);
 }
 
-// need to update neighbors when estimated value has deviated from linear estimate by threshold
+// need to update neighbors when estimated value has deviated from estimate by threshold
 bool CellState::check_need_update (Time time, const NeighborState & last_sent) const
 {
   return std::abs(val - last_sent.poly.eval(time)) >= value_threshold;
@@ -179,7 +176,7 @@ Time CellState::local_integrator (const Time start_time, const Time end_time,
 // Cell ActorSpace //
 /////////////////////
 
-using Cell = Actor<CellState>;
+using Cell = QSSActor<CellState>;
 
 class CellSpace : public BasicActorSpace<Cell>
 {
@@ -189,9 +186,9 @@ public:
     // initialize cells owned by this rank
     for (int actor_id : rank_to_actor_ids(rank_me())) {
       // set left/right neighbors
-      unordered_map<int, Cell::NeighborState> neighbors;
-      neighbors.insert({actor_id-1, Cell::NeighborState()});
-      neighbors.insert({actor_id+1, Cell::NeighborState()});
+      unordered_map<int, CellState::NeighborState> neighbors;
+      neighbors.insert({actor_id-1, CellState::NeighborState()});
+      neighbors.insert({actor_id+1, CellState::NeighborState()});
       if (sim_conf == "diri" && actor_id == 0) {
         // Dirichlet boundary condition at cell -1 with fixed value 100
         // First coeff is 100, rest are value-initialized to 0
@@ -203,6 +200,18 @@ public:
       if (sim_conf == "source" && actor_id == cell_n / 2) {
         get_actor(actor_id).get_state().source = 0.2;
       }
+    }
+  }
+
+  void root_events () const override
+  {
+    // insert a root advance event for each actor owned by this rank
+    for (int actor_id : rank_to_actor_ids(deva::rank_me())) {
+      int actor_idx = actor_id_to_idx(actor_id);
+      using Advance = typename QSSActor<CellState>::Advance;
+      deva::pdes::root_event(actor_idx, // use index as causality domain
+                             get_timestamp(0, 0), // event time stamp
+                             Advance{0, actor_id}); // advance event
     }
   }
 };

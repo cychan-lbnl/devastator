@@ -11,11 +11,10 @@
 
 #include "time.hxx"
 #include "print.hxx"
+#include "actor_space.hxx"
 
 // simulation ends after this many seconds
 const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 100);
-// force advance at least this many seconds
-const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", sim_end_time);
 // control verbosity
 const bool flag_verbose = deva::os_env<bool>("verbose", false);
 
@@ -65,138 +64,19 @@ std::ostream & operator<< (std::ostream & os, const Poly<T, N> & x)
   return os;
 }
 
-/////////////////////////////
-// Basic Actor Space Class //
-/////////////////////////////
-
-// uses a simple block partitioning across ranks
-template <class Actor>
-class BasicActorSpace
-{
-public:
-
-  // allocate actors in shared storage to prepare for concurrent access
-  void init (int a_n)
-  {
-    if (deva::rank_me_local() == 0) {
-      actor_n = a_n;
-      for (int actor_id = 0; actor_id < actor_n; ++actor_id) {
-        actors.insert({actor_id, Actor(actor_id)});
-      }
-    }
-    deva::barrier();
-  }
-
-  // derived class implements this
-  // use Actor::set_neighbors() to connect actors
-  virtual void configure () {}
-
-  void root_events () const
-  {
-    // insert a root advance event for each actor owned by this rank
-    for (int actor_id : rank_to_actor_ids(deva::rank_me())) {
-      int actor_idx = actor_id_to_idx(actor_id);
-      using Advance = typename Actor::Advance;
-      deva::pdes::root_event(actor_idx, // use index as causality domain
-                             get_timestamp(0, 0), // event time stamp
-                             Advance{0, actor_id}); // advance event
-    }
-  }
-
-  int actor_per_rank () const
-  {
-    return (actor_n + deva::rank_n-1) / deva::rank_n;
-  }
-
-  bool has_actor (int actor_id) const
-  {
-    return actor_id >= 0 && actor_id < actor_n;
-  }
-
-  // which rank a actor is assigned to
-  int actor_id_to_rank (int actor_id) const
-  {
-    DEVA_ASSERT(has_actor(actor_id));
-    return actor_id / actor_per_rank();
-  }
-
-  // returns actor's index within rank
-  int actor_id_to_idx (int actor_id) const
-  {
-    DEVA_ASSERT(has_actor(actor_id));
-    return actor_id % actor_per_rank();
-  }
-
-  // which actors are assigned to a rank
-  std::vector<int> rank_to_actor_ids (int rank) const
-  {
-    int lb = std::min(actor_n,  deva::rank_me()      * actor_per_rank());
-    int ub = std::min(actor_n, (deva::rank_me() + 1) * actor_per_rank());
-    
-    std::vector<int> result(ub - lb);
-    for (int idx = 0; idx < ub - lb; idx++) {
-      result[idx] = lb + idx;
-    }
-    return result;
-  }
-
-  // return Actor from local storage
-  Actor & get_actor (int actor_id)
-  {
-    DEVA_ASSERT(actor_id_to_rank(actor_id) == deva::rank_me());
-    return actors[actor_id];
-  }
-
-  void print () const
-  {
-    if (deva::rank_me() == 0) {
-      std::vector<int> actor_ids;
-      for (const auto & p : actors) {
-        actor_ids.push_back(p.first);
-      }
-      std::sort(actor_ids.begin(), actor_ids.end());
-      Print() << "Actors : [";
-      bool flag_first = true;
-      for (int actor_id : actor_ids) {
-        if (!flag_first) {
-          Print() << ',';
-        }
-        Print() << actors.at(actor_id).get_state();
-        flag_first = false;
-      }
-      Print() << ']' << std::endl;
-    }
-  }
-
-private:
-
-  // global number of actors
-  int actor_n = 0;
-
-  // here's where the actor actors are stored
-  std::unordered_map<int, Actor> actors;
-};
-
-// specialize this function to return the Actor's actor space
-template <class Actor>
-BasicActorSpace<Actor> * get_actor_space ()
-{
-  return nullptr;
-}
-
-/////////////////
-// Actor Class //
-/////////////////
+////////////////////
+// QSSActor Class //
+////////////////////
 
 template <class State>
-class Actor
+class QSSActor
 {
 public:
 
   using NeighborState = typename State::NeighborState;
 
-  Actor () = default;
-  Actor (int i) : id(i) {}
+  QSSActor () = default;
+  QSSActor (int i) : id(i) {}
 
   ///////////////////
   // Advance event //
@@ -237,7 +117,7 @@ public:
   // ShareState event //
   ///////////////////////
 
-  // event that sets a destination Actor's neighbor value
+  // event that sets a destination QSSActor's neighbor value
   struct ShareState
   {
     Time event_time = 0;
@@ -294,26 +174,24 @@ private:
 
   // include all object data fields in this macro
   SERIALIZED_FIELDS(id, time, state, neighbors, last_sent, next_advance_time);
-
-  std::pair<Time, State> estimate_next_send_time () const;
 };
 
 // advance cell state to time t
 template <class State>
-typename Actor<State>::AdvanceInfo
-Actor<State>::advance (Time t)
+typename QSSActor<State>::AdvanceInfo
+QSSActor<State>::advance (Time t)
 {
   AdvanceInfo info {time, state}; // save old state in case of rollback
   state.advance(time, t, neighbors);
   time = t;
   if (flag_verbose) {
-    AllPrint() << "Time " << t << ": Actor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
+    AllPrint() << "Time " << t << ": QSSActor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
   }
   return info;
 }
 
 template <class State>
-void Actor<State>::unadvance (AdvanceInfo info)
+void QSSActor<State>::unadvance (AdvanceInfo info)
 {
   time  = info.saved_time;
   state = info.saved_state;
@@ -321,10 +199,10 @@ void Actor<State>::unadvance (AdvanceInfo info)
 
 template <class State>
 typename State::NeighborState
-Actor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
+QSSActor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
 {
   if (flag_verbose) {
-    AllPrint() << "Time " << time << ": Actor " << id << ": set_neighbor() cell " << nid << " to " << nbr << std::endl;
+    AllPrint() << "Time " << time << ": QSSActor " << id << ": set_neighbor() cell " << nid << " to " << nbr << std::endl;
   }
   NeighborState old_nbr = neighbors[nid];
   neighbors[nid] = nbr;
@@ -333,16 +211,16 @@ Actor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
 
 template <class State>
 typename State::NeighborState
-Actor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
+QSSActor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
 {
   NeighborState saved_last_sent = last_sent;
 
   if (state.check_need_update(time, last_sent)) {
     NeighborState my_nbr_state = state.gen_neighbor_state(time, neighbors);
     if (flag_verbose) {
-      AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events(): " << my_nbr_state << std::endl;
+      AllPrint() << "Time " << time << ": QSSActor " << id << ": send_share_state_events(): " << my_nbr_state << std::endl;
     }
-    const auto & as = *get_actor_space<Actor<State>>();
+    const auto & as = *get_actor_space<QSSActor<State>>();
     for (const auto & p : neighbors) {
       int nbr_id = p.first;
       if (as.has_actor(nbr_id)) {
@@ -359,7 +237,7 @@ Actor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
 }
 
 template <class State>
-Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
+Time QSSActor<State>::reschedule (deva::pdes::execute_context & cxt)
 {
   Time saved_next_advance_time = next_advance_time;
   if (next_advance_time <= time) {
@@ -371,11 +249,11 @@ Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
 
   // only reschedule if est_time is earlier than currently scheduled advance 
   if (est_time > time && est_time < std::min(next_advance_time, sim_end_time)) {
-    const auto & as = *get_actor_space<Actor<State>>();
+    const auto & as = *get_actor_space<QSSActor<State>>();
     int rank = as.actor_id_to_rank(id);
     int cd   = as.actor_id_to_idx(id);
     if (flag_verbose) {
-      AllPrint() << "Time " << time << ": Actor " << id << ": reschedule() for future time: " << est_time << std::endl;
+      AllPrint() << "Time " << time << ": QSSActor " << id << ": reschedule() for future time: " << est_time << std::endl;
     }
     cxt.send(rank, cd, get_timestamp(est_time, 0), Advance {est_time, id});
     next_advance_time = est_time;
@@ -389,11 +267,11 @@ Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
 /////////////////////////////////////
 
 template <class State>
-typename Actor<State>::ShareState::UC
-Actor<State>::ShareState::execute (deva::pdes::execute_context & cxt)
+typename QSSActor<State>::ShareState::UC
+QSSActor<State>::ShareState::execute (deva::pdes::execute_context & cxt)
 {
-  auto & as = *get_actor_space<Actor<State>>();
-  Actor<State> & cell = as.get_actor(dst_actor_id);
+  auto & as = *get_actor_space<QSSActor<State>>();
+  QSSActor<State> & cell = as.get_actor(dst_actor_id);
   // advance to given time using old neighbor values
   AdvanceInfo adv_info = cell.advance(event_time);
   // set the neighbor with new values from event
@@ -405,11 +283,11 @@ Actor<State>::ShareState::execute (deva::pdes::execute_context & cxt)
 }
 
 template <class State>
-void Actor<State>::ShareState::UC::unexecute (deva::pdes::event_context & cxt, Actor<State>::ShareState & me)
+void QSSActor<State>::ShareState::UC::unexecute (deva::pdes::event_context & cxt, QSSActor<State>::ShareState & me)
 {
   // restore the old state
-  auto & as = *get_actor_space<Actor<State>>();
-  Actor<State> & cell = as.get_actor(me.dst_actor_id);
+  auto & as = *get_actor_space<QSSActor<State>>();
+  QSSActor<State> & cell = as.get_actor(me.dst_actor_id);
   cell.unadvance(std::move(adv_info));
   cell.set_neighbor(me.src_actor_id, old_nbr);
   cell.set_next_advance_time(saved_next_advance_time);
@@ -420,11 +298,11 @@ void Actor<State>::ShareState::UC::unexecute (deva::pdes::event_context & cxt, A
 //////////////////////////////////
 
 template <class State>
-typename Actor<State>::Advance::UC
-Actor<State>::Advance::execute (deva::pdes::execute_context & cxt)
+typename QSSActor<State>::Advance::UC
+QSSActor<State>::Advance::execute (deva::pdes::execute_context & cxt)
 {
-  auto & as = *get_actor_space<Actor<State>>();
-  Actor<State> & cell = as.get_actor(actor_id);
+  auto & as = *get_actor_space<QSSActor<State>>();
+  QSSActor<State> & cell = as.get_actor(actor_id);
   AdvanceInfo adv_info = cell.advance(event_time);
   // share state with neighbors
   NeighborState saved_last_sent = cell.send_share_state_events(cxt);
@@ -434,10 +312,10 @@ Actor<State>::Advance::execute (deva::pdes::execute_context & cxt)
 }
 
 template <class State>
-void Actor<State>::Advance::UC::unexecute (deva::pdes::event_context & cxt, Actor<State>::Advance & me) {
+void QSSActor<State>::Advance::UC::unexecute (deva::pdes::event_context & cxt, QSSActor<State>::Advance & me) {
   // restore the old state
-  auto & as = *get_actor_space<Actor<State>>();
-  Actor<State> & cell = as.get_actor(me.actor_id);
+  auto & as = *get_actor_space<QSSActor<State>>();
+  QSSActor<State> & cell = as.get_actor(me.actor_id);
   cell.unadvance(std::move(adv_info));
   cell.set_last_sent(saved_last_sent);
   cell.set_next_advance_time(saved_next_advance_time);
