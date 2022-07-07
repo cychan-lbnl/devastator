@@ -12,12 +12,58 @@
 #include "time.hxx"
 #include "print.hxx"
 
-// force advance at least this many seconds
-const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", 100);
 // simulation ends after this many seconds
 const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 100);
+// force advance at least this many seconds
+const Time max_advance_delta_t = deva::os_env<unsigned>("max_advance_delta_t", sim_end_time);
 // control verbosity
 const bool flag_verbose = deva::os_env<bool>("verbose", false);
+
+//////////////////////
+// Polynomial Class //
+//////////////////////
+
+// T is type of input/output/coefficients
+// N is order of polynomial (N+1 coefficients)
+template <class T, int N>
+struct Poly
+{
+  std::array<T, N+1> coeffs {}; // value-initialize array to zeros
+  Time effective = 0;           // input to polynomial is relative to this time
+
+  // include all object data fields in this macro
+  SERIALIZED_FIELDS(coeffs, effective);
+
+  T eval (Time t) const; // evaluate at time t
+};
+
+template <class T, int N>
+T Poly<T, N>::eval (Time t) const
+{
+  Time dt = t - effective;
+  T result = coeffs[N];
+  for (int i = N - 1; i >= 0; --i) {
+    result = result * dt + coeffs[i];
+  }
+  return result;
+}
+
+
+template <class T, int N>
+std::ostream & operator<< (std::ostream & os, const Poly<T, N> & x)
+{
+  os << "Poly({";
+  bool flag_first = true;
+  for (int i = 0; i < N + 1; ++i) {
+    if (!flag_first) {
+      os << ", ";
+    }
+    os << x.coeffs[i];
+    flag_first = false;
+  }
+  os << "}, eff = " << x.effective << ")";
+  return os;
+}
 
 /////////////////////////////
 // Basic Actor Space Class //
@@ -310,10 +356,10 @@ Actor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
   NeighborState saved_last_sent = last_sent;
 
   if (state.check_need_update(time, last_sent)) {
-    if (flag_verbose) {
-      AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events() with value: " << state << std::endl;
-    }
     NeighborState my_nbr_state = state.gen_neighbor_state(time, neighbors);
+    if (flag_verbose) {
+      AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events(): " << my_nbr_state << std::endl;
+    }
     const auto & as = *get_actor_space<Actor<State>>();
     for (const auto & p : neighbors) {
       int nbr_id = p.first;
@@ -370,7 +416,6 @@ Actor<State>::ShareState::execute (deva::pdes::execute_context & cxt)
   AdvanceInfo adv_info = cell.advance(event_time);
   // set the neighbor with new values from event
   NeighborState old_nbr = cell.set_neighbor(src_actor_id, nbr);
-  DEVA_ASSERT(nbr.effective > old_nbr.effective);
   // reschedule advance given new neighbor values
   Time saved_next_advance_time = cell.reschedule(cxt);
 

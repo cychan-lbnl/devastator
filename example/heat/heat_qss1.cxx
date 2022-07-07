@@ -30,19 +30,12 @@ const Time local_delta_t = deva::os_env<unsigned>("local_delta_t", 1);
 
 struct CellState
 {
-public:
-
   struct NeighborState
   {
-    double val = 0;
-    double slope  = 0;
-    Time effective = 0;
+    Poly<double, 1> poly;
 
     // include all object data fields in this macro
-    SERIALIZED_FIELDS(val, slope, effective);
-
-    double estimate (Time t) const;
-    friend ostream & operator<< (ostream & os, const NeighborState & x);
+    SERIALIZED_FIELDS(poly);
   };
 
   double val = 0;    // value
@@ -66,10 +59,6 @@ public:
   // generate a NeighborState object to share with neighbors
   NeighborState gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 
-  friend ostream & operator<< (ostream & os, const CellState & x);
-
-private:
-
   // evaluate derivative
   double eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 };
@@ -78,19 +67,12 @@ private:
 // CellState Implementation //
 //////////////////////////////
 
-// estimated time based on linear approximation
-double CellState::NeighborState::estimate (Time t) const
-{
-  DEVA_ASSERT(t >= effective);
-  return val + (t - effective) * slope;
-}
-
 double CellState::eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
   int nbr_n = neighbors.size();
   double nbr_sum = 0;
   for (const auto & p : neighbors) {
-    nbr_sum += p.second.estimate(cur_time);
+    nbr_sum += p.second.poly.eval(cur_time);
   }
   return source + alpha * (nbr_sum - nbr_n * val);
 }
@@ -119,16 +101,15 @@ Time CellState::local_integrator (Time cur_time, Time end_time,
 // need to update neighbors when estimated value has deviated from linear estimate by threshold
 bool CellState::check_need_update (Time time, const NeighborState & last_sent) const
 {
-  DEVA_ASSERT(time >= last_sent.effective);
-  double estimate = last_sent.val + (time - last_sent.effective) * last_sent.slope;
-  return std::abs(val - estimate) >= value_threshold;
+  return std::abs(val - last_sent.poly.eval(time)) >= value_threshold;
 }
 
 typename CellState::NeighborState
 CellState::gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
+  // generate order 1 polynomial approximation
   double slope = eval_deriv(cur_time, neighbors);
-  return {val, slope, cur_time};
+  return NeighborState {Poly<double, 1>{{val, slope}, cur_time}};
 }
 
 ostream & operator<< (ostream & os, const CellState & x) {
@@ -137,7 +118,7 @@ ostream & operator<< (ostream & os, const CellState & x) {
 }
 
 ostream & operator<< (ostream & os, const CellState::NeighborState & x) {
-  os << "(" << x.val << "," << x.slope << "," << x.effective << ")";
+  os << x.poly;
   return os;
 }
 
@@ -158,7 +139,7 @@ public:
       // insert left/right neighbors
       if (actor_id == 0) {
         // Dirichlet boundary condition
-        neighbors.insert({actor_id-1, Cell::NeighborState{100, 0}});
+        neighbors.insert({actor_id-1, Cell::NeighborState{Poly<double, 1>{100, 0, 0}}});
       } else {
         neighbors.insert({actor_id-1, Cell::NeighborState()});
       }
