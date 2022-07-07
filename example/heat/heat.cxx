@@ -2,6 +2,10 @@
 
 #include "qss.hxx"
 
+#ifndef QSS_ORDER
+#define QSS_ORDER 1
+#endif
+
 using namespace std;
 
 namespace pdes = deva::pdes;
@@ -32,7 +36,7 @@ struct CellState
 {
   struct NeighborState
   {
-    Poly<double, 1> poly;
+    Poly<double, QSS_ORDER> poly;
 
     // include all object data fields in this macro
     SERIALIZED_FIELDS(poly);
@@ -60,14 +64,14 @@ struct CellState
   NeighborState gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 
   // evaluate derivative
-  double eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
+  double time_derivative (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 };
 
 //////////////////////////////
 // CellState Implementation //
 //////////////////////////////
 
-double CellState::eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
+double CellState::time_derivative (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
   int nbr_n = neighbors.size();
   double nbr_sum = 0;
@@ -90,7 +94,7 @@ Time CellState::local_integrator (Time cur_time, Time end_time,
   while (cur_time < end_time && !f(cur_time, *this)) {
     Time next_time = std::min(cur_time + local_delta_t, end_time);
     Time step = next_time - cur_time;
-    double slope = eval_deriv(cur_time, neighbors);
+    double slope = time_derivative(cur_time, neighbors);
     val += slope * step;
     cur_time = next_time;
   }
@@ -107,9 +111,14 @@ bool CellState::check_need_update (Time time, const NeighborState & last_sent) c
 typename CellState::NeighborState
 CellState::gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
-  // generate order 1 polynomial approximation
-  double slope = eval_deriv(cur_time, neighbors);
-  return NeighborState {Poly<double, 1>{{val, slope}, cur_time}};
+#if QSS_ORDER == 0
+  // order 0 polynomial approximation
+  Poly<double, 0> poly{{val}, cur_time};
+#elif QSS_ORDER == 1
+  // order 1 polynomial approximation
+  Poly<double, 1> poly{{val, time_derivative(cur_time, neighbors)}, cur_time};
+#endif
+  return NeighborState {poly};
 }
 
 ostream & operator<< (ostream & os, const CellState & x) {
@@ -138,8 +147,9 @@ public:
       unordered_map<int, Cell::NeighborState> neighbors;
       // insert left/right neighbors
       if (actor_id == 0) {
-        // Dirichlet boundary condition
-        neighbors.insert({actor_id-1, Cell::NeighborState{Poly<double, 1>{100, 0, 0}}});
+        // Dirichlet boundary condition at cell -1 with fixed value 100
+        Poly<double, QSS_ORDER> poly{{100}, 0}; // first coeff is 100, rest are 0
+        neighbors.insert({actor_id-1, Cell::NeighborState{poly}});
       } else {
         neighbors.insert({actor_id-1, Cell::NeighborState()});
       }
@@ -167,6 +177,10 @@ void rank_main ()
   cs.init(cell_n);
   cs.connect();
 
+  // only QSS order 0 and 1 currently implemented
+  static_assert(QSS_ORDER == 0 || QSS_ORDER == 1);
+
+  Print() << "Using QSS order " << QSS_ORDER << endl;
   Print() << "Initial state:" << endl;
   cs.print();
 
