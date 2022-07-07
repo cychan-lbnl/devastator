@@ -19,7 +19,10 @@ const Time sim_end_time = deva::os_env<unsigned>("sim_end_time", 100);
 // control verbosity
 const bool flag_verbose = deva::os_env<bool>("verbose", false);
 
-// basic implementation of an actor space
+/////////////////////////////
+// Basic Actor Space Class //
+/////////////////////////////
+
 // uses a simple block partitioning across ranks
 template <class Actor>
 class BasicActorSpace
@@ -257,7 +260,7 @@ Actor<State>::advance (Time t)
   AdvanceInfo info {time, state};
 
   auto always_false = [] (Time t, const State & s) { return false; };
-  state.local_integrator(time, t, state, neighbors, always_false);
+  time = state.local_integrator(time, t, neighbors, always_false);
   if (flag_verbose) {
     AllPrint() << "Time " << t << ": Actor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
   }
@@ -289,14 +292,13 @@ Actor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
 template <class State>
 std::pair<Time, State> Actor<State>::estimate_next_send_time () const
 {
-  Time est_time = time;
   State est_state = state;
   auto checker = [this] (Time t, const State & s) {
-    return state.check_need_update(last_sent, t, s);
+    return s.check_need_update(t, last_sent);
   };
 
   // estimate when we would need to update neighbors via local integration
-  state.local_integrator(est_time, time + max_advance_delta_t, est_state, neighbors, checker);
+  Time est_time = est_state.local_integrator(time, time + max_advance_delta_t, neighbors, checker);
 
   return {est_time, est_state};
 }
@@ -307,7 +309,7 @@ Actor<State>::send_share_state_events (deva::pdes::execute_context & cxt)
 {
   NeighborState saved_last_sent = last_sent;
 
-  if (state.check_need_update(last_sent, time, state)) {
+  if (state.check_need_update(time, last_sent)) {
     if (flag_verbose) {
       AllPrint() << "Time " << time << ": Actor " << id << ": send_share_state_events() with value: " << state << std::endl;
     }
@@ -337,8 +339,7 @@ Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
   }
 
   // estimate when value will change enough to send to neighbors
-  Time est_time; State est_state;
-  std::tie(est_time, est_state) = estimate_next_send_time();
+  Time est_time = estimate_next_send_time().first;
 
   // only reschedule if est_time is earlier than currently scheduled advance 
   if (est_time > time && est_time < std::min(next_advance_time, sim_end_time)) {

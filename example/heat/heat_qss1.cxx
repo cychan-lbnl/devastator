@@ -52,22 +52,26 @@ public:
   SERIALIZED_FIELDS(val, source);
 
   // main local integrator function
-  // cur_time and cur_state are in/out parameters
-  // integrates from cur_state at cur_time (assuming fixed neighbor states)
-  // stops when cur_time reaches end_time or when f(cur_state) is true
+  // integrates from cur_time to end_time (assuming fixed neighbor states)
+  // stops early when f(t, state) is true
+  // returns time actually integrated to
   template <class F>
-  static void local_integrator (Time & cur_time, Time end_time,
-                                CellState & cur_state,
-                                const unordered_map<int, NeighborState> & neighbors,
-                                const F & f);
+  Time local_integrator (Time cur_time, Time end_time,
+                         const unordered_map<int, NeighborState> & neighbors,
+                         const F & f);
 
-  // returns whether the passed state differs enough from the last sent state to require an update
-  static bool check_need_update (const NeighborState & last_sent, Time t, const CellState & s);
+  // returns whether the state differs enough from the last sent state to require an update
+  bool check_need_update (Time time, const NeighborState & last_sent) const;
 
   // generate a NeighborState object to share with neighbors
   NeighborState gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 
   friend ostream & operator<< (ostream & os, const CellState & x);
+
+private:
+
+  // evaluate derivative
+  double eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const;
 };
 
 //////////////////////////////
@@ -81,50 +85,49 @@ double CellState::NeighborState::estimate (Time t) const
   return val + (t - effective) * slope;
 }
 
-// approximate diffusion using estimated neighbor values
-// integrates from cur_time until end_time OR f() evaluates true
-// this can be made more efficient
-// NOTE: check the math
-template <class F>
-void CellState::local_integrator (Time & cur_time, Time end_time,
-                                  CellState & cur_state,
-                                  const unordered_map<int, NeighborState> & neighbors,
-                                  const F & f)
+double CellState::eval_deriv (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
 {
-  // integrate until end time or f() evaluates to true
-  int nbr_n = neighbors.size();
-  while (cur_time < end_time && !f(cur_time, cur_state)) {
-    Time next_time = std::min(cur_time + local_delta_t, end_time);
-    Time step = next_time - cur_time;
-    double nbr_sum = 0;
-    for (const auto & p : neighbors) {
-      nbr_sum += p.second.estimate(cur_time);
-    }
-    double rhs = cur_state.source + alpha * (nbr_sum - nbr_n * cur_state.val);
-    cur_state.val += rhs * step;
-    cur_time = next_time;
-  }
-}
-
-// need to update neighbors when estimated value has deviated from linear estimate by threshold
-bool CellState::check_need_update (const NeighborState & last_sent, Time t, const CellState & s)
-{
-  DEVA_ASSERT(t >= last_sent.effective);
-  double estimate = last_sent.val + (t - last_sent.effective) * last_sent.slope;
-  return std::abs(s.val - estimate) >= value_threshold;
-}
-
-typename CellState::NeighborState
-CellState::gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
-{
-  // TODO: this shares common code with local_integrator
   int nbr_n = neighbors.size();
   double nbr_sum = 0;
   for (const auto & p : neighbors) {
     nbr_sum += p.second.estimate(cur_time);
   }
-  double slope = source + alpha * (nbr_sum - nbr_n * val);
+  return source + alpha * (nbr_sum - nbr_n * val);
+}
 
+// approximate diffusion using estimated neighbor values
+// integrates from cur_time until end_time OR f() evaluates true
+// this can be made more efficient
+// NOTE: check the math
+template <class F>
+Time CellState::local_integrator (Time cur_time, Time end_time,
+                                  const unordered_map<int, NeighborState> & neighbors,
+                                  const F & f)
+{
+  // integrate until end time or f() evaluates to true
+  while (cur_time < end_time && !f(cur_time, *this)) {
+    Time next_time = std::min(cur_time + local_delta_t, end_time);
+    Time step = next_time - cur_time;
+    double slope = eval_deriv(cur_time, neighbors);
+    val += slope * step;
+    cur_time = next_time;
+  }
+
+  return cur_time;
+}
+
+// need to update neighbors when estimated value has deviated from linear estimate by threshold
+bool CellState::check_need_update (Time time, const NeighborState & last_sent) const
+{
+  DEVA_ASSERT(time >= last_sent.effective);
+  double estimate = last_sent.val + (time - last_sent.effective) * last_sent.slope;
+  return std::abs(val - estimate) >= value_threshold;
+}
+
+typename CellState::NeighborState
+CellState::gen_neighbor_state (Time cur_time, const unordered_map<int, NeighborState> & neighbors) const
+{
+  double slope = eval_deriv(cur_time, neighbors);
   return {val, slope, cur_time};
 }
 
