@@ -89,7 +89,7 @@ public:
 
   // derived class implements this
   // use Actor::set_neighbors() to connect actors
-  virtual void connect () {}
+  virtual void configure () {}
 
   void root_events () const
   {
@@ -274,6 +274,7 @@ public:
   Time reschedule (deva::pdes::execute_context & cxt); // self-schedule an advance
 
   const State & get_state () const { return state; }
+  State & get_state () { return state; }
   void set_neighbors (std::unordered_map<int, NeighborState> nbrs) { neighbors = std::move(nbrs); }
   void set_last_sent (NeighborState nbr) { last_sent = nbr; }
   void set_next_advance_time (Time t) { next_advance_time = t; }
@@ -302,16 +303,12 @@ template <class State>
 typename Actor<State>::AdvanceInfo
 Actor<State>::advance (Time t)
 {
-  // save old state in case of rollback
-  AdvanceInfo info {time, state};
-
-  auto always_false = [] (Time t, const State & s) { return false; };
-  time = state.local_integrator(time, t, neighbors, always_false);
+  AdvanceInfo info {time, state}; // save old state in case of rollback
+  state.advance(time, t, neighbors);
+  time = t;
   if (flag_verbose) {
     AllPrint() << "Time " << t << ": Actor " << id << ": advance() from time " << info.saved_time << " with value: " << info.saved_state << " -> " << state << std::endl;
   }
-  DEVA_ASSERT(time == t);
-
   return info;
 }
 
@@ -332,21 +329,6 @@ Actor<State>::set_neighbor (int nid, typename State::NeighborState nbr)
   NeighborState old_nbr = neighbors[nid];
   neighbors[nid] = nbr;
   return old_nbr;
-}
-
-// compute when to send updated value to neighbors
-template <class State>
-std::pair<Time, State> Actor<State>::estimate_next_send_time () const
-{
-  State est_state = state;
-  auto checker = [this] (Time t, const State & s) {
-    return s.check_need_update(t, last_sent);
-  };
-
-  // estimate when we would need to update neighbors via local integration
-  Time est_time = est_state.local_integrator(time, time + max_advance_delta_t, neighbors, checker);
-
-  return {est_time, est_state};
 }
 
 template <class State>
@@ -385,7 +367,7 @@ Time Actor<State>::reschedule (deva::pdes::execute_context & cxt)
   }
 
   // estimate when value will change enough to send to neighbors
-  Time est_time = estimate_next_send_time().first;
+  Time est_time = state.estimate_next_send_time(time, neighbors, last_sent);
 
   // only reschedule if est_time is earlier than currently scheduled advance 
   if (est_time > time && est_time < std::min(next_advance_time, sim_end_time)) {
