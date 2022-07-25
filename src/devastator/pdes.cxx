@@ -38,10 +38,10 @@ namespace {
 #if DRAIN_TIMER
 namespace {
 constexpr auto default_sim_interval = static_cast<uint64_t>(15*60*1000) << 33; // 15 minutes in milliseconds, assuming 33 bits of subtime
-const double wall_interval_s = deva::os_env<double>("deva_drain_timer_wall_interval", 10); // 10 seconds
+const double wall_interval_s = std::max(0.001, deva::os_env<double>("deva_drain_timer_wall_interval", 10)); // 10 seconds
 }
 
-const uint64_t pdes::DrainTimer::sim_interval = os_env<uint64_t>("deva_drain_timer_sim_interval" , default_sim_interval);
+const uint64_t pdes::DrainTimer::sim_interval = std::max(1ul, os_env<uint64_t>("deva_drain_timer_sim_interval" , default_sim_interval));
 const std::chrono::steady_clock::duration pdes::DrainTimer::wall_interval =
         std::chrono::milliseconds(static_cast<int>(wall_interval_s * 1000));
 #endif // DRAIN_TIMER

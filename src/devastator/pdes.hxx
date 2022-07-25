@@ -129,10 +129,13 @@ namespace pdes {
 
 #if DRAIN_TIMER
   // This class keeps track of time devastator spends in various activity categories.
-  // The operator<< prints a summary for this rank, with accumulated times in each category.
-  // The dump() function prints time spent by wall clock or by simulation time into csv files.
-  //   drain_timer.wall.<rank>.csv contains all categories.
+  //   Build devastator with drain_timer=1 to enable.
+  // operator<< prints a summary for this rank, with accumulated times in each category.
+  // dump() prints time spent by wall clock and by sim time into two csv files.
+  //   drain_timer.wall.<rank>.csv contains all category times.
   //   drain_timer.sim.<rank>.csv only contains task execution (committed and rolled back) times.
+  // Set deva_drain_timer_wall_interval=<seconds> to set the wall clock interval
+  // Set deva_drain_timer_sim_interval=<timestamp> to set the timestamp interval
   struct DrainTimer
   {
     enum class Cat
@@ -271,20 +274,18 @@ namespace pdes {
         oss << "drain_timer.wall." << deva::rank_me() << ".csv";
         std::ofstream ofs(oss.str());
 
-        bool flag_first = true;
+        ofs << "time";
         for (const auto & label : get_labels()) {
-          if (!flag_first) { ofs << ","; }
-          ofs << label;
-          flag_first = false;
+          ofs << "," << label;
         }
         ofs << std::endl;
 
-        for (const auto & entry : accum_wall) {
-          flag_first = true;
+        for (int i = 0; i < accum_wall.size(); ++i) {
+          const auto time = i * wall_interval;
+          const auto & entry = accum_wall[i];
+          ofs << std::chrono::duration<double>(time).count();
           for (const auto & val : entry) {
-            if (!flag_first) { ofs << ","; }
-            ofs << std::chrono::duration<double>(val).count();
-            flag_first = false;
+            ofs << "," << std::chrono::duration<double>(val).count();
           }
           ofs << std::endl;
         }
@@ -294,9 +295,12 @@ namespace pdes {
         std::ostringstream oss;
         oss << "drain_timer.sim." << deva::rank_me() << ".csv";
         std::ofstream ofs(oss.str());
-        ofs << "execute,execute_rb" << std::endl;
-        for (const auto & entry : accum_sim) {
-          ofs << std::chrono::duration<double>(entry[0]).count() << ","
+        ofs << "time,execute,execute_rb" << std::endl;
+        for (int i = 0; i < accum_sim.size(); ++i) {
+          const uint64_t time = i * sim_interval;
+          const auto & entry = accum_sim[i];
+          ofs << time << ","
+              << std::chrono::duration<double>(entry[0]).count() << ","
               << std::chrono::duration<double>(entry[1]).count() << std::endl;
         }
       }
