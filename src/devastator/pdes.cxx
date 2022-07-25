@@ -196,6 +196,7 @@ namespace {
           events[cd].push_back({time, gen_rank, gen_cd, gen_time});
         }
         friend std::ostream & operator<< (std::ostream & os, const Timeline & tl) {
+          os << "rank,cd,time,gen_rank,gen_cd,gen_time" << endl;
           for (int cd = 0; cd < tl.events.size(); ++cd) {
             for (const auto & e : tl.events[cd]) {
               os << deva::rank_me() << ',' << cd << ',' << e.time << ',' << e.gen_rank << ',' << e.gen_cd << ',' << e.gen_time << std::endl;
@@ -1117,12 +1118,6 @@ void pdes::finalize() {
 
   #if DRAIN_TIMER
     if (os_env<bool>("dump_drain_timer", false)) {
-      { // dump drain timer summary stats
-        ostringstream oss;
-        oss << "drain_timer." << deva::rank_me() << ".out";
-        ofstream ofs(oss.str());
-        ofs << sim_me.drain_timer;
-      }
       // dump per-interval stats
       sim_me.drain_timer.dump();
     }

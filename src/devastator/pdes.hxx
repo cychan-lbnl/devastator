@@ -128,6 +128,11 @@ namespace pdes {
   };
 
 #if DRAIN_TIMER
+  // This class keeps track of time devastator spends in various activity categories.
+  // The operator<< prints a summary for this rank, with accumulated times in each category.
+  // The dump() function prints time spent by wall clock or by simulation time into csv files.
+  //   drain_timer.wall.<rank>.csv contains all categories.
+  //   drain_timer.sim.<rank>.csv only contains task execution (committed and rolled back) times.
   struct DrainTimer
   {
     enum class Cat
