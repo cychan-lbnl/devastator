@@ -127,6 +127,7 @@ namespace pdes {
     }
   };
 
+#if DRAIN_TIMER
   struct DrainTimer
   {
     enum class Cat
@@ -169,11 +170,6 @@ namespace pdes {
 
     void init (int local_cd_n)
     {
-//    if (rank_me() == 0) {
-//      std::cout << "Initializing drain timer:" << std::endl;
-//      std::cout << "  sim_interval:" << sim_interval << std::endl;
-//      std::cout << "  wall_interval:" << std::chrono::duration<double>(wall_interval).count() << std::endl;
-//    }
       deva::barrier(); // try to approximately align timers
       start_time = std::chrono::steady_clock::now();
       epoch_begin = start_time;
@@ -301,6 +297,7 @@ namespace pdes {
       }
     }
   };
+  #endif // DRAIN_TIMER
 
   // The non-reduced statistics for this rank pertaining to all invocations of
   // `drain()` since the last `init()`.

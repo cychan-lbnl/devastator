@@ -244,6 +244,8 @@ void rank_main ()
 
   Print() << "Final state:" << endl;
   cs.print();
+
+  pdes::finalize();
 }
 
 // program main

@@ -33,14 +33,18 @@ __thread std::int64_t pdes::detail::live_event_balance = 0;
 #endif
 
 namespace {
-  constexpr auto default_sim_interval = static_cast<uint64_t>(15*60*1000) << 33; // 15 minutes in milliseconds, assuming 33 bits of subtime
-  const double wall_interval_s = deva::os_env<double>("deva_drain_timer_wall_interval", 10); // 10 seconds
   const int64_t static_look_dt = deva::os_env<int64_t>("deva_static_look_dt", -1);
+}
+#if DRAIN_TIMER
+namespace {
+constexpr auto default_sim_interval = static_cast<uint64_t>(15*60*1000) << 33; // 15 minutes in milliseconds, assuming 33 bits of subtime
+const double wall_interval_s = deva::os_env<double>("deva_drain_timer_wall_interval", 10); // 10 seconds
 }
 
 const uint64_t pdes::DrainTimer::sim_interval = os_env<uint64_t>("deva_drain_timer_sim_interval" , default_sim_interval);
 const std::chrono::steady_clock::duration pdes::DrainTimer::wall_interval =
         std::chrono::milliseconds(static_cast<int>(wall_interval_s * 1000));
+#endif // DRAIN_TIMER
 
 namespace {
   bool flag_heartbeat = deva::os_env<bool>("pdes_heartbeat", true);
@@ -158,9 +162,22 @@ namespace {
 
     statistics stats;
 
-    bool spinning_empty = false;
-    bool spinning_look = false;
-    DrainTimer drain_timer;
+    #if DRAIN_TIMER
+      bool spinning_empty = false;
+      bool spinning_look = false;
+      DrainTimer drain_timer;
+
+      bool spinning () {
+        return spinning_empty || spinning_look;
+      }
+
+      void drain_timer_update_spin_or (DrainTimer::Cat or_cat) {
+        auto cat = spinning_empty ? DrainTimer::Cat::spin_empty :
+                  (spinning_look  ? DrainTimer::Cat::spin_look : or_cat);
+        drain_timer.update(cat);
+      }
+    #endif // DRAIN_TIMER
+
     #if TIMELINE
       struct Timeline
       {
@@ -189,16 +206,6 @@ namespace {
       };
       Timeline timeline;
     #endif
-
-    bool spinning () {
-      return spinning_empty || spinning_look;
-    }
-
-    void drain_timer_update_spin_or (DrainTimer::Cat or_cat) {
-      auto cat = spinning_empty ? DrainTimer::Cat::spin_empty :
-                (spinning_look  ? DrainTimer::Cat::spin_look : or_cat);
-      drain_timer.update(cat);
-    }
   };
   
   thread_local sim_state sim_me;
@@ -520,7 +527,9 @@ namespace {
     sim_state &sim_me = ::sim_me;
     const int rank_me = deva::rank_me();
 
-    sim_me.drain_timer.update(DrainTimer::Cat::rollback);
+    #if DRAIN_TIMER
+      sim_me.drain_timer.update(DrainTimer::Cat::rollback);
+    #endif // DRAIN_TIMER
     
     std::vector<cd_state*> undos_all, undos_fresh;
     undos_all.reserve(32);
@@ -652,7 +661,10 @@ namespace {
         cxt.time = se.time;
         cxt.subtime = se.subtime;
         se.e->vtbl_on_target->unexecute(se.e, cxt, DEVA_DEBUG_ONLY(cd->checksummer,) do_delete);
-        sim_me.drain_timer.rollback_event(cd->cd_ix);
+
+        #if DRAIN_TIMER
+          sim_me.drain_timer.rollback_event(cd->cd_ix);
+        #endif // DRAIN_TIMER
       }
 
       cd->undo_n_hi = 0;
@@ -673,7 +685,9 @@ namespace {
       del_head = next;
     }
 
-    sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
+    #if DRAIN_TIMER
+      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
+    #endif // DRAIN_TIMER
   }
 }
 
@@ -681,7 +695,9 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
   sim_state &sim_me = ::sim_me;
   const int32_t rank_me = deva::rank_me();
 
-  sim_me.drain_timer.init(sim_me.local_cd_n);
+  #if DRAIN_TIMER
+    sim_me.drain_timer.init(sim_me.local_cd_n);
+  #endif // DRAIN_TIMER
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -744,15 +760,25 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
     look_t_ub = global_status.calc_look_t_ub(gvt0, t_end);
   }
 
-  sim_me.spinning_empty = false;
-  sim_me.spinning_look = false;
+  #if DRAIN_TIMER
+    sim_me.spinning_empty = false;
+    sim_me.spinning_look = false;
+  #else
+    bool spinning = false;
+  #endif // DRAIN_TIMER
   
   while(true) {
-    sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
-    deva::progress(sim_me.spinning());
+    #if DRAIN_TIMER
+      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::progress);
+      deva::progress(sim_me.spinning());
+    #else
+      deva::progress(spinning);
+    #endif // DRAIN_TIMER
     
     { // nurse gvt
-      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
+      #if DRAIN_TIMER
+        sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
+      #endif // DRAIN_TIMER
 
       uint64_t lvt = sim_me.cds_by_now.least_key();
       uint64_t gvt_old = gvt::epoch_gvt();
@@ -813,7 +839,10 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                 }
                 
                 { // invoke commit()
-                  sim_me.drain_timer.update(DrainTimer::Cat::commit);
+                  #if DRAIN_TIMER
+                    sim_me.drain_timer.update(DrainTimer::Cat::commit);
+                  #endif // DRAIN_TIMER
+
                   event_context cxt;
                   cxt.cd = cd->cd_ix;
                   cxt.time = se.time;
@@ -822,8 +851,11 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
                     sim_me.timeline.record_event(cxt.cd, cxt.time, se.e->gen_rank, se.e->gen_cd, se.e->gen_time);
                   #endif
                   se.e->vtbl_on_target->commit(se.e, cxt, should_delete);
-                  sim_me.drain_timer.commit_event(cd->cd_ix);
-                  sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
+
+                  #if DRAIN_TIMER
+                    sim_me.drain_timer.commit_event(cd->cd_ix);
+                    sim_me.drain_timer_update_spin_or(DrainTimer::Cat::gvt);
+                  #endif // DRAIN_TIMER
                 }
                 commit_n += 1;
               }
@@ -858,18 +890,30 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
         executed_n = 0;
         committed_n = 0;
       }
-      sim_me.drain_timer_update_spin_or(DrainTimer::Cat::none);
+
+      #if DRAIN_TIMER
+        sim_me.drain_timer_update_spin_or(DrainTimer::Cat::none);
+      #endif // DRAIN_TIMER
     }
     
     { // execute one event
       cd_state *cd = sim_me.cds_by_now.peek_least().cd;
       stamped_event se = cd->future_events.peek_least_or({nullptr, end_of_time, end_of_time});
-      sim_me.spinning_empty = cd->future_events.size() == 0; // account for advance to end of time event
-      sim_me.spinning_look  = !sim_me.spinning_empty && se.time >= look_t_ub;
+
+      #if DRAIN_TIMER
+        sim_me.spinning_empty = cd->future_events.size() == 0;
+        sim_me.spinning_look  = !sim_me.spinning_empty && se.time >= look_t_ub;
+      #else
+        spinning = true;
+      #endif // DRAIN_TIMER
 
       if(se.time < look_t_ub) {
-        DEVA_ASSERT(!sim_me.spinning_empty && !sim_me.spinning_look);
-        sim_me.drain_timer.update(DrainTimer::Cat::execute);
+        #if DRAIN_TIMER
+          DEVA_ASSERT(!sim_me.spinning_empty && !sim_me.spinning_look);
+          sim_me.drain_timer.update(DrainTimer::Cat::execute);
+        #else
+          spinning = false;
+        #endif // DRAIN_TIMER
         
         DEVA_ASSERT(se.e->future_not_past);
         se.e->future_not_past = false;
@@ -945,15 +989,19 @@ uint64_t pdes::drain(uint64_t t_end, bool rewindable) {
           }
         }
 
-        auto wall_time = sim_me.drain_timer.epoch_begin; // when event began
-        auto dt = sim_me.drain_timer.update(DrainTimer::Cat::none, true);
-        sim_me.drain_timer.register_event(cd->cd_ix, se.time, wall_time, dt);
+        #if DRAIN_TIMER
+          auto wall_time = sim_me.drain_timer.epoch_begin; // when event began
+          auto dt = sim_me.drain_timer.update(DrainTimer::Cat::none, true);
+          sim_me.drain_timer.register_event(cd->cd_ix, se.time, wall_time, dt);
+        #endif // DRAIN_TIMER
       }
     }
   }
 
 drain_completed:
-  sim_me.drain_timer.update(DrainTimer::Cat::none);
+  #if DRAIN_TIMER
+    sim_me.drain_timer.update(DrainTimer::Cat::none);
+  #endif //DRAIN_TIMER
 
   for(int cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
     cd_state *cd = &sim_me.cds[cd_ix];
@@ -964,7 +1012,10 @@ drain_completed:
   DEVA_ASSERT_ALWAYS(sim_me.sent_near.size() == 0, "sim_me.sent_near.size() = "<<sim_me.sent_near.size()<<", expected 0");
   
 drain_paused:
-  sim_me.drain_timer.update(DrainTimer::Cat::none);
+  #if DRAIN_TIMER
+    sim_me.drain_timer.update(DrainTimer::Cat::none);
+  #endif // DRAIN_TIMER
+
   for(int cd_ix=0; cd_ix < sim_me.local_cd_n; cd_ix++) {
     cd_state *cd = &sim_me.cds[cd_ix];
     DEVA_ASSERT_ALWAYS(cd->past_events.size() == 0);
@@ -1064,16 +1115,18 @@ void pdes::finalize() {
     DEVA_ASSERT(live_event_balance == 0, "Events have been leaked!");
   #endif
 
-  if (os_env<bool>("dump_drain_timer", false)) {
-    { // dump drain timer summary stats
-      ostringstream oss;
-      oss << "drain_timer." << deva::rank_me() << ".out";
-      ofstream ofs(oss.str());
-      ofs << sim_me.drain_timer;
+  #if DRAIN_TIMER
+    if (os_env<bool>("dump_drain_timer", false)) {
+      { // dump drain timer summary stats
+        ostringstream oss;
+        oss << "drain_timer." << deva::rank_me() << ".out";
+        ofstream ofs(oss.str());
+        ofs << sim_me.drain_timer;
+      }
+      // dump per-interval stats
+      sim_me.drain_timer.dump();
     }
-    // dump per-interval stats
-    sim_me.drain_timer.dump();
-  }
+  #endif // DRAIN_TIMER
 
   #if TIMELINE
     if (os_env<bool>("dump_timeline", false)) {
