@@ -124,7 +124,7 @@ namespace {
           cpu++;
         }
 
-        if(cpu_n == threads::thread_n) {
+        if(cpu_n >= threads::thread_n) {
           cpu = 0;
           cpu_n = 0;
           while(true) {
