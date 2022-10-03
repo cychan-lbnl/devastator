@@ -37,6 +37,8 @@ def gasnet_opts():
   if nersc == 'cori':
     conduit = 'aries'
     cross = 'cross-configure-cray-aries-slurm'
+  elif nersc == 'perlmutter':
+    conduit = 'ofi'
   conduit = brutal.env('DEVA_GASNET_CONDUIT', conduit)
   sync = 'seq'
   return (url, cross, conduit, sync)

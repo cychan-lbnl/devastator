@@ -19,6 +19,7 @@ def gasnet_configured(url, cross, cc, cxx, debug):
 
   flags = ['--disable-parsync','--disable-mpi']
   flags += ['--with-aries-max-medium=64896']
+  flags += ['--with-ofi-max-medium=64896']
   flags += ['--enable-debug'] if debug else []
 
   yield brutal.process([script] + flags, cwd=build_dir, env_add={'CC':cc, 'CXX':cxx})
