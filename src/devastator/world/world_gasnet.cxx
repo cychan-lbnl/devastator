@@ -150,7 +150,13 @@ namespace {
     );
     DEVA_ASSERT_ALWAYS(ok == GASNET_OK);
 
-    DEVA_ASSERT_ALWAYS(deva::process_n == gex_TM_QuerySize(the_team));
+    auto team_size = gex_TM_QuerySize(the_team);
+    std::ostringstream oss;
+    if (deva::process_n != team_size) {
+      oss << "ERROR: devastator compiled for " << deva::process_n
+          << " process, but run with " << team_size << " process!" << std::endl;
+    }
+    DEVA_ASSERT_ALWAYS(deva::process_n == gex_TM_QuerySize(the_team), oss.str());
     deva::process_me_ = gex_TM_QueryRank(the_team);
 
     if(0) {
