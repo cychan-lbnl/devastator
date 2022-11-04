@@ -18,8 +18,10 @@ def gasnet_configured(url, cross, cc, cxx, debug):
     script = brutal.os.path.join(src_dir, 'configure')
 
   flags = ['--disable-parsync','--disable-mpi']
-  flags += ['--with-aries-max-medium=64896']
-  flags += ['--with-ofi-max-medium=64896']
+  if brutal.os.environ.get('NERSC_HOST') == "cori":
+    flags += ['--with-aries-max-medium=64896']
+  if brutal.os.environ.get('NERSC_HOST') == "perlmutter":
+    flags += ['--with-ofi-max-medium=64896']
   flags += ['--enable-debug'] if debug else []
 
   yield brutal.process([script] + flags, cwd=build_dir, env_add={'CC':cc, 'CXX':cxx})
